@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}物料领取看板{% endblock %}</title>
+    <link href="https://unpkg.com/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://unpkg.com/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body>
+    {% if session.user %}
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/kanban">
+                <i class="fas fa-clipboard-list me-2"></i>物料领取看板
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/kanban"><i class="fas fa-columns me-1"></i>看板</a>
+                    </li>
+                    {% if session.user.role in ['requester', 'admin'] %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/request/new"><i class="fas fa-plus-circle me-1"></i>新建申请</a>
+                    </li>
+                    {% endif %}
+                    {% if session.user.role in ['warehouse', 'admin'] %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/pending"><i class="fas fa-list me-1"></i>未完成单据</a>
+                    </li>
+                    {% endif %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history"><i class="fas fa-history me-1"></i>历史查询</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/records"><i class="fas fa-table me-1"></i>记录查询</a>
+                    </li>
+                    {% if session.user.role == 'admin' %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/mappings"><i class="fas fa-users-cog me-1"></i>账号管理</a>
+                    </li>
+                    {% endif %}
+                </ul>
+                <div class="d-flex align-items-center text-white">
+                    <!-- 站点标识 -->
+                    <span class="badge bg-light text-primary me-2 site-badge" id="siteBadge">
+                        <i class="fas fa-map-marker-alt me-1"></i>
+                        <span id="siteName">{{ session.user.siteref }}</span>
+                    </span>
+
+                    <!-- admin 站点切换 -->
+                    {% if session.user.role == 'admin' %}
+                    <div class="dropdown me-2">
+                        <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-exchange-alt me-1"></i>切换站点
+                        </button>
+                        <ul class="dropdown-menu" id="siteSwitchMenu">
+                            <li><a class="dropdown-item" href="#" data-site="310" onclick="switchSite('310')">苏州工厂 (310)</a></li>
+                            <li><a class="dropdown-item" href="#" data-site="410" onclick="switchSite('410')">槟城工厂 (410)</a></li>
+                        </ul>
+                    </div>
+                    {% endif %}
+
+                    <span class="me-3">
+                        <i class="fas fa-user-circle me-1"></i>
+                        {{ session.user.display_name }}
+                        <span class="badge bg-light text-primary ms-1 role-badge">
+                            {% if session.user.role == 'admin' %}管理员
+                            {% elif session.user.role == 'requester' %}领料员
+                            {% elif session.user.role == 'supervisor' %}主管
+                            {% elif session.user.role == 'warehouse' %}仓库
+                            {% endif %}
+                        </span>
+                    </span>
+                    <button class="btn btn-outline-light btn-sm" onclick="logout()">
+                        <i class="fas fa-sign-out-alt me-1"></i>退出
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+    {% endif %}
+
+    <div class="container-fluid mt-3">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toastMsg" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <strong class="me-auto" id="toastTitle">提示</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody"></div>
+        </div>
+    </div>
+
+    <!-- 加载提示 -->
+    <div id="loadingOverlay" class="loading-overlay d-none">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">加载中...</span>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+flask_session/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 项目文档（不提交到代码仓库）
+需求文档/
+审查报告.md
+复审报告.md
+验证报告.md
+
+# 测试
+.pytest_cache/
+tests/
+
+# 日志
+logs/
+*.log
+
+# 系统文件
+Thumbs.db
+.DS_Store

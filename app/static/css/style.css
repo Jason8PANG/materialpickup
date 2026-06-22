@@ -1,0 +1,439 @@
+/* ========== 全局 ========== */
+body {
+    background: #f0f2f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* ========== 登录页 - 现代风格 ========== */
+.login-body {
+    background: linear-gradient(135deg, #1a1a8a 0%, #3949ab 30%, #5c6bc0 60%, #7c4dff 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.login-body::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
+    animation: loginBgAnim 20s ease-in-out infinite alternate;
+}
+
+@keyframes loginBgAnim {
+    0% { transform: translate(0, 0) rotate(0deg); }
+    100% { transform: translate(-5%, -5%) rotate(5deg); }
+}
+
+.login-container {
+    width: 100%;
+    padding: 20px;
+    position: relative;
+    z-index: 1;
+}
+
+.login-card {
+    max-width: 420px;
+    margin: 0 auto;
+    background: rgba(255, 255, 255, 0.98);
+    border-radius: 16px;
+    padding: 44px 36px 36px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+}
+
+.login-header {
+    text-align: center;
+    margin-bottom: 36px;
+}
+
+.login-logo-wrapper {
+    width: 72px;
+    height: 72px;
+    background: linear-gradient(135deg, #3949ab, #7c4dff);
+    border-radius: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+    box-shadow: 0 8px 24px rgba(57, 73, 171, 0.3);
+}
+
+.login-icon {
+    font-size: 32px;
+    color: #fff;
+}
+
+.login-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin-bottom: 6px;
+}
+
+.login-subtitle {
+    font-size: 13px;
+    color: #8e8ea0;
+    margin: 0;
+}
+
+/* 现代输入框 */
+.login-input-group {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.login-input-icon {
+    position: absolute;
+    left: 14px;
+    color: #b0b0c0;
+    font-size: 16px;
+    z-index: 2;
+    transition: color 0.3s;
+}
+
+.login-input {
+    width: 100%;
+    padding: 14px 14px 14px 44px;
+    font-size: 15px;
+    border: 2px solid #e8e8f0;
+    border-radius: 12px;
+    background: #f8f9fe;
+    color: #1a1a2e;
+    outline: none;
+    transition: all 0.3s;
+}
+
+.login-input:focus {
+    border-color: #3949ab;
+    background: #fff;
+    box-shadow: 0 0 0 4px rgba(57, 73, 171, 0.1);
+}
+
+.login-input:focus + .login-input-icon,
+.login-input:focus ~ .login-input-icon {
+    color: #3949ab;
+}
+
+.login-input::placeholder {
+    color: #b0b0c0;
+}
+
+/* 登录按钮 */
+.login-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(135deg, #3949ab, #5c6bc0);
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s;
+    box-shadow: 0 4px 16px rgba(57, 73, 171, 0.3);
+}
+
+.login-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(57, 73, 171, 0.4);
+    background: linear-gradient(135deg, #303f9f, #4a5ab5);
+}
+
+.login-btn:active {
+    transform: translateY(0);
+}
+
+.login-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.login-footer {
+    text-align: center;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+    color: #8e8ea0;
+}
+
+/* ========== 导航栏 ========== */
+.navbar {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.role-badge {
+    font-size: 0.75rem;
+}
+
+.site-badge {
+    font-size: 0.8rem;
+}
+
+/* ========== 看板 ========== */
+.kanban-toolbar {
+    margin-bottom: 16px;
+}
+
+.kanban-board {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding-bottom: 20px;
+    min-height: 60vh;
+}
+
+.kanban-column {
+    flex: 1;
+    min-width: 200px;
+    max-width: 300px;
+    background: #f5f7fa;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.kanban-column-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 12px;
+    border-bottom: 2px solid #e4e7ed;
+    margin-bottom: 12px;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.kanban-column-header .count {
+    background: #e4e7ed;
+    color: #606266;
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 12px;
+}
+
+.kanban-card {
+    background: #fff;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    cursor: pointer;
+    transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.kanban-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    transform: translateY(-1px);
+}
+
+.kanban-card .card-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 4px;
+}
+
+.kanban-card .card-job-order {
+    font-weight: 700;
+    font-size: 14px;
+    color: #303133;
+    line-height: 1.5;
+}
+
+.kanban-card .card-job-list {
+    flex: 1;
+}
+
+.kanban-card .card-item-badge {
+    font-size: 10px;
+    border-radius: 8px;
+}
+
+.kanban-card .card-part-number {
+    font-size: 12px;
+    color: #606266;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.kanban-card .card-qty {
+    font-size: 12px;
+    color: #909399;
+    margin-bottom: 8px;
+}
+
+.kanban-card .card-footer {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.kanban-card .card-footer .btn {
+    font-size: 11px;
+    padding: 2px 8px;
+}
+
+/* 看板列颜色 */
+.kanban-column[data-status="pending_approval"] { border-top: 3px solid #409eff; }
+.kanban-column[data-status="pending_prep"] { border-top: 3px solid #e6a23c; }
+.kanban-column[data-status="prepping"] { border-top: 3px solid #67c23a; }
+.kanban-column[data-status="short"] { border-top: 3px solid #f56c6c; }
+.kanban-column[data-status="ready_pickup"] { border-top: 3px solid #909399; }
+
+/* ========== 时间线 ========== */
+.timeline {
+    position: relative;
+    padding-left: 20px;
+}
+
+.timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #e4e7ed;
+}
+
+.timeline-item {
+    position: relative;
+    padding: 0 0 20px 20px;
+}
+
+.timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 4px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #409eff;
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 2px #409eff;
+}
+
+.timeline-item .timeline-time {
+    font-size: 12px;
+    color: #909399;
+    margin-bottom: 4px;
+}
+
+.timeline-item .timeline-content {
+    font-size: 14px;
+    color: #303133;
+}
+
+/* ========== Toast ========== */
+.toast-container {
+    z-index: 9999;
+}
+
+/* ========== 加载遮罩 ========== */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9998;
+}
+
+/* ========== 响应式 ========== */
+@media (max-width: 767.98px) {
+    .kanban-board {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .kanban-column {
+        max-width: 100%;
+        min-width: 100%;
+        display: none;
+    }
+    
+    .kanban-column.active {
+        display: block;
+    }
+    
+    .login-card {
+        padding: 28px 20px;
+    }
+    
+    .card-body .row > div {
+        margin-bottom: 8px;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .login-card {
+        border-radius: 12px;
+        padding: 24px 16px;
+    }
+}
+
+/* ========== 表格 ========== */
+.table > :not(caption) > * > * {
+    vertical-align: middle;
+}
+
+.table th {
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.table td {
+    font-size: 13px;
+}
+
+/* ========== 状态标签 ========== */
+.badge-status-pending_approval { background: #409eff; }
+.badge-status-pending_prep { background: #e6a23c; }
+.badge-status-prepping { background: #67c23a; }
+.badge-status-short { background: #f56c6c; }
+.badge-status-ready_pickup { background: #909399; }
+.badge-status-completed { background: #67c23a; }
+.badge-status-rejected { background: #909399; }
+
+/* ========== 全屏模式 ========== */
+.kanban-fullscreen .navbar { display: none; }
+.kanban-fullscreen .container-fluid { max-width: 100%; padding: 0; }
+.kanban-fullscreen .kanban-toolbar { padding: 10px 0; margin: 0 20px; }
+.kanban-fullscreen .kanban-board { min-height: calc(100vh - 80px); gap: 8px; padding: 0 20px; justify-content: center; }
+.kanban-fullscreen .kanban-column { min-width: 0; max-width: none; flex: 1 1 0; }
+.kanban-fullscreen .kanban-card { padding: 16px; }
+.kanban-fullscreen .kanban-card .card-job-order { font-size: 16px; }
+.kanban-fullscreen .kanban-card .card-part-number { font-size: 14px; }
+.kanban-fullscreen .kanban-card .card-qty { font-size: 14px; }
+.kanban-fullscreen .kanban-column-header { font-size: 16px; }
+
+/* 全屏状态栏 */
+.kanban-fullscreen-status {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    padding: 6px 20px;
+    font-size: 13px;
+    z-index: 9999;
+    text-align: center;
+}
+.kanban-fullscreen .kanban-fullscreen-status { display: block; }

@@ -1,0 +1,19 @@
+services:
+  material-kanban:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: material-kanban
+    ports:
+      - "8086:5000"
+    networks:
+      - public-net
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+
+networks:
+  public-net:
+    external: true

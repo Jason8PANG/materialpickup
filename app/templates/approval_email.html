@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>审批 - 物料领取看板</title>
+    <link href="https://unpkg.com/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://unpkg.com/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <div class="container py-4" style="max-width:700px;">
+        <div id="loadingContent" class="text-center py-5">
+            <div class="spinner-border text-primary"></div>
+            <p class="mt-2">加载审批信息...</p>
+        </div>
+
+        <div id="approvalContent" class="d-none">
+            <div class="text-center mb-4">
+                <i class="fas fa-clipboard-list text-primary" style="font-size:2rem;"></i>
+                <h4 class="mt-2">领料审批</h4>
+            </div>
+
+            <!-- 基本信息 -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-white">
+                    <h6 class="mb-0">申请单 #<span id="arequestId">-</span>
+                        <small class="ms-2 text-success">总金额: <strong><span id="atotalAmount">-</span></strong></small>
+                    </h6>
+                </div>
+                <div class="card-body py-2">
+                    <div class="row g-2 small">
+                        <div class="col-6"><span class="text-muted">申请人：</span><span id="arequester">-</span></div>
+                        <div class="col-6"><span class="text-muted">申请时间：</span><span id="arequestTime">-</span></div>
+                        <div class="col-6"><span class="text-muted">站点：</span><span id="asiteref">-</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 明细表格 -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-white">
+                    <h6 class="mb-0">物料明细</h6>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-bordered mb-0 small">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>#</th>
+                                    <th>工单号</th>
+                                    <th>Part Number</th>
+                                    <th>数量</th>
+                                    <th>单价</th>
+                                    <th>行总金额</th>
+                                    <th>补料原因</th>
+                                </tr>
+                            </thead>
+                            <tbody id="aitemsBody">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 审批操作 -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">审批意见</label>
+                        <textarea class="form-control" id="approveComment" rows="3" placeholder="输入审批意见（驳回时必填）"></textarea>
+                    </div>
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                        <button class="btn btn-success btn-lg px-5" onclick="doApprove()">
+                            <i class="fas fa-check me-2"></i>批准通过
+                        </button>
+                        <button class="btn btn-danger btn-lg px-5" onclick="doReject()">
+                            <i class="fas fa-times me-2"></i>驳回
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="resultMsg" class="d-none">
+                <div class="card shadow-sm text-center py-5">
+                    <div class="card-body">
+                        <div id="resultIcon" style="font-size:3rem;"></div>
+                        <h4 class="mt-3" id="resultTitle"></h4>
+                        <p class="text-muted" id="resultDesc"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="errorContent" class="d-none text-center py-5">
+            <div class="alert alert-danger">
+                <i class="fas fa-exclamation-triangle me-2"></i>
+                <span id="errorText">令牌无效或已过期</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    const TOKEN = '{{ token }}';
+
+    document.addEventListener('DOMContentLoaded', function () {
+        fetch('/api/approve/token/' + TOKEN)
+            .then(r => r.json())
+            .then(resp => {
+                if (!resp.success) {
+                    document.getElementById('loadingContent').classList.add('d-none');
+                    document.getElementById('errorContent').classList.remove('d-none');
+                    document.getElementById('errorText').textContent = resp.message;
+                    return;
+                }
+                const req = resp.request;
+                document.getElementById('arequestId').textContent = req.id;
+                document.getElementById('arequester').textContent = req.requester;
+                document.getElementById('arequestTime').textContent = req.request_time || '-';
+                document.getElementById('asiteref').textContent = req.siteref || '-';
+
+                // 渲染明细
+                const tbody = document.getElementById('aitemsBody');
+                const items = req.items || [];
+                if (items.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无明细</td></tr>';
+                } else {
+                    tbody.innerHTML = '';
+                    var totalAmt = 0;
+                    items.forEach(function(item, i) {
+                        var price = item.price != null ? parseFloat(item.price).toFixed(4) : '-';
+                        var lineTotal = item.total_amount != null ? parseFloat(item.total_amount).toFixed(2) : (item.price && item.quantity ? (parseFloat(item.price) * parseFloat(item.quantity)).toFixed(2) : '-');
+                        if (lineTotal !== '-') totalAmt += parseFloat(lineTotal);
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td class="text-center">${i+1}</td>
+                            <td>${escapeHtml(item.job_order)}</td>
+                            <td>${escapeHtml(item.part_number)}</td>
+                            <td class="text-end">${item.quantity}</td>
+                            <td class="text-end">${price}</td>
+                            <td class="text-end"><strong>${lineTotal}</strong></td>
+                            <td>${item.replenish_reason || '-'}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                    document.getElementById('atotalAmount').textContent = totalAmt.toFixed(2);
+                }
+
+                document.getElementById('loadingContent').classList.add('d-none');
+                document.getElementById('approvalContent').classList.remove('d-none');
+            })
+            .catch(err => {
+                document.getElementById('loadingContent').classList.add('d-none');
+                document.getElementById('errorContent').classList.remove('d-none');
+                document.getElementById('errorText').textContent = '加载失败: ' + err.message;
+            });
+    });
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function doAction(action) {
+        const comment = document.getElementById('approveComment').value.trim();
+        if (action === 'reject' && !comment) {
+            alert('驳回时必须填写审批意见');
+            return;
+        }
+
+        // 禁用按钮防止重复提交
+        document.querySelectorAll('.btn-success, .btn-danger').forEach(function(b) { b.disabled = true; });
+        document.getElementById('approveComment').disabled = true;
+
+        // 显示加载状态
+        document.getElementById('approvalContent').classList.add('d-none');
+
+        fetch('/api/approve/token/' + TOKEN + '/action', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: action, comment: comment})
+        })
+        .then(r => r.json())
+        .then(resp => {
+            document.getElementById('resultMsg').classList.remove('d-none');
+            var icon = document.getElementById('resultIcon');
+            var title = document.getElementById('resultTitle');
+            var desc = document.getElementById('resultDesc');
+            if (resp.success) {
+                icon.innerHTML = '<i class="fas fa-check-circle text-success"></i>';
+                title.textContent = action === 'approve' ? '已批准通过' : '已驳回';
+                title.className = 'mt-3 text-success';
+                desc.textContent = action === 'approve' ? '审批意见已提交，申请人将收到通知。' : '已驳回该申请，申请人将收到通知。';
+            } else {
+                icon.innerHTML = '<i class="fas fa-exclamation-circle text-warning"></i>';
+                title.textContent = '操作未完成';
+                title.className = 'mt-3 text-warning';
+                desc.textContent = resp.message || '操作失败，请重试或联系管理员。';
+            }
+        })
+        .catch(err => {
+            document.getElementById('resultMsg').classList.remove('d-none');
+            var icon = document.getElementById('resultIcon');
+            var title = document.getElementById('resultTitle');
+            icon.innerHTML = '<i class="fas fa-times-circle text-danger"></i>';
+            title.textContent = '操作失败';
+            title.className = 'mt-3 text-danger';
+            document.getElementById('resultDesc').textContent = '网络错误: ' + err.message;
+        });
+    }
+
+    function doApprove() { doAction('approve'); }
+    function doReject() { doAction('reject'); }
+    </script>
+</body>
+</html>

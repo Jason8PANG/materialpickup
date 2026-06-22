@@ -1,0 +1,510 @@
+{% extends "base.html" %}
+{% block title %}申请单详情 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-12">
+        <div id="detailLoading" class="text-center py-5">
+            <div class="spinner-border text-primary"></div>
+            <p class="mt-2">加载中...</p>
+        </div>
+        <div id="detailContent" class="d-none">
+            <!-- 基本信息 -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-file-alt me-2 text-primary"></i>
+                        申请单 #<span id="detailId"></span>
+                        <small class="ms-3 text-success">
+                            <i class="fas fa-cny me-1"></i>总金额: <strong><span id="detailTotalAmount">-</span></strong>
+                        </small>
+                    </h5>
+                    <div>
+                        <span class="badge bg-info me-2" id="detailSite">-</span>
+                        <span class="badge fs-6 px-3 py-2" id="detailStatus"></span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label class="text-muted small">申请人</label>
+                            <p class="fw-bold mb-0" id="detailRequester">-</p>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">申请时间</label>
+                            <p class="mb-0" id="detailRequestTime">-</p>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">审批人</label>
+                            <p class="mb-0" id="detailSupervisor">-</p>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">审批时间</label>
+                            <p class="mb-0" id="detailApproveTime">-</p>
+                        </div>
+                        <div class="col-12">
+                            <label class="text-muted small">审批意见</label>
+                            <p class="mb-0" id="detailApproveComment">-</p>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">备料员</label>
+                            <p class="mb-0" id="detailWarehouseOperator">-</p>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">缺料原因</label>
+                            <div class="d-flex align-items-center gap-2">
+                                <p class="mb-0" id="detailShortReason" style="display:inline">-</p>
+                                <input type="text" class="form-control form-control-sm d-none" id="editShortReason" placeholder="输入缺料原因">
+                                <button class="btn btn-outline-primary btn-sm d-none" id="saveShortReasonBtn" onclick="saveShortReason()"><i class="fas fa-save"></i></button>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">缺料时间</label>
+                            <p class="mb-0" id="detailShortTime">-</p>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="text-muted small">签字人/时间</label>
+                            <p class="mb-0" id="detailSignInfo">-</p>
+                        </div>
+                        <div class="col-12" id="signatureImageArea" style="display:none">
+                            <label class="text-muted small">签字图片</label>
+                            <div><img id="detailSignatureImage" src="" alt="签字" style="max-height:80px;border:1px solid #ddd;border-radius:4px;padding:4px"></div>
+                        </div>
+                        <div class="col-12">
+                            <label class="text-muted small">备注</label>
+                            <p class="mb-0" id="detailRemark">-</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 明细表格 -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-white py-3">
+                    <h5 class="mb-0">
+                        <i class="fas fa-list me-2 text-success"></i>
+                        物料明细 <span class="badge bg-secondary ms-1" id="detailItemCount">0</span>
+                    </h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover table-bordered mb-0" id="itemsDetailTable">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width:40px">#</th>
+                                    <th>工单号码</th>
+                                    <th>Part Number</th>
+                                    <th style="width:100px">数量</th>
+                                    <th style="width:100px">单价</th>
+                                    <th style="width:110px">总金额</th>
+                                    <th style="width:90px">库存量</th>
+                                    <th>补料原因</th>
+                                    <th style="min-width:160px">缺料原因</th>
+                                    <th style="width:50px"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="itemsDetailBody">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 操作区 -->
+            <div id="actionArea" class="d-none mb-3">
+                <div class="card shadow-sm">
+                    <div class="card-body" id="actionButtons">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 操作确认弹窗 -->
+            <div class="modal fade" id="actionModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="actionModalTitle">操作确认</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="actionModalBody">
+                            <p id="actionModalText">确认执行此操作吗？</p>
+                            <div id="actionModalExtra" class="d-none">
+                                <div class="mb-3">
+                                    <label class="form-label" id="extraLabel"></label>
+                                    <textarea class="form-control" id="extraInput" rows="3"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                            <button type="button" class="btn btn-primary" id="actionConfirmBtn">确认</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 签字板弹窗 -->
+            <div class="modal fade" id="signatureModal" tabindex="-1" data-bs-backdrop="static">
+                <div class="modal-dialog modal-md modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="fas fa-pen me-2"></i>签字板</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body text-center">
+                            <p class="text-muted small mb-2">请在下方方框内书写您的签名</p>
+                            <canvas id="signatureCanvas" width="450" height="200"
+                                style="border:2px solid #ccc;border-radius:8px;cursor:crosshair;touch-action:none;max-width:100%">
+                            </canvas>
+                            <div class="mt-2 d-flex justify-content-center gap-2">
+                                <button class="btn btn-outline-secondary btn-sm" onclick="clearSignature()">
+                                    <i class="fas fa-eraser me-1"></i>清除
+                                </button>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                            <button type="button" class="btn btn-primary" id="saveSignatureBtn" onclick="saveSignature()">
+                                <i class="fas fa-check me-1"></i>确认签字
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 指定备料员弹窗 -->
+            <div class="modal fade" id="assignWorkerModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">指定备料员</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">备料员</label>
+                                <input type="text" class="form-control" id="workerInput" placeholder="输入备料员用户名">
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                            <button type="button" class="btn btn-primary" id="assignWorkerConfirmBtn">确定</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 日志时间线 -->
+            <div class="card shadow-sm">
+                <div class="card-header bg-white py-3">
+                    <h5 class="mb-0"><i class="fas fa-history me-2 text-info"></i>操作日志</h5>
+                </div>
+                <div class="card-body">
+                    <div id="logTimeline" class="timeline">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const REQUEST_ID = {{ request_id }};
+let userRole = '{{ session.user.role }}';
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadRequestDetail();
+});
+
+function loadRequestDetail() {
+    apiGet('/api/requests/' + REQUEST_ID, function (resp) {
+        document.getElementById('detailLoading').classList.add('d-none');
+        document.getElementById('detailContent').classList.remove('d-none');
+        renderDetail(resp.request, resp.logs);
+        renderItems(resp.request.items || []);
+        renderActions(resp.request);
+        renderLogs(resp.logs);
+    }, function (err) {
+        document.getElementById('detailLoading').innerHTML =
+            '<p class="text-danger">加载失败: ' + (err.message || '未知错误') + '</p>';
+    });
+}
+
+function renderItems(items) {
+    const tbody = document.getElementById('itemsDetailBody');
+    const countEl = document.getElementById('detailItemCount');
+    if (!items || items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">暂无明细</td></tr>';
+        if (countEl) countEl.textContent = '0';
+        return;
+    }
+
+    if (countEl) countEl.textContent = items.length;
+    tbody.innerHTML = '';
+    items.forEach(function (item, i) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="text-center">${i + 1}</td>
+            <td><strong>${escapeHtml(item.job_order)}</strong></td>
+            <td>${escapeHtml(item.part_number)}</td>
+            <td class="text-end">${item.quantity}</td>
+            <td class="text-end">${item.price != null ? item.price : '-'}</td>
+            <td class="text-end"><strong>${item.total_amount != null ? item.total_amount : '-'}</strong></td>
+            <td class="text-end">${item.stock_qty != null ? item.stock_qty : '-'}</td>
+            <td>${item.replenish_reason || '-'}${item.replenish_reason_other ? ' (' + escapeHtml(item.replenish_reason_other) + ')' : ''}</td>
+            <td>
+                <div class="d-flex gap-1 align-items-center">
+                    <input type="text" class="form-control form-control-sm" id="short_reason_${item.id}" value="${escapeHtml(item.short_reason || '')}" placeholder="缺料原因" style="min-width:120px">
+                    <button class="btn btn-sm btn-outline-success" onclick="saveItemShortReason(${item.id}, ${REQUEST_ID})" title="保存"><i class="fas fa-save"></i></button>
+                </div>
+            </td>
+            <td class="text-center" id="short_status_${item.id}">${item.short_reason ? '<i class="fas fa-check text-success"></i>' : '-'}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+/* ========== 按行保存缺料原因 ========== */
+function saveItemShortReason(itemId, requestId) {
+    var input = document.getElementById('short_reason_' + itemId);
+    if (!input) return;
+    var reason = input.value.trim();
+    if (!reason) {
+        showToast('error', '请输入缺料原因');
+        return;
+    }
+
+    apiPut('/api/requests/' + requestId + '/items/' + itemId + '/short', {short_reason: reason},
+        function (resp) {
+            showToast('success', '缺料原因已保存');
+            var statusEl = document.getElementById('short_status_' + itemId);
+            if (statusEl) statusEl.innerHTML = '<i class="fas fa-check text-success"></i>';
+        },
+        function (err) {
+            showToast('error', err.message || '保存失败');
+        }
+    );
+}
+
+/* ========== 缺料原因编辑 ========== */
+function enableEditShortReason() {
+    var statusEl = document.getElementById('detailStatus');
+    var status = statusEl ? statusEl.textContent.trim() : '';
+    // 只有缺料状态或备料中状态允许编辑
+    if (status.indexOf('缺料') === -1) return;
+
+    document.getElementById('detailShortReason').style.display = 'none';
+    var editInput = document.getElementById('editShortReason');
+    editInput.classList.remove('d-none');
+    editInput.value = document.getElementById('detailShortReason').textContent === '-' ? '' : document.getElementById('detailShortReason').textContent;
+    document.getElementById('saveShortReasonBtn').classList.remove('d-none');
+}
+
+function saveShortReason() {
+    var reason = document.getElementById('editShortReason').value.trim();
+    if (!reason) {
+        showToast('error', '请输入缺料原因');
+        return;
+    }
+
+    apiPost('/api/requests/' + REQUEST_ID + '/short', {short_reason: reason},
+        function (resp) {
+            showToast('success', '缺料原因已更新');
+            document.getElementById('detailShortReason').textContent = reason;
+            document.getElementById('detailShortReason').style.display = 'inline';
+            document.getElementById('editShortReason').classList.add('d-none');
+            document.getElementById('saveShortReasonBtn').classList.add('d-none');
+        },
+        function (err) {
+            showToast('error', err.message || '保存失败');
+        }
+    );
+}
+
+/* ========== 操作功能（详情页版） ========== */
+let currentAction = null;
+let currentRequestId = null;
+let actionModal = null;
+
+document.addEventListener('DOMContentLoaded', function () {
+    actionModal = new bootstrap.Modal(document.getElementById('actionModal'));
+});
+
+function doAction(requestId, action) {
+    currentRequestId = requestId;
+    currentAction = action;
+
+    const actionNames = {
+        'approve': '审批通过',
+        'reject': '驳回',
+        'start_prep': '开始备料',
+        'complete_prep': '完成备料',
+        'short': '缺料登记',
+        'sign': '签字取料'
+    };
+
+    document.getElementById('actionModalTitle').textContent = actionNames[action] || action;
+    document.getElementById('actionModalText').textContent = '确认' + (actionNames[action] || action) + '此单据吗？';
+    document.getElementById('actionModalExtra').classList.add('d-none');
+
+    if (action === 'sign') {
+        // 签字操作 → 打开签字板
+        openSignaturePad(requestId);
+        return;
+    } else if (action === 'reject') {
+        document.getElementById('actionModalExtra').classList.remove('d-none');
+        document.getElementById('extraLabel').textContent = '驳回意见（必填）';
+        document.getElementById('extraInput').value = '';
+        document.getElementById('extraInput').placeholder = '请填写驳回原因';
+    } else if (action === 'short') {
+        document.getElementById('actionModalExtra').classList.remove('d-none');
+        document.getElementById('extraLabel').textContent = '缺料原因（必填）';
+        document.getElementById('extraInput').value = '';
+        document.getElementById('extraInput').placeholder = '请填写缺料原因';
+    }
+
+    document.getElementById('actionConfirmBtn').onclick = confirmAction;
+    actionModal.show();
+}
+
+function confirmAction() {
+    const extraInput = document.getElementById('extraInput');
+    const comment = extraInput ? extraInput.value.trim() : '';
+
+    if ((currentAction === 'reject' || currentAction === 'short') && !comment) {
+        showToast('error', '请填写必要信息');
+        return;
+    }
+
+    actionModal.hide();
+
+    const urlMap = {
+        'approve': '/api/requests/' + currentRequestId + '/approve',
+        'reject': '/api/requests/' + currentRequestId + '/reject',
+        'start_prep': '/api/requests/' + currentRequestId + '/start-prep',
+        'complete_prep': '/api/requests/' + currentRequestId + '/complete-prep',
+        'restore_from_short': '/api/requests/' + currentRequestId + '/restore-from-short',
+        'cancel': '/api/requests/' + currentRequestId + '/cancel',
+        'short': '/api/requests/' + currentRequestId + '/short',
+        'sign': '/api/requests/' + currentRequestId + '/sign'
+    };
+
+    const dataMap = {
+        'approve': {comment: comment},
+        'reject': {comment: comment},
+        'short': {short_reason: comment}
+    };
+
+    apiPost(urlMap[currentAction], dataMap[currentAction] || {}, function (resp) {
+        showToast('success', resp.message || '操作成功');
+        // 刷新详情页
+        setTimeout(function () { window.location.reload(); }, 1000);
+    }, function (err) {
+        showToast('error', err.message || '操作失败');
+    });
+}
+
+/* ========== 指定备料员 ========== */
+function showAssignWorker(requestId) {
+    currentRequestId = requestId;
+    const modal = new bootstrap.Modal(document.getElementById('assignWorkerModal'));
+    document.getElementById('workerInput').value = '';
+    document.getElementById('assignWorkerConfirmBtn').onclick = function () {
+        var worker = document.getElementById('workerInput').value.trim();
+        if (!worker) {
+            showToast('error', '请输入备料员用户名');
+            return;
+        }
+        modal.hide();
+        apiPut('/api/requests/' + requestId + '/assign-worker', {warehouse_operator: worker},
+            function (resp) {
+                showToast('success', resp.message || '已指定');
+                setTimeout(function () { window.location.reload(); }, 1000);
+            },
+            function (err) {
+                showToast('error', err.message || '操作失败');
+            }
+        );
+    };
+    modal.show();
+}
+
+/* ========== 签字板 ========== */
+let _signatureRequestId = null;
+let _sigCanvas = null;
+let _sigCtx = null;
+let _isDrawing = false;
+
+function initSignatureCanvas() {
+    _sigCanvas = document.getElementById('signatureCanvas');
+    if (!_sigCanvas) return;
+    _sigCtx = _sigCanvas.getContext('2d');
+    _sigCtx.strokeStyle = '#000';
+    _sigCtx.lineWidth = 2;
+    _sigCtx.lineCap = 'round';
+    _sigCtx.lineJoin = 'round';
+
+    // 鼠标事件
+    _sigCanvas.onmousedown = function (e) { _isDrawing = true; _sigCtx.beginPath(); _sigCtx.moveTo(e.offsetX, e.offsetY); };
+    _sigCanvas.onmousemove = function (e) { if (!_isDrawing) return; _sigCtx.lineTo(e.offsetX, e.offsetY); _sigCtx.stroke(); };
+    _sigCanvas.onmouseup = function () { _isDrawing = false; };
+    _sigCanvas.onmouseleave = function () { _isDrawing = false; };
+
+    // 触摸事件（移动端）
+    _sigCanvas.ontouchstart = function (e) { e.preventDefault(); var rect = _sigCanvas.getBoundingClientRect(); var t = e.touches[0]; _isDrawing = true; _sigCtx.beginPath(); _sigCtx.moveTo(t.clientX - rect.left, t.clientY - rect.top); };
+    _sigCanvas.ontouchmove = function (e) { e.preventDefault(); if (!_isDrawing) return; var rect = _sigCanvas.getBoundingClientRect(); var t = e.touches[0]; _sigCtx.lineTo(t.clientX - rect.left, t.clientY - rect.top); _sigCtx.stroke(); };
+    _sigCanvas.ontouchend = function (e) { e.preventDefault(); _isDrawing = false; };
+}
+
+function openSignaturePad(requestId) {
+    _signatureRequestId = requestId;
+    initSignatureCanvas();
+    clearSignature();
+    var modal = new bootstrap.Modal(document.getElementById('signatureModal'));
+    modal.show();
+}
+
+function clearSignature() {
+    if (!_sigCanvas || !_sigCtx) return;
+    _sigCtx.clearRect(0, 0, _sigCanvas.width, _sigCanvas.height);
+    // 绘制虚线引导框
+    _sigCtx.setLineDash([5, 5]);
+    _sigCtx.strokeStyle = '#ccc';
+    _sigCtx.lineWidth = 1;
+    _sigCtx.strokeRect(10, 10, _sigCanvas.width - 20, _sigCanvas.height - 20);
+    _sigCtx.setLineDash([]);
+    _sigCtx.strokeStyle = '#000';
+    _sigCtx.lineWidth = 2;
+}
+
+function saveSignature() {
+    if (!_sigCanvas) return;
+    var dataUrl = _sigCanvas.toDataURL('image/png');
+    // 检查是否为空签字（全白）
+    var pixels = _sigCtx.getImageData(0, 0, _sigCanvas.width, _sigCanvas.height).data;
+    var hasDrawing = false;
+    for (var i = 3; i < pixels.length; i += 4) {
+        if (pixels[i] > 0) { hasDrawing = true; break; }
+    }
+    if (!hasDrawing) {
+        showToast('error', '请在签字板上签名');
+        return;
+    }
+
+    // 关闭签字板
+    var sigModal = bootstrap.Modal.getInstance(document.getElementById('signatureModal'));
+    if (sigModal) sigModal.hide();
+
+    // 调用 sign API 保存
+    apiPost('/api/requests/' + _signatureRequestId + '/sign', {signature_data: dataUrl},
+        function (resp) {
+            showToast('success', '签字确认成功');
+            setTimeout(function () { window.location.reload(); }, 1000);
+        },
+        function (err) {
+            showToast('error', err.message || '签字失败');
+        }
+    );
+}
+</script>
+{% endblock %}

@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}记录查询 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3">
+        <div class="row align-items-center">
+            <div class="col-md-2">
+                <h5 class="mb-0"><i class="fas fa-table me-2 text-primary"></i>记录查询</h5>
+            </div>
+            <div class="col-md-10 mt-2 mt-md-0">
+                <div class="row g-2 align-items-end">
+                    <div class="col-3">
+                        <label class="form-label small mb-1">创建时间起</label>
+                        <input type="date" class="form-control form-control-sm" id="dateFrom">
+                    </div>
+                    <div class="col-3">
+                        <label class="form-label small mb-1">创建时间止</label>
+                        <input type="date" class="form-control form-control-sm" id="dateTo">
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1">&nbsp;</label>
+                        <button class="btn btn-primary btn-sm w-100" onclick="loadRecords()">
+                            <i class="fas fa-search me-1"></i>查询
+                        </button>
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1">&nbsp;</label>
+                        <button class="btn btn-success btn-sm w-100" onclick="exportCSV()">
+                            <i class="fas fa-file-csv me-1"></i>导出CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive" style="max-height:75vh;overflow-y:auto;">
+            <table class="table table-bordered table-hover table-sm mb-0" style="font-size:12px;white-space:nowrap;">
+                <thead class="table-dark sticky-top" style="position:sticky;top:0;">
+                    <tr>
+                        <th>单号</th>
+                        <th>申请人</th>
+                        <th>创建时间</th>
+                        <th>状态</th>
+                        <th>审批人</th>
+                        <th>审批时间</th>
+                        <th>备料人</th>
+                        <th>取料人</th>
+                        <th>取料时间</th>
+                        <th>工单号</th>
+                        <th>物料</th>
+                        <th>数量</th>
+                        <th>库存</th>
+                        <th>单价</th>
+                        <th>总金额</th>
+                        <th>缺料原因</th>
+                        <th>站点</th>
+                    </tr>
+                </thead>
+                <tbody id="recordsBody">
+                    <tr><td colspan="17" class="text-center text-muted py-4">请输入时间范围后点击查询</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+        <small class="text-muted" id="recordCount">共 0 条</small>
+        <nav id="recordPagination" class="d-none">
+            <ul class="pagination pagination-sm mb-0"></ul>
+        </nav>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let recordsPage = 1;
+
+document.addEventListener('DOMContentLoaded', function () {
+    // 默认最近7天
+    var now = new Date();
+    var weekAgo = new Date(now);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    document.getElementById('dateFrom').value = weekAgo.toISOString().slice(0,10);
+    document.getElementById('dateTo').value = now.toISOString().slice(0,10);
+    loadRecords();
+});
+
+function loadRecords() {
+    var dateFrom = document.getElementById('dateFrom').value;
+    var dateTo = document.getElementById('dateTo').value;
+    var url = '/api/records?page=' + recordsPage + '&size=100';
+    if (dateFrom) url += '&date_from=' + dateFrom;
+    if (dateTo) url += '&date_to=' + dateTo;
+
+    apiGet(url, function (resp) {
+        renderRecords(resp);
+    }, function (err) {
+        showToast('error', err.message || '查询失败');
+    });
+}
+
+function renderRecords(resp) {
+    var tbody = document.getElementById('recordsBody');
+    var pagination = document.getElementById('recordPagination');
+    var countEl = document.getElementById('recordCount');
+
+    countEl.textContent = '共 ' + resp.total + ' 条记录';
+
+    if (!resp.data || resp.data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted py-4">无数据</td></tr>';
+        pagination.classList.add('d-none');
+        return;
+    }
+
+    tbody.innerHTML = '';
+    resp.data.forEach(function (row) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><a href="/request/${row.id}">${row.id}</a></td>
+            <td>${escapeHtml(row.requester)}</td>
+            <td>${row.request_time || '-'}</td>
+            <td><span class="badge ${statusColor(row.status)}">${row.status_label}</span></td>
+            <td>${escapeHtml(row.supervisor || '-')}</td>
+            <td>${row.approve_time || '-'}</td>
+            <td>${escapeHtml(row.warehouse_operator || '-')}</td>
+            <td>${escapeHtml(row.signer || '-')}</td>
+            <td>${row.sign_time || '-'}</td>
+            <td>${escapeHtml(row.job_order || '-')}</td>
+            <td>${escapeHtml(row.part_number || '-')}</td>
+            <td class="text-end">${row.quantity != null ? row.quantity : '-'}</td>
+            <td class="text-end">${row.stock_qty != null ? row.stock_qty : '-'}</td>
+            <td class="text-end">${row.price != null ? row.price : '-'}</td>
+            <td class="text-end"><strong>${row.total_amount != null ? row.total_amount : '-'}</strong></td>
+            <td>${escapeHtml(row.item_short_reason || row.short_reason || '-')}</td>
+            <td>${row.siteref || '-'}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+
+    // 分页
+    var totalPages = resp.total_pages || 1;
+    renderPagination(pagination, resp.page, totalPages, function (page) {
+        recordsPage = page;
+        loadRecords();
+    });
+}
+
+function statusColor(status) {
+    var colors = {
+        'pending_approval': 'bg-primary', 'rejected': 'bg-secondary',
+        'pending_prep': 'bg-warning text-dark', 'prepping': 'bg-success',
+        'short': 'bg-danger', 'ready_pickup': 'bg-secondary', 'completed': 'bg-success'
+    };
+    return colors[status] || 'bg-secondary';
+}
+
+function exportCSV() {
+    var dateFrom = document.getElementById('dateFrom').value;
+    var dateTo = document.getElementById('dateTo').value;
+    var url = '/api/records?page=1&size=100000';
+    if (dateFrom) url += '&date_from=' + dateFrom;
+    if (dateTo) url += '&date_to=' + dateTo;
+
+    showToast('info', '正在导出...');
+    apiGet(url, function (resp) {
+        if (!resp.data || resp.data.length === 0) {
+            showToast('error', '无数据可导出');
+            return;
+        }
+        var headers = ['单号','申请人','创建时间','状态','审批人','审批时间','备料人','取料人','取料时间','工单号','物料','数量','库存','单价','总金额','缺料原因','站点'];
+        var csv = '\uFEFF' + headers.join(',') + '\n';
+        resp.data.forEach(function (row) {
+            var line = [
+                row.id, row.requester, row.request_time || '', row.status_label,
+                row.supervisor || '', row.approve_time || '', row.warehouse_operator || '',
+                row.signer || '', row.sign_time || '', row.job_order || '',
+                row.part_number || '', row.quantity != null ? row.quantity : '',
+                row.stock_qty != null ? row.stock_qty : '', row.price != null ? row.price : '',
+                row.total_amount != null ? row.total_amount : '',
+                row.item_short_reason || row.short_reason || '', row.siteref || ''
+            ];
+            csv += line.map(function (v) {
+                var s = String(v);
+                if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }).join(',') + '\n';
+        });
+
+        var blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+        var link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = '物料领取记录_' + (dateFrom || 'all') + '.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+        showToast('success', '导出成功，共 ' + resp.data.length + ' 行');
+    }, function (err) {
+        showToast('error', err.message || '导出失败');
+    });
+}
+</script>
+{% endblock %}

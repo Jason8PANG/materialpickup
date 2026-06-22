@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+需求文档/
+scripts/
+flask_session/
+.idea/
+*.md
+审查报告.md
+复审报告.md
+验证报告.md

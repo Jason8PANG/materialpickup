@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}账号管理 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-users-cog me-2 text-primary"></i>账号角色映射管理</h5>
+        <button class="btn btn-primary btn-sm" onclick="showAddModal()">
+            <i class="fas fa-plus me-1"></i>新增
+        </button>
+    </div>
+    <div class="card-body">
+        <!-- 筛选栏 -->
+        <div class="row g-2 mb-3">
+            <div class="col-auto">
+                <select class="form-select form-select-sm" id="filterSite" onchange="loadMappings()">
+                    <option value="">全部站点</option>
+                    <option value="310">苏州工厂 (310)</option>
+                    <option value="410">槟城工厂 (410)</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <select class="form-select form-select-sm" id="filterRole" onchange="loadMappings()">
+                    <option value="">全部角色</option>
+                    <option value="admin">管理员</option>
+                    <option value="requester">领料员</option>
+                    <option value="supervisor">主管</option>
+                    <option value="warehouse">仓库</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover table-bordered">
+                <thead class="table-light">
+                    <tr>
+                        <th>ID</th>
+                        <th>域账号</th>
+                        <th>显示名称</th>
+                        <th>角色</th>
+                        <th>所属站点</th>
+                        <th>邮箱</th>
+                        <th>状态</th>
+                        <th>备注</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="mappingTableBody">
+                    <tr><td colspan="9" class="text-center text-muted">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 新增/编辑弹窗 -->
+<div class="modal fade" id="mappingModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="mappingModalTitle">新增账号</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId" value="">
+                <div class="mb-3">
+                    <label class="form-label">域账号 <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="fDomainAccount" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">显示名称</label>
+                    <input type="text" class="form-control" id="fDisplayName">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">角色 <span class="text-danger">*</span></label>
+                    <select class="form-select" id="fRole" onchange="toggleSiteField()">
+                        <option value="requester">领料员</option>
+                        <option value="supervisor">主管</option>
+                        <option value="warehouse">仓库</option>
+                        <option value="admin">管理员</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">所属站点 <span class="text-danger" id="siteRequired">*</span></label>
+                    <select class="form-select" id="fSiteref">
+                        <option value="">请选择站点</option>
+                        <option value="310">苏州工厂 (310)</option>
+                        <option value="410">槟城工厂 (410)</option>
+                    </select>
+                    <small class="text-muted" id="siteAdminHint">管理员可选"跨站"（不选择站点）</small>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">邮箱</label>
+                    <input type="email" class="form-control" id="fEmail">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">状态</label>
+                    <select class="form-select" id="fIsActive">
+                        <option value="1">启用</option>
+                        <option value="0">禁用</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">备注</label>
+                    <input type="text" class="form-control" id="fRemark">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="saveMappingBtn">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    loadMappings();
+});
+</script>
+{% endblock %}

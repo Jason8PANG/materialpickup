@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}看板 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="kanban-toolbar">
+    <div class="row align-items-center">
+        <div class="col-md-6">
+            <h4 class="mb-0"><i class="fas fa-columns me-2"></i>物料领取看板</h4>
+        </div>
+        <div class="col-md-6 text-md-end mt-2 mt-md-0">
+            <button class="btn btn-outline-primary btn-sm me-2" onclick="refreshKanban()">
+                <i class="fas fa-sync me-1"></i>刷新
+            </button>
+            <button class="btn btn-outline-success btn-sm me-2" id="fullscreenBtn" onclick="toggleFullscreen()">
+                <i class="fas fa-expand me-1"></i><span>全屏</span>
+            </button>
+            <span class="badge bg-secondary" id="totalCount">0 张</span>
+        </div>
+    </div>
+</div>
+
+<!-- 手机端状态筛选 -->
+<div class="d-md-none mb-3">
+    <select class="form-select" id="mobileStatusFilter" onchange="filterMobileKanban(this.value)">
+        <option value="all">全部状态</option>
+    </select>
+</div>
+
+<div id="kanbanBoard" class="kanban-board">
+    <!-- 看板列由 JS 动态渲染 -->
+</div>
+
+<!-- 全屏状态栏 -->
+<div class="kanban-fullscreen-status">
+    <span><i class="fas fa-map-marker-alt me-1"></i><span id="statusSiteName">{{ session.user.siteref }}</span></span>
+    <span class="ms-3">距下次刷新: <span id="countdownDisplay">30</span>s</span>
+</div>
+
+<!-- 操作确认弹窗 -->
+<div class="modal fade" id="actionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="actionModalTitle">操作确认</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="actionModalBody">
+                <p id="actionModalText">确认执行此操作吗？</p>
+                <div id="actionModalExtra" class="d-none">
+                    <div class="mb-3">
+                        <label class="form-label" id="extraLabel"></label>
+                        <textarea class="form-control" id="extraInput" rows="3"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="actionConfirmBtn">确认</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 指定备料员弹窗 -->
+<div class="modal fade" id="assignWorkerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">指定备料员</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">备料员</label>
+                    <input type="text" class="form-control" id="workerInput" placeholder="输入备料员用户名">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="assignWorkerConfirmBtn">确定</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let currentAction = null;
+let currentRequestId = null;
+let actionModal = null;
+let userRole = '{{ session.user.role }}';
+
+document.addEventListener('DOMContentLoaded', function () {
+    actionModal = new bootstrap.Modal(document.getElementById('actionModal'));
+    loadKanban();
+});
+
+// 全屏模式
+let fullscreenTimer = null;
+let countdownInterval = null;
+let countdown = 30;
+
+function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(function (err) {
+            showToast('无法进入全屏模式: ' + err.message, 'danger');
+        });
+    } else {
+        document.exitFullscreen().catch(function (err) {
+            showToast('退出全屏失败: ' + err.message, 'danger');
+        });
+    }
+}
+
+function handleFullscreenChange() {
+    if (document.fullscreenElement) {
+        document.body.classList.add('kanban-fullscreen');
+        updateFullscreenBtn(true);
+        startAutoRefresh();
+    } else {
+        document.body.classList.remove('kanban-fullscreen');
+        updateFullscreenBtn(false);
+        stopAutoRefresh();
+    }
+}
+
+function updateFullscreenBtn(isFullscreen) {
+    var btn = document.getElementById('fullscreenBtn');
+    if (isFullscreen) {
+        btn.innerHTML = '<i class="fas fa-compress me-1"></i><span>退出全屏</span>';
+        btn.className = 'btn btn-outline-warning btn-sm me-2';
+    } else {
+        btn.innerHTML = '<i class="fas fa-expand me-1"></i><span>全屏</span>';
+        btn.className = 'btn btn-outline-success btn-sm me-2';
+    }
+}
+
+function startAutoRefresh() {
+    countdown = 30;
+    updateCountdownDisplay();
+    stopAutoRefresh();
+    fullscreenTimer = setInterval(function () {
+        loadKanban();
+        countdown = 30;
+        updateCountdownDisplay();
+    }, 30000);
+    countdownInterval = setInterval(function () {
+        countdown--;
+        if (countdown < 0) countdown = 0;
+        updateCountdownDisplay();
+    }, 1000);
+}
+
+function stopAutoRefresh() {
+    if (fullscreenTimer) {
+        clearInterval(fullscreenTimer);
+        fullscreenTimer = null;
+    }
+    if (countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+    }
+}
+
+function updateCountdownDisplay() {
+    var el = document.getElementById('countdownDisplay');
+    if (el) el.textContent = countdown;
+}
+
+document.addEventListener('fullscreenchange', handleFullscreenChange);
+document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+</script>
+{% endblock %}

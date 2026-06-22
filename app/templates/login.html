@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>物料领取看板 - 登录</title>
+    <link href="https://unpkg.com/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://unpkg.com/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body class="login-body">
+    <div class="login-container">
+        <div class="login-card">
+            <div class="login-header">
+                <div class="login-logo-wrapper">
+                    <i class="fas fa-clipboard-list login-icon"></i>
+                </div>
+                <h3 class="login-title">物料领取看板系统</h3>
+                <p class="login-subtitle">Material Requisition Kanban System</p>
+            </div>
+            <form id="loginForm" onsubmit="return handleLogin(event)">
+                <div class="mb-3">
+                    <div class="login-input-group">
+                        <i class="fas fa-user login-input-icon"></i>
+                        <input type="text" class="login-input" id="username"
+                               placeholder="请输入用户名" required autofocus>
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <div class="login-input-group">
+                        <i class="fas fa-lock login-input-icon"></i>
+                        <input type="password" class="login-input" id="password"
+                               placeholder="请输入密码" required>
+                    </div>
+                </div>
+                <div id="loginError" class="alert alert-danger d-none py-2"></div>
+                <button type="submit" class="login-btn" id="loginBtn">
+                    <i class="fas fa-sign-in-alt me-2"></i>登 录
+                </button>
+            </form>
+            <div class="login-footer">
+                <small class="text-muted">&copy; 2026 物料领取看板系统 v2.0</small>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

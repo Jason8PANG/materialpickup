@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>物料领取看板 - 公共展示</title>
+    <link href="https://unpkg.com/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://unpkg.com/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+    <style>
+        body { background: #f0f2f5; overflow-x: hidden; }
+        .public-header { background: linear-gradient(135deg, #1a73e8, #0d47a1); color: #fff; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+        .public-header h4 { margin: 0; font-size: 18px; }
+        .public-header .site-switcher { display: flex; align-items: center; gap: 10px; }
+        .public-header .site-btn { background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.3); padding: 6px 18px; border-radius: 20px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+        .public-header .site-btn:hover { background: rgba(255,255,255,0.3); }
+        .public-header .site-btn.active { background: #fff; color: #1a73e8; border-color: #fff; font-weight: 600; }
+        .public-header .lang-btn { background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.25); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+        .public-header .lang-btn:hover { background: rgba(255,255,255,0.3); }
+        .public-header .lang-btn.active { background: #fff; color: #1a73e8; border-color: #fff; font-weight: 600; }
+        .kanban-board { padding: 16px 24px; gap: 10px; min-height: calc(100vh - 60px); }
+        .kanban-column { flex: 1; min-width: 0; max-width: none; }
+        .kanban-column-header { font-size: 15px; }
+        .kanban-card { cursor: default; }
+        .refresh-bar { text-align: center; padding: 4px; font-size: 12px; color: #999; background: #f0f2f5; }
+        @media (max-width: 768px) { .kanban-board { flex-direction: column; } .kanban-column { max-width: 100%; min-width: 100%; } }
+    </style>
+</head>
+<body>
+    <div class="public-header">
+        <h4><i class="fas fa-clipboard-list me-2"></i><span id="headerTitle">物料领取看板（公共展示）</span></h4>
+        <div class="d-flex align-items-center gap-3">
+            <div class="d-flex gap-1">
+                <button class="lang-btn active" data-lang="zh" onclick="switchLang('zh')">中文</button>
+                <button class="lang-btn" data-lang="en" onclick="switchLang('en')">EN</button>
+            </div>
+            <div class="site-switcher">
+                <span><i class="fas fa-map-marker-alt me-1"></i><span id="siteLabel">站点</span>：</span>
+                <button class="site-btn active" data-site="310" onclick="switchSite('310')">310 <span class="site-name-zh">苏州工厂</span><span class="site-name-en d-none">Suzhou</span></button>
+                <button class="site-btn" data-site="410" onclick="switchSite('410')">410 <span class="site-name-zh">槟城工厂</span><span class="site-name-en d-none">Penang</span></button>
+            </div>
+        </div>
+    </div>
+    <div id="kanbanBoard" class="kanban-board"></div>
+    <div class="refresh-bar">
+        <span id="refreshText">自动刷新中 | </span><span id="currentSiteLabel">310</span><span id="countdownDisplay"> 30</span><span id="autoRefreshSuffix">s 后刷新</span>
+    </div>
+
+    <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+let currentSite = '310';
+let currentLang = 'zh';
+let countdown = 30;
+let refreshTimer = null;
+
+const STATUS_ZH = {
+    'pending_approval': '待审批', 'pending_prep': '待备料',
+    'prepping': '备料中', 'short': '缺料', 'ready_pickup': '待取料'
+};
+const STATUS_EN = {
+    'pending_approval': 'Pending', 'pending_prep': 'To Prep',
+    'prepping': 'Prepping', 'short': 'Short', 'ready_pickup': 'Ready'
+};
+
+document.addEventListener('DOMContentLoaded', function () {
+    switchLang('zh');
+    loadPublicKanban();
+    startAutoRefresh();
+});
+
+function switchLang(lang) {
+    currentLang = lang;
+    document.querySelectorAll('.lang-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.lang === lang);
+    });
+    document.querySelectorAll('.site-name-zh').forEach(function (e) { e.classList.toggle('d-none', lang !== 'zh'); });
+    document.querySelectorAll('.site-name-en').forEach(function (e) { e.classList.toggle('d-none', lang !== 'en'); });
+    document.getElementById('headerTitle').textContent = lang === 'zh' ? '物料领取看板（公共展示）' : 'Material Kanban (Public)';
+    document.getElementById('siteLabel').textContent = lang === 'zh' ? '站点' : 'Site';
+    document.getElementById('refreshText').textContent = lang === 'zh' ? '自动刷新中 | ' : 'Auto-refresh | ';
+    document.getElementById('autoRefreshSuffix').textContent = lang === 'zh' ? 's 后刷新' : 's to refresh';
+    if (document.getElementById('kanbanBoard').children.length > 0) loadPublicKanban();
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadPublicKanban();
+    startAutoRefresh();
+});
+
+function switchSite(site) {
+    currentSite = site;
+    document.querySelectorAll('.site-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.site === site);
+    });
+    document.getElementById('currentSiteLabel').textContent = site;
+    loadPublicKanban();
+}
+
+function loadPublicKanban() {
+    fetch('/api/public/kanban/cards?siteref=' + currentSite)
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+            if (!resp.success) return;
+            renderBoard(resp);
+        })
+        .catch(function (err) { console.error('Load error:', err); });
+}
+
+function renderBoard(resp) {
+    const board = document.getElementById('kanbanBoard');
+    const groups = resp.groups;
+    const labels = resp.status_labels || {};
+    const order = resp.status_order || [];
+    var lang = currentLang;
+    var statusMap = lang === 'zh' ? STATUS_ZH : STATUS_EN;
+    let html = '';
+    order.forEach(function (status) {
+        const col = groups[status] || {cards: [], count: 0};
+        const title = statusMap[status] || labels[status] || status;
+        const count = col.count || 0;
+        const emptyText = lang === 'zh' ? '暂无数据' : 'No data';
+        const currencyLabel = lang === 'zh' ? '总金额: ' : 'Total: ';
+        const timeLabel = '';
+        const colors = {
+            'pending_approval': '#409eff', 'pending_prep': '#e6a23c',
+            'prepping': '#67c23a', 'short': '#f56c6c', 'ready_pickup': '#909399'
+        };
+        html += '<div class="kanban-column" data-status="' + status + '" style="border-top:3px solid ' + (colors[status] || '#ccc') + '">';
+        html += '<div class="kanban-column-header">' + title + ' <span class="count">' + count + '</span></div>';
+        if (col.cards.length === 0) {
+            html += '<div class="text-muted text-center py-4" style="font-size:13px">' + emptyText + '</div>';
+        } else {
+            col.cards.forEach(function (card) {
+                var itemCount = card.item_count || 0;
+                var jobOrders = card.job_orders || card.primary_job_order || '-';
+                var partNumber = card.primary_part_number || '';
+
+                // 多工单分行显示
+                var jobHtml = '';
+                if (card.job_orders) {
+                    var orders = card.job_orders.split(', ');
+                    orders.forEach(function (jo) {
+                        jobHtml += '<div class="card-job-order">' + escapeHtml(jo) + '</div>';
+                    });
+                } else {
+                    jobHtml = '<div class="card-job-order">' + escapeHtml(jobOrders) + '</div>';
+                }
+
+                html += '<div class="kanban-card" style="cursor:default">';
+                html += '<div class="card-header-row"><div class="card-job-list">' + jobHtml + '</div>';
+                if (itemCount > 0) html += '<span class="badge bg-secondary ms-1">' + itemCount + '项</span>';
+                html += '</div>';
+                if (partNumber) html += '<div class="card-part-number">' + escapeHtml(partNumber) + '</div>';
+                var amt = card.total_amount ? parseFloat(card.total_amount).toFixed(2) : '0.00';
+                html += '<div class="card-qty">' + currencyLabel + amt + '</div>';
+                html += '<div class="card-qty mt-1"><small class="text-muted">' + escapeHtml(card.requester) + '</small></div>';
+                html += '<div class="card-time text-muted small">' + (card.request_time || '') + '</div>';
+                html += '</div>';
+            });
+        }
+        html += '</div>';
+    });
+    board.innerHTML = html;
+}
+
+function startAutoRefresh() {
+    refreshTimer = setInterval(function () {
+        countdown--;
+        var lang = currentLang;
+        document.getElementById('countdownDisplay').textContent = ' ' + countdown;
+        document.getElementById('refreshText').textContent = lang === 'zh' ? '自动刷新中 | ' : 'Auto-refresh | ';
+        document.getElementById('autoRefreshSuffix').textContent = lang === 'zh' ? 's 后刷新' : 's to refresh';
+        if (countdown <= 0) {
+            countdown = 30;
+            loadPublicKanban();
+        }
+    }, 1000);
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+    </script>
+</body>
+</html>

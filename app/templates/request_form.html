@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+{% block title %}新建申请 - 物料领取看板{% endblock %}
+{% block content %}
+<style>
+.item-row td { vertical-align: middle; }
+.item-row .form-control, .item-row .form-select { font-size: 0.9rem; }
+.item-total { font-weight: 600; color: #409eff; }
+.stock-info { font-size: 0.78rem; color: #6c757d; line-height: 1.3; margin-top: 2px; }
+.stock-info.has-stock { color: #28a745; }
+.stock-info.no-stock { color: #dc3545; }
+.input-valid { border-color: #28a745 !important; background-color: #f0fff0; }
+.input-invalid { border-color: #dc3545 !important; background-color: #fff0f0; }
+.validate-spinner { display: inline-block; width: 12px; height: 12px; margin-left: 4px; }
+</style>
+<div class="row justify-content-center">
+    <div class="col-lg-12">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0"><i class="fas fa-plus-circle me-2 text-primary"></i>新建领料申请</h5>
+            </div>
+            <div class="card-body">
+                <!-- 头部信息 -->
+                <div class="row g-3 mb-4 pb-3 border-bottom">
+                    <div class="col-md-4">
+                        <label class="form-label text-muted small">申请人</label>
+                        <p class="fw-bold mb-0">{{ session.user.display_name }}</p>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted small">所属站点</label>
+                        <p class="fw-bold mb-0" id="currentSite">{{ session.user.siteref }}</p>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted small">申请时间</label>
+                        <p class="fw-bold mb-0" id="currentTime">-</p>
+                    </div>
+                    <div class="col-12 mt-3">
+                        <label class="form-label">备注</label>
+                        <textarea class="form-control" id="remark" rows="2" placeholder="备注信息（可选）"></textarea>
+                    </div>
+                </div>
+
+                <!-- 动态明细表格 -->
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="mb-0"><i class="fas fa-list me-2 text-success"></i>物料明细</h6>
+                    <button type="button" class="btn btn-success btn-sm" onclick="addItemRow()">
+                        <i class="fas fa-plus me-1"></i>添加行
+                    </button>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-bordered table-hover" id="itemsTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px">#</th>
+                                <th style="min-width:86px">工单号码 <span class="text-danger">*</span></th>
+                                <th style="min-width:50px">Part Number <span class="text-danger">*</span></th>
+                                <th style="width:100px">数量 <span class="text-danger">*</span></th>
+                                <th style="width:100px">单价</th>
+                                <th style="width:110px">总金额</th>
+                                <th style="width:90px">库存量</th>
+                                <th style="min-width:120px">库存位置</th>
+                                <th style="width:220px">补料原因</th>
+                                <th style="width:40px"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="itemsBody">
+                            <!-- 由 JS 动态渲染 -->
+                        </tbody>
+                    </table>
+                </div>
+                <div class="text-end text-muted small mb-3">
+                    共 <span id="itemCount">0</span> 行，预估总金额：<span id="grandTotal" class="fw-bold text-primary">0.00</span>
+                </div>
+
+                <div class="text-end mt-4">
+                    <a href="/kanban" class="btn btn-outline-secondary me-2">取消</a>
+                    <button type="button" class="btn btn-primary" id="submitBtn" onclick="submitRequest()">
+                        <i class="fas fa-paper-plane me-1"></i>提交申请
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let itemRowIndex = 0;
+const replenishReasons = ['', '报废', '不良', '来料不足', '其他'];
+
+// 设置当前时间
+(function() {
+    const now = new Date();
+    document.getElementById('currentTime').textContent = now.toLocaleString('zh-CN');
+})();
+
+function addItemRow(data) {
+    data = data || {};
+    const idx = itemRowIndex++;
+    _validatedItems[idx] = false;
+    const tbody = document.getElementById('itemsBody');
+    const tr = document.createElement('tr');
+    tr.className = 'item-row';
+    tr.id = 'item-row-' + idx;
+    tr.innerHTML = `
+        <td class="text-center item-num">${tbody.children.length + 1}</td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="job_order_${idx}" value="${escapeHtml(data.job_order || '')}" placeholder="工单号" onblur="validateJob(this, ${idx})">
+        </td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="part_number_${idx}" value="${escapeHtml(data.part_number || '')}" placeholder="Part Number" onblur="validateMaterial(this, ${idx})">
+            <div class="stock-info" id="stock_info_${idx}"></div>
+        </td>
+        <td><input type="number" step="0.01" class="form-control form-control-sm item-qty" id="quantity_${idx}" value="${data.quantity || ''}" oninput="calcRowTotal(${idx})" placeholder="数量"></td>
+        <td><input type="number" step="0.0001" class="form-control form-control-sm item-price" id="price_${idx}" value="${data.price || ''}" placeholder="单价" readonly></td>
+        <td><input type="text" class="form-control form-control-sm item-total" id="total_amount_${idx}" value="${data.total_amount || ''}" readonly></td>
+        <td><input type="number" step="0.01" class="form-control form-control-sm" id="stock_qty_${idx}" value="${data.stock_qty || ''}" placeholder="库存" readonly></td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="stock_loc_${idx}" value="" placeholder="验证后自动填充" readonly>
+        </td>
+        <td>
+            <select class="form-select form-select-sm" id="replenish_reason_${idx}" onchange="toggleOtherReason(${idx})">
+                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason === r ? 'selected':''}>${r || '请选择'}</option>`).join('')}
+            </select>
+            <input type="text" class="form-control form-control-sm mt-1 d-none" id="replenish_reason_other_${idx}" value="${escapeHtml(data.replenish_reason_other || '')}" placeholder="其他原因说明">
+        </td>
+        <td class="text-center">
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeItemRow(${idx})" title="删除此行">
+                <i class="fas fa-times"></i>
+            </button>
+        </td>
+    `;
+    tbody.appendChild(tr);
+    updateRowNumbers();
+    updateSummary();
+}
+
+function removeItemRow(idx) {
+    const tbody = document.getElementById('itemsBody');
+    if (tbody.children.length <= 1) {
+        showToast('error', '至少保留一行物料明细');
+        return;
+    }
+    const tr = document.getElementById('item-row-' + idx);
+    if (tr) tr.remove();
+    updateRowNumbers();
+    updateSummary();
+}
+
+function updateRowNumbers() {
+    const nums = document.querySelectorAll('.item-num');
+    nums.forEach((el, i) => el.textContent = i + 1);
+}
+
+function calcRowTotal(idx) {
+    const qty = parseFloat(document.getElementById('quantity_' + idx).value) || 0;
+    const price = parseFloat(document.getElementById('price_' + idx).value) || 0;
+    const total = qty * price;
+    document.getElementById('total_amount_' + idx).value = total > 0 ? total.toFixed(2) : '';
+    updateSummary();
+}
+
+function updateSummary() {
+    const rows = document.querySelectorAll('#itemsBody tr');
+    document.getElementById('itemCount').textContent = rows.length;
+    let grandTotal = 0;
+    rows.forEach(tr => {
+        const totalInput = tr.querySelector('.item-total');
+        const val = parseFloat(totalInput.value) || 0;
+        grandTotal += val;
+    });
+    document.getElementById('grandTotal').textContent = grandTotal.toFixed(2);
+}
+
+function toggleOtherReason(idx) {
+    const sel = document.getElementById('replenish_reason_' + idx);
+    const otherInput = document.getElementById('replenish_reason_other_' + idx);
+    if (otherInput) {
+        otherInput.classList.toggle('d-none', sel.value !== '其他');
+    }
+}
+
+function submitRequest() {
+    // 防止重复提交
+    const submitBtn = document.getElementById('submitBtn');
+    if (submitBtn.disabled) return;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>提交中...';
+
+    function resetBtn() {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fas fa-paper-plane me-1"></i>提交申请';
+    }
+
+    const tbody = document.getElementById('itemsBody');
+    const items = [];
+
+    for (const tr of tbody.children) {
+        const idx = tr.id.replace('item-row-', '');
+        const jobOrder = document.getElementById('job_order_' + idx).value.trim();
+        const partNumber = document.getElementById('part_number_' + idx).value.trim();
+        const quantity = document.getElementById('quantity_' + idx).value.trim();
+
+        if (!jobOrder || !partNumber || !quantity) {
+            showToast('error', '请填写完整第 ' + tr.querySelector('.item-num').textContent + ' 行（工单号、物料号、数量为必填）');
+            resetBtn();
+            return;
+        }
+
+        // 检查物料验证状态
+        if (!_validatedItems[idx]) {
+            showToast('error', '第 ' + tr.querySelector('.item-num').textContent + ' 行的物料验证未通过，请修正 Part Number 后再提交');
+            resetBtn();
+            return;
+        }
+
+        const price = document.getElementById('price_' + idx).value.trim();
+        const reason = document.getElementById('replenish_reason_' + idx).value;
+        const otherInput = document.getElementById('replenish_reason_other_' + idx);
+        const reasonOther = otherInput && !otherInput.classList.contains('d-none') ? otherInput.value.trim() : '';
+
+        items.push({
+            job_order: jobOrder,
+            part_number: partNumber,
+            quantity: parseFloat(quantity),
+            price: price ? parseFloat(price) : null,
+            stock_qty: document.getElementById('stock_qty_' + idx).value.trim() ? parseFloat(document.getElementById('stock_qty_' + idx).value) : null,
+            replenish_reason: reason || null,
+            replenish_reason_other: reasonOther || null
+        });
+    }
+
+    // 二次确认弹窗
+    const summary = `提交确认\n\n明细行数：${items.length} 行\n预估总金额：${document.getElementById('grandTotal').textContent}\n\n确认提交此领料申请吗？`;
+    if (!confirm(summary)) return;
+
+    const data = {
+        remark: document.getElementById('remark').value.trim() || null,
+        items: items
+    };
+
+    apiPost('/api/requests', data, function (resp) {
+        showToast('success', '申请提交成功');
+        setTimeout(() => { window.location.href = '/kanban'; }, 1000);
+    }, function (err) {
+        showToast('error', err.message || '提交失败');
+        resetBtn();
+    });
+}
+
+// 默认添加第一行
+document.addEventListener('DOMContentLoaded', function() {
+    addItemRow();
+});
+
+// ========== 工单验证（仅验证工单是否存在，不做自动填入） ==========
+function validateJob(inputEl, idx) {
+    var jobFull = inputEl.value.trim();
+    var stockInfo = document.getElementById('stock_info_' + idx);
+
+    // 清除状态
+    inputEl.classList.remove('input-valid', 'input-invalid');
+    if (!stockInfo) return;
+
+    if (!jobFull) {
+        stockInfo.textContent = '';
+        stockInfo.className = 'stock-info';
+        return;
+    }
+
+    // 获取当前站点
+    var siteEl = document.getElementById('currentSite');
+    var siteref = siteEl ? siteEl.textContent.trim() : '310';
+
+    stockInfo.textContent = '验证中...';
+    stockInfo.className = 'stock-info';
+
+    apiPost('/api/validate/job', {job_full: jobFull, siteref: siteref},
+        function (resp) {
+            inputEl.classList.add('input-valid');
+            inputEl.classList.remove('input-invalid');
+            stockInfo.textContent = '工单有效 | 状态: ' + escapeHtml(resp.data.Stat || '-');
+            stockInfo.className = 'stock-info has-stock';
+        },
+        function (err) {
+            inputEl.classList.add('input-invalid');
+            inputEl.classList.remove('input-valid');
+            stockInfo.textContent = err.message || '工单不存在';
+            stockInfo.className = 'stock-info no-stock';
+        }
+    );
+}
+
+// 物料验证状态跟踪
+var _validatedItems = {};
+
+// ========== 物料验证 + 库存查询 ==========
+function validateMaterial(inputEl, idx) {
+    var partNumber = inputEl.value.trim();
+    var stockInfo = document.getElementById('stock_info_' + idx);
+    var jobInput = document.getElementById('job_order_' + idx);
+
+    inputEl.classList.remove('input-valid', 'input-invalid');
+    if (!stockInfo) return;
+
+    if (!partNumber) {
+        stockInfo.textContent = '';
+        stockInfo.className = 'stock-info';
+        return;
+    }
+
+    // 获取所在行的工单号
+    var jobFull = jobInput ? jobInput.value.trim() : '';
+    if (!jobFull) {
+        stockInfo.textContent = '请先输入工单号';
+        stockInfo.className = 'stock-info no-stock';
+        return;
+    }
+
+    // 解析工单号得到 job 和 suffix
+    // 格式: J000002124-0004
+    var parts = jobFull.match(/^([A-Za-z]\d+)-(\d+)$/);
+    if (!parts) {
+        stockInfo.textContent = '工单号格式无效';
+        stockInfo.className = 'stock-info no-stock';
+        return;
+    }
+
+    var job = parts[1];
+    var suffixStr = parts[2];
+    var suffix = parseInt(suffixStr, 10); // 去掉前导零
+
+    var siteEl = document.getElementById('currentSite');
+    var siteref = siteEl ? siteEl.textContent.trim() : '310';
+
+    stockInfo.textContent = '验证中...';
+    stockInfo.className = 'stock-info';
+
+    apiPost('/api/validate/material', {
+            job: job,
+            suffix: suffix,
+            item: partNumber,
+            siteref: siteref
+        },
+        function (resp) {
+            _validatedItems[idx] = true;
+            inputEl.classList.add('input-valid');
+            inputEl.classList.remove('input-invalid');
+            var summary = resp.data.stock_summary || '无库存信息';
+            stockInfo.textContent = '库存: ' + summary;
+            stockInfo.className = 'stock-info has-stock';
+            // 填充库存位置列
+            var stockLocEl = document.getElementById('stock_loc_' + idx);
+            if (stockLocEl) stockLocEl.value = summary;
+            // 计算总库存量并填充库存量栏位
+            var totalQty = 0;
+            if (resp.data.inventory && resp.data.inventory.length > 0) {
+                for (var i = 0; i < resp.data.inventory.length; i++) {
+                    totalQty += parseFloat(resp.data.inventory[i].qty) || 0;
+                }
+            }
+            var stockQtyEl = document.getElementById('stock_qty_' + idx);
+            if (stockQtyEl) stockQtyEl.value = totalQty > 0 ? totalQty : '';
+            // 填充单价栏位
+            var priceEl = document.getElementById('price_' + idx);
+            if (priceEl && resp.data.unit_cost) {
+                priceEl.value = parseFloat(resp.data.unit_cost).toFixed(4);
+                calcRowTotal(idx);
+            }
+        },
+        function (err) {
+            _validatedItems[idx] = false;
+            inputEl.classList.add('input-invalid');
+            inputEl.classList.remove('input-valid');
+            stockInfo.textContent = err.message || '该物料不在工单BOM中或不需要手动领料';
+            stockInfo.className = 'stock-info no-stock';
+            // 验证失败：清空本行所有后续字段
+            var fields = ['stock_loc_' + idx, 'stock_qty_' + idx, 'price_' + idx, 'total_amount_' + idx, 'quantity_' + idx];
+            for (var f = 0; f < fields.length; f++) {
+                var el = document.getElementById(fields[f]);
+                if (el) el.value = '';
+            }
+            // 重置补料原因
+            var reasonEl = document.getElementById('replenish_reason_' + idx);
+            if (reasonEl) reasonEl.value = '';
+            var reasonOther = document.getElementById('replenish_reason_other_' + idx);
+            if (reasonOther) { reasonOther.value = ''; reasonOther.classList.add('d-none'); }
+            // 重新计算汇总
+            calcRowTotal(idx);
+            updateSummary();
+        }
+    );
+}
+</script>
+{% endblock %}
