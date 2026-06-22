@@ -119,7 +119,7 @@ function addItemRow(data) {
         </td>
         <td>
             <select class="form-select form-select-sm" id="replenish_reason_${idx}" onchange="toggleOtherReason(${idx})">
-                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason === r ? 'selected':''}>${r || '请选择'}</option>`).join('')}
+                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason ? (data.replenish_reason === r ? 'selected':'') : (r === '报废' ? 'selected':'')}>${r || '请选择'}</option>`).join('')}
             </select>
             <input type="text" class="form-control form-control-sm mt-1 d-none" id="replenish_reason_other_${idx}" value="${escapeHtml(data.replenish_reason_other || '')}" placeholder="其他原因说明">
         </td>

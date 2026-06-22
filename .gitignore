@@ -28,3 +28,8 @@ logs/
 # 系统文件
 Thumbs.db
 .DS_Store
+
+# 备份和编译文件
+*.bak
+*.zip
+*.tar.gz

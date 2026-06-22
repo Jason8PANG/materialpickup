@@ -75,7 +75,7 @@ function switchLang(lang) {
     });
     document.querySelectorAll('.site-name-zh').forEach(function (e) { e.classList.toggle('d-none', lang !== 'zh'); });
     document.querySelectorAll('.site-name-en').forEach(function (e) { e.classList.toggle('d-none', lang !== 'en'); });
-    document.getElementById('headerTitle').textContent = lang === 'zh' ? '物料领取看板（公共展示）' : 'Material Kanban (Public)';
+    document.getElementById('headerTitle').textContent = lang === 'zh' ? '物料领取看板（公共展示）' : 'Material Pickup Kanban (Public)';
     document.getElementById('siteLabel').textContent = lang === 'zh' ? '站点' : 'Site';
     document.getElementById('refreshText').textContent = lang === 'zh' ? '自动刷新中 | ' : 'Auto-refresh | ';
     document.getElementById('autoRefreshSuffix').textContent = lang === 'zh' ? 's 后刷新' : 's to refresh';

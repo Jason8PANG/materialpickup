@@ -61,7 +61,7 @@ def send_approval_email(request_info, approve_url, reject_url):
         </tr>"""
     
     html = f"""
-    <div style="max-width:640px;margin:0 auto;font-family:Arial,sans-serif;padding:20px;background:#f0f2f5;">
+    <div style="max-width:640px;margin:0 auto;font-family:Arial,sans-serif;padding:20px;background:#e3f2fd;">
         <div style="background:linear-gradient(135deg,#1a73e8,#0d47a1);color:#fff;padding:24px;border-radius:8px 8px 0 0;text-align:center;">
             <h2 style="margin:0 0 4px;">物料领料审批通知</h2>
             <p style="margin:0;opacity:0.9;font-size:14px;">{site_name} | 申请单 #{request_info['request_id']}</p>
