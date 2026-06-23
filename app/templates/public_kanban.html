@@ -28,14 +28,14 @@
 </head>
 <body>
     <div class="public-header">
-        <h4><i class="fas fa-clipboard-list me-2"></i><span id="headerTitle">物料领取看板（公共展示）</span></h4>
+        <h4><img src="/static/images/logo.png" alt="NAI" style="height:24px;width:auto;margin-right:8px;"><span id="headerTitle" data-i18n="form.part_number">物料领取看板（公共展示）</span></h4>
         <div class="d-flex align-items-center gap-3">
             <div class="d-flex gap-1">
                 <button class="lang-btn active" data-lang="zh" onclick="switchLang('zh')">中文</button>
                 <button class="lang-btn" data-lang="en" onclick="switchLang('en')">EN</button>
             </div>
             <div class="site-switcher">
-                <span><i class="fas fa-map-marker-alt me-1"></i><span id="siteLabel">站点</span>：</span>
+                <span><i class="fas fa-map-marker-alt me-1"></i><span id="siteLabel" data-i18n="admin.col_site">站点</span>：</span>
                 <button class="site-btn active" data-site="310" onclick="switchSite('310')">310 <span class="site-name-zh">苏州工厂</span><span class="site-name-en d-none">Suzhou</span></button>
                 <button class="site-btn" data-site="410" onclick="switchSite('410')">410 <span class="site-name-zh">槟城工厂</span><span class="site-name-en d-none">Penang</span></button>
             </div>
@@ -43,7 +43,7 @@
     </div>
     <div id="kanbanBoard" class="kanban-board"></div>
     <div class="refresh-bar">
-        <span id="refreshText">自动刷新中 | </span><span id="currentSiteLabel">310</span><span id="countdownDisplay"> 30</span><span id="autoRefreshSuffix">s 后刷新</span>
+        <span id="refreshText" data-i18n="kanban.refresh">自动刷新中 | </span><span id="currentSiteLabel">310</span><span id="countdownDisplay"> 30</span><span id="autoRefreshSuffix" data-i18n="kanban.refresh">s 后刷新</span>
     </div>
 
     <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -147,7 +147,9 @@ function renderBoard(resp) {
                 }
 
                 html += '<div class="kanban-card" style="cursor:default">';
-                html += '<div class="card-header-row"><div class="card-job-list">' + jobHtml + '</div>';
+                html += '<div class="card-header-row">';
+                if (card.is_urgent) html += '<span class="badge bg-danger me-1"><i class="fas fa-exclamation-triangle"></i> 急料</span>';
+                html += '<div class="card-job-list">' + jobHtml + '</div>';
                 if (itemCount > 0) html += '<span class="badge bg-secondary ms-1">' + itemCount + '项</span>';
                 html += '</div>';
                 if (partNumber) html += '<div class="card-part-number">' + escapeHtml(partNumber) + '</div>';

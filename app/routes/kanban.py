@@ -51,9 +51,9 @@ def get_kanban_cards():
 
         if site_filter:
             base_sql += f" AND r.{site_filter}"
-            cursor.execute(base_sql + " ORDER BY r.request_time DESC", site_params)
+            cursor.execute(base_sql + " ORDER BY r.is_urgent DESC, r.request_time ASC", site_params)
         else:
-            cursor.execute(base_sql + " ORDER BY r.request_time DESC")
+            cursor.execute(base_sql + " ORDER BY r.is_urgent DESC, r.request_time ASC")
 
         rows = cursor.fetchall()
         cursor.close()
@@ -114,7 +114,7 @@ def public_kanban_cards():
         FROM kr_material_request r 
         WHERE r.status IN ('pending_approval','pending_prep','prepping','short','ready_pickup') 
         AND r.is_deleted = 0 AND r.siteref = %s
-        ORDER BY r.request_time DESC"""
+        ORDER BY r.is_urgent DESC, r.request_time ASC"""
 
     with get_db_connection() as db:
         cursor = db.cursor()

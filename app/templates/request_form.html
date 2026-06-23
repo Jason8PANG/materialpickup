@@ -22,28 +22,36 @@
                 <!-- 头部信息 -->
                 <div class="row g-3 mb-4 pb-3 border-bottom">
                     <div class="col-md-4">
-                        <label class="form-label text-muted small">申请人</label>
+                        <label class="form-label text-muted small" data-i18n="detail.requester">申请人</label>
                         <p class="fw-bold mb-0">{{ session.user.display_name }}</p>
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label text-muted small">所属站点</label>
+                        <label class="form-label text-muted small" data-i18n="admin.col_site">所属站点</label>
                         <p class="fw-bold mb-0" id="currentSite">{{ session.user.siteref }}</p>
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label text-muted small">申请时间</label>
+                        <label class="form-label text-muted small" data-i18n="detail.time">申请时间</label>
                         <p class="fw-bold mb-0" id="currentTime">-</p>
                     </div>
                     <div class="col-12 mt-3">
-                        <label class="form-label">备注</label>
+                        <label class="form-label" data-i18n="detail.remark">备注</label>
                         <textarea class="form-control" id="remark" rows="2" placeholder="备注信息（可选）"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="isUrgent">
+                            <label class="form-check-label fw-bold text-danger" for="isUrgent">
+                                <i class="fas fa-exclamation-triangle me-1"></i>急料
+                            </label>
+                        </div>
                     </div>
                 </div>
 
                 <!-- 动态明细表格 -->
                 <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h6 class="mb-0"><i class="fas fa-list me-2 text-success"></i>物料明细</h6>
+                    <h6 class="mb-0"><i class="fas fa-list me-2 text-success"></i><span data-i18n="detail.items">物料明细</span></h6>
                     <button type="button" class="btn btn-success btn-sm" onclick="addItemRow()">
-                        <i class="fas fa-plus me-1"></i>添加行
+                        <i class="fas fa-plus me-1"></i><span data-i18n="form.add_row">添加行</span>
                     </button>
                 </div>
                 <div class="table-responsive">
@@ -51,14 +59,14 @@
                         <thead class="table-light">
                             <tr>
                                 <th style="width:40px">#</th>
-                                <th style="min-width:86px">工单号码 <span class="text-danger">*</span></th>
+                                <th style="min-width:86px"><span data-i18n="form.job_order">工单号码</span> <span class="text-danger">*</span></th>
                                 <th style="min-width:50px">Part Number <span class="text-danger">*</span></th>
-                                <th style="width:100px">数量 <span class="text-danger">*</span></th>
-                                <th style="width:100px">单价</th>
-                                <th style="width:110px">总金额</th>
-                                <th style="width:90px">库存量</th>
-                                <th style="min-width:120px">库存位置</th>
-                                <th style="width:220px">补料原因</th>
+                                <th style="width:100px"><span data-i18n="form.quantity">数量</span> <span class="text-danger">*</span></th>
+                                <th style="width:100px"><span data-i18n="form.price">单价</span></th>
+                                <th style="width:110px"><span data-i18n="form.total_amount">总金额</span></th>
+                                <th style="width:90px"><span data-i18n="form.stock_qty">库存量</span></th>
+                                <th style="min-width:120px"><span data-i18n="form.stock_loc">库存位置</span></th>
+                                <th style="width:220px"><span data-i18n="form.replenish_reason">补料原因</span></th>
                                 <th style="width:40px"></th>
                             </tr>
                         </thead>
@@ -68,13 +76,13 @@
                     </table>
                 </div>
                 <div class="text-end text-muted small mb-3">
-                    共 <span id="itemCount">0</span> 行，预估总金额：<span id="grandTotal" class="fw-bold text-primary">0.00</span>
+                    <span data-i18n="kanban.total">共</span> <span id="itemCount">0</span> <span data-i18n="common.rows">行</span>，<span data-i18n="common.grand_total">预估总金额</span>：<span id="grandTotal" class="fw-bold text-primary">0.00</span>
                 </div>
 
                 <div class="text-end mt-4">
-                    <a href="/kanban" class="btn btn-outline-secondary me-2">取消</a>
+                    <a href="/kanban" class="btn btn-outline-secondary me-2"><span data-i18n="form.cancel">取消</span></a>
                     <button type="button" class="btn btn-primary" id="submitBtn" onclick="submitRequest()">
-                        <i class="fas fa-paper-plane me-1"></i>提交申请
+                        <i class="fas fa-paper-plane me-1"></i><span data-i18n="form.submit">提交申请</span>
                     </button>
                 </div>
             </div>
@@ -119,7 +127,7 @@ function addItemRow(data) {
         </td>
         <td>
             <select class="form-select form-select-sm" id="replenish_reason_${idx}" onchange="toggleOtherReason(${idx})">
-                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason ? (data.replenish_reason === r ? 'selected':'') : (r === '报废' ? 'selected':'')}>${r || '请选择'}</option>`).join('')}
+                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason ? (data.replenish_reason === r ? 'selected':'') : (r === '报废' ? 'selected':'')} data-i18n="form.please_select">${r || '请选择'}</option>`).join('')}
             </select>
             <input type="text" class="form-control form-control-sm mt-1 d-none" id="replenish_reason_other_${idx}" value="${escapeHtml(data.replenish_reason_other || '')}" placeholder="其他原因说明">
         </td>
@@ -235,6 +243,7 @@ function submitRequest() {
 
     const data = {
         remark: document.getElementById('remark').value.trim() || null,
+        is_urgent: document.getElementById('isUrgent').checked ? 1 : 0,
         items: items
     };
 

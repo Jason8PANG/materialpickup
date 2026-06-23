@@ -30,9 +30,9 @@
                 </div>
                 <div class="card-body py-2">
                     <div class="row g-2 small">
-                        <div class="col-6"><span class="text-muted">申请人：</span><span id="arequester">-</span></div>
-                        <div class="col-6"><span class="text-muted">申请时间：</span><span id="arequestTime">-</span></div>
-                        <div class="col-6"><span class="text-muted">站点：</span><span id="asiteref">-</span></div>
+                        <div class="col-6"><span class="text-muted" data-i18n="detail.requester">申请人：</span><span id="arequester">-</span></div>
+                        <div class="col-6"><span class="text-muted" data-i18n="detail.time">申请时间：</span><span id="arequestTime">-</span></div>
+                        <div class="col-6"><span class="text-muted" data-i18n="admin.col_site">站点：</span><span id="asiteref">-</span></div>
                     </div>
                 </div>
             </div>
@@ -40,7 +40,7 @@
             <!-- 明细表格 -->
             <div class="card shadow-sm mb-3">
                 <div class="card-header bg-white">
-                    <h6 class="mb-0">物料明细</h6>
+                    <h6 class="mb-0" data-i18n="detail.items">物料明细</h6>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -48,12 +48,12 @@
                             <thead class="table-light">
                                 <tr>
                                     <th>#</th>
-                                    <th>工单号</th>
+                                    <th data-i18n="form.job_order">工单号</th>
                                     <th>Part Number</th>
-                                    <th>数量</th>
-                                    <th>单价</th>
-                                    <th>行总金额</th>
-                                    <th>补料原因</th>
+                                    <th data-i18n="form.quantity">数量</th>
+                                    <th data-i18n="form.price">单价</th>
+                                    <th data-i18n="form.total_amount">行总金额</th>
+                                    <th data-i18n="form.replenish_reason">补料原因</th>
                                 </tr>
                             </thead>
                             <tbody id="aitemsBody">
@@ -67,7 +67,7 @@
             <div class="card shadow-sm mb-3">
                 <div class="card-body">
                     <div class="mb-3">
-                        <label class="form-label fw-bold">审批意见</label>
+                        <label class="form-label fw-bold" data-i18n="detail.approve_comment">审批意见</label>
                         <textarea class="form-control" id="approveComment" rows="3" placeholder="输入审批意见（驳回时必填）"></textarea>
                     </div>
                     <div class="d-grid gap-2 d-md-flex justify-content-md-center">
@@ -95,7 +95,7 @@
         <div id="errorContent" class="d-none text-center py-5">
             <div class="alert alert-danger">
                 <i class="fas fa-exclamation-triangle me-2"></i>
-                <span id="errorText">令牌无效或已过期</span>
+                <span id="errorText" data-i18n="approve.invalid_token">令牌无效或已过期</span>
             </div>
         </div>
     </div>
@@ -124,7 +124,7 @@
                 const tbody = document.getElementById('aitemsBody');
                 const items = req.items || [];
                 if (items.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无明细</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted" data-i18n="detail.no_items">暂无明细</td></tr>';
                 } else {
                     tbody.innerHTML = '';
                     var totalAmt = 0;

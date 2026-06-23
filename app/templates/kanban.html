@@ -11,7 +11,7 @@
                 <i class="fas fa-sync me-1"></i>刷新
             </button>
             <button class="btn btn-outline-success btn-sm me-2" id="fullscreenBtn" onclick="toggleFullscreen()">
-                <i class="fas fa-expand me-1"></i><span>全屏</span>
+                <i class="fas fa-expand me-1"></i><span data-i18n="kanban.fullscreen">全屏</span>
             </button>
             <span class="badge bg-secondary" id="totalCount">0 张</span>
         </div>
@@ -21,7 +21,7 @@
 <!-- 手机端状态筛选 -->
 <div class="d-md-none mb-3">
     <select class="form-select" id="mobileStatusFilter" onchange="filterMobileKanban(this.value)">
-        <option value="all">全部状态</option>
+        <option value="all" data-i18n="admin.col_status">全部状态</option>
     </select>
 </div>
 
@@ -40,11 +40,11 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="actionModalTitle">操作确认</h5>
+                <h5 class="modal-title" id="actionModalTitle" data-i18n="common.confirm">操作确认</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="actionModalBody">
-                <p id="actionModalText">确认执行此操作吗？</p>
+                <p id="actionModalText" data-i18n="common.confirm">确认执行此操作吗？</p>
                 <div id="actionModalExtra" class="d-none">
                     <div class="mb-3">
                         <label class="form-label" id="extraLabel"></label>
@@ -53,8 +53,8 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" id="actionConfirmBtn">确认</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="actionConfirmBtn" data-i18n="common.confirm">确认</button>
             </div>
         </div>
     </div>
@@ -65,18 +65,18 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">指定备料员</h5>
+                <h5 class="modal-title" data-i18n="detail.warehouse_operator">指定备料员</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
-                    <label class="form-label">备料员</label>
+                    <label class="form-label" data-i18n="detail.warehouse_operator">备料员</label>
                     <input type="text" class="form-control" id="workerInput" placeholder="输入备料员用户名">
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" id="assignWorkerConfirmBtn">确定</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="assignWorkerConfirmBtn" data-i18n="action.ok">确定</button>
             </div>
         </div>
     </div>
@@ -126,10 +126,10 @@ function handleFullscreenChange() {
 function updateFullscreenBtn(isFullscreen) {
     var btn = document.getElementById('fullscreenBtn');
     if (isFullscreen) {
-        btn.innerHTML = '<i class="fas fa-compress me-1"></i><span>退出全屏</span>';
+        btn.innerHTML = '<i class="fas fa-compress me-1"></i><span data-i18n="kanban.fullscreen">退出全屏</span>';
         btn.className = 'btn btn-outline-warning btn-sm me-2';
     } else {
-        btn.innerHTML = '<i class="fas fa-expand me-1"></i><span>全屏</span>';
+        btn.innerHTML = '<i class="fas fa-expand me-1"></i><span data-i18n="kanban.fullscreen">全屏</span>';
         btn.className = 'btn btn-outline-success btn-sm me-2';
     }
 }

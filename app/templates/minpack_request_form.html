@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}新建最小包装物料申请 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0"><i class="fas fa-cube me-2 text-success"></i>新建最小包装物料申请</h5>
+        <small class="text-muted" data-i18n="admin.role_warehouse">无需关联工单，提交后直接由仓库备料</small>
+    </div>
+    <div class="card-body">
+        <form id="requestForm" autocomplete="off">
+            <div class="mb-3">
+                <label class="form-label fw-bold" data-i18n="detail.remark">备注</label>
+                <textarea class="form-control" id="remark" rows="2" placeholder="备注说明（可选）"></textarea>
+            </div>
+            <div class="mb-3">
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="checkbox" id="isUrgent">
+                    <label class="form-check-label fw-bold text-danger" for="isUrgent">
+                        <i class="fas fa-exclamation-triangle me-1"></i>急料
+                    </label>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-bordered table-hover align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width:40px">#</th>
+                            <th style="min-width:180px">Part Number <span class="text-danger">*</span></th>
+                            <th style="width:120px"><span data-i18n="form.quantity">数量</span> <span class="text-danger">*</span></th>
+                            <th style="width:100px"><span data-i18n="form.price">单价</span></th>
+                            <th style="width:120px"><span data-i18n="form.total_amount">总金额</span></th>
+                            <th style="width:100px"><span data-i18n="form.stock_qty">库存量</span></th>
+                            <th style="min-width:140px"><span data-i18n="form.stock_loc">库存位置</span></th>
+                            <th style="width:50px"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="itemsBody">
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center mt-2">
+                <button type="button" class="btn btn-outline-success btn-sm" onclick="addRow()">
+                    <i class="fas fa-plus me-1"></i>添加物料
+                </button>
+                <span class="small text-muted" id="totalInfo" data-i18n="form.total_amount">总金额: 0.00</span>
+            </div>
+
+            <div class="text-end mt-4">
+                <a href="/kanban" class="btn btn-outline-secondary me-2" data-i18n="common.cancel">取消</a>
+                <button type="button" class="btn btn-success" id="submitBtn" onclick="submitMinpackRequest()">
+                    <i class="fas fa-paper-plane me-1"></i>提交申请（无需审批）
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let rowIdx = 0;
+
+document.addEventListener('DOMContentLoaded', function () {
+    addRow();
+});
+
+function addRow() {
+    const idx = rowIdx++;
+    const tbody = document.getElementById('itemsBody');
+    const tr = document.createElement('tr');
+    tr.id = 'item-row-' + idx;
+    tr.innerHTML = `
+        <td class="text-center item-num">${tbody.children.length + 1}</td>
+        <td style="position:relative">
+            <input type="text" class="form-control form-control-sm" id="part_number_${idx}" placeholder="输入Part Number" onblur="checkDuplicatePart(this, ${idx})" list="partList_${idx}">
+            <datalist id="partList_${idx}"></datalist>
+            <div class="stock-info" id="stock_info_${idx}"></div>
+        </td>
+        <td>
+            <input type="number" class="form-control form-control-sm" id="quantity_${idx}" placeholder="数量" min="0" step="1" oninput="calcLineTotal(${idx})">
+        </td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="price_${idx}" readonly placeholder="自动获取">
+        </td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="total_amount_${idx}" readonly>
+        </td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="stock_qty_${idx}" readonly placeholder="自动获取">
+        </td>
+        <td>
+            <input type="text" class="form-control form-control-sm" id="stock_loc_${idx}" readonly placeholder="自动获取">
+        </td>
+        <td class="text-center">
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeRow(${idx})" title="删除此行">
+                <i class="fas fa-times"></i>
+            </button>
+        </td>
+    `;
+    tbody.appendChild(tr);
+    updateRowNumbers();
+}
+
+function removeRow(idx) {
+    const tr = document.getElementById('item-row-' + idx);
+    if (tr) { tr.remove(); updateRowNumbers(); calcTotal(); }
+}
+
+function updateRowNumbers() {
+    const tbody = document.getElementById('itemsBody');
+    tbody.querySelectorAll('.item-num').forEach(function (el, i) { el.textContent = i + 1; });
+}
+
+// 自动根据 Part Number 获取库存信息
+var stockLoadTimers = {};
+var pendingDuplicateChecks = {};
+
+function checkDuplicatePart(input, idx) {
+    var pn = input.value.trim();
+    if (!pn) return;
+    clearTimeout(stockLoadTimers[idx]);
+    stockLoadTimers[idx] = setTimeout(function () {
+        // 先查库存
+        loadStockInfo(input, idx);
+        // 再查是否已被申请
+        fetch('/api/requests/check-duplicate-part?part_number=' + encodeURIComponent(pn))
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                if (resp.success && resp.duplicate) {
+                    pendingDuplicateChecks[idx] = true;
+                    var msg = '物料 ' + pn + ' 已在以下申请单中：\n';
+                    resp.requests.forEach(function (req) {
+                        msg += '  #' + req.id + ' (' + req.status_label + ') 申请人: ' + req.requester + '\n';
+                    });
+                    msg += '\n确认继续申请吗？';
+                    if (!confirm(msg)) {
+                        input.value = '';
+                        document.getElementById('stock_info_' + idx).innerHTML = '<small class="text-warning"><i class="fas fa-ban"></i> 已取消 - 物料已在申请中</small>';
+                        document.getElementById('stock_qty_' + idx).value = '';
+                        document.getElementById('price_' + idx).value = '';
+                        document.getElementById('stock_loc_' + idx).value = '';
+                    } else {
+                        pendingDuplicateChecks[idx] = false;
+                    }
+                }
+            })
+            .catch(function () {});
+    }, 500);
+}
+function loadStockInfo(input, idx) {
+    var pn = input.value.trim();
+    if (!pn) return;
+    clearTimeout(stockLoadTimers[idx]);
+    stockLoadTimers[idx] = setTimeout(function () {
+        var infoEl = document.getElementById('stock_info_' + idx);
+        infoEl.innerHTML = '<small class="text-muted"><i class="fas fa-spinner fa-spin"></i> 查询中...</small>';
+        fetch('/api/validate/part-stock?part_number=' + encodeURIComponent(pn))
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                if (!resp.success) {
+                    infoEl.innerHTML = '<small class="text-danger">' + escapeHtml(resp.message) + '</small>';
+                    return;
+                }
+                var data = resp.data || {};
+                document.getElementById('stock_qty_' + idx).value = data.stock_qty != null ? data.stock_qty : '-';
+                document.getElementById('price_' + idx).value = data.price != null ? data.price : '-';
+                var loc = data.locations || data.location || '-';
+                document.getElementById('stock_loc_' + idx).value = loc;
+                infoEl.innerHTML = '<small class="text-success"><i class="fas fa-check"></i> 已获取</small>';
+                calcLineTotal(idx);
+            })
+            .catch(function () { infoEl.innerHTML = '<small class="text-danger" data-i18n="common.fetch_failed">查询失败</small>'; });
+    }, 500);
+}
+
+function calcLineTotal(idx) {
+    var qty = parseFloat(document.getElementById('quantity_' + idx).value) || 0;
+    var price = parseFloat(document.getElementById('price_' + idx).value) || 0;
+    var total = qty * price;
+    document.getElementById('total_amount_' + idx).value = total > 0 ? total.toFixed(2) : '';
+    calcTotal();
+}
+
+function calcTotal() {
+    var total = 0;
+    document.querySelectorAll('[id^="total_amount_"]').forEach(function (el) {
+        var v = parseFloat(el.value) || 0;
+        total += v;
+    });
+    document.getElementById('totalInfo').textContent = '总金额: ' + total.toFixed(2);
+}
+
+function submitMinpackRequest() {
+    const submitBtn = document.getElementById('submitBtn');
+    if (submitBtn.disabled) return;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>提交中...';
+
+    function resetBtn() {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fas fa-paper-plane me-1"></i>提交申请（无需审批）';
+    }
+
+    const tbody = document.getElementById('itemsBody');
+    const items = [];
+    for (const tr of tbody.children) {
+        const idx = tr.id.replace('item-row-', '');
+        const pn = document.getElementById('part_number_' + idx).value.trim();
+        const qty = document.getElementById('quantity_' + idx).value.trim();
+        if (!pn || !qty) {
+            showToast('error', '请填写完整第 ' + tr.querySelector('.item-num').textContent + ' 行（物料号和数量为必填）');
+            resetBtn();
+            return;
+        }
+        items.push({
+            part_number: pn,
+            quantity: parseFloat(qty),
+            price: parseFloat(document.getElementById('price_' + idx).value) || null,
+            stock_qty: parseFloat(document.getElementById('stock_qty_' + idx).value) || null,
+            stock_loc: document.getElementById('stock_loc_' + idx).value || null
+        });
+    }
+    if (items.length === 0) {
+        showToast('error', '请至少添加一行物料');
+        resetBtn();
+        return;
+    }
+
+    var payload = {
+        items: items,
+        remark: document.getElementById('remark').value.trim(),
+        is_urgent: document.getElementById('isUrgent').checked ? 1 : 0
+    };
+
+    apiPost('/api/requests/minpack', payload, function (resp) {
+        showToast('success', resp.message || '提交成功');
+        setTimeout(function () { window.location.href = '/kanban'; }, 1000);
+    }, function (err) {
+        showToast('error', err.message || '提交失败');
+        resetBtn();
+    });
+}
+</script>
+{% endblock %}

@@ -221,6 +221,59 @@ class CSIClient:
             logger.error(f"[CSI] get_item_cost error: {e}")
             return None
 
+    def get_item_backflush(self, item: str) -> bool | None:
+        """
+        查询物料的 Backflush 标记
+        返回 True=已打勾(自动发料), False=未打勾(需手动领料), None=查不到
+        """
+        try:
+            filter_str = f"Item = N'{item}'"
+            props = ["Item", "Backflush"]
+            records = self._get_ido("ue_GDL_SLItems", properties=props, filter_str=filter_str)
+            if records:
+                bf = records[0].get("Backflush")
+                return str(bf).strip() == "1"
+            return None
+        except Exception as e:
+            logger.error(f"[CSI] get_item_backflush error: {e}")
+            return None
+
+    def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:
+        """
+        查询物料批号库存（ue_NAI_SLLotLocs），按 FIFO 排序
+        排除 floor/floor-core 库位
+        返回: [{lot, loc, qty_on_hand, create_date}, ...]
+        """
+        try:
+            filter_str = f"Item = N'{item}' AND QtyOnHand > 0"
+            props = ["Item", "Loc", "Lot", "QtyOnHand", "WBLotCreateDate", "Whse"]
+            records = self._get_ido("ue_NAI_SLLotLocs", properties=props, filter_str=filter_str)
+            if not records:
+                return []
+
+            result = []
+            for r in records:
+                loc = (r.get("Loc") or "").lower()
+                if exclude_floor and ("floor" in loc or "floor-core" in loc):
+                    continue
+                qty = float(r.get("QtyOnHand", 0))
+                if qty <= 0:
+                    continue
+                result.append({
+                    "lot": r.get("Lot", ""),
+                    "loc": r.get("Loc", ""),
+                    "qty_on_hand": qty,
+                    "create_date": r.get("WBLotCreateDate", ""),
+                    "whse": r.get("Whse", ""),
+                })
+
+            # FIFO: 按创建时间升序排列
+            result.sort(key=lambda x: x["create_date"] or "")
+            return result
+        except Exception as e:
+            logger.error(f"[CSI] get_item_lots error: {e}")
+            return []
+
 
 def parse_job(job_full: str) -> tuple:
     """

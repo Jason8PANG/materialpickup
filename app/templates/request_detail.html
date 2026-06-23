@@ -5,7 +5,7 @@
     <div class="col-lg-12">
         <div id="detailLoading" class="text-center py-5">
             <div class="spinner-border text-primary"></div>
-            <p class="mt-2">加载中...</p>
+            <p class="mt-2" data-i18n="common.loading">加载中...</p>
         </div>
         <div id="detailContent" class="d-none">
             <!-- 基本信息 -->
@@ -26,31 +26,31 @@
                 <div class="card-body">
                     <div class="row g-3">
                         <div class="col-md-3">
-                            <label class="text-muted small">申请人</label>
+                            <label class="text-muted small" data-i18n="detail.requester">申请人</label>
                             <p class="fw-bold mb-0" id="detailRequester">-</p>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">申请时间</label>
+                            <label class="text-muted small" data-i18n="detail.time">申请时间</label>
                             <p class="mb-0" id="detailRequestTime">-</p>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">审批人</label>
+                            <label class="text-muted small" data-i18n="detail.supervisor">审批人</label>
                             <p class="mb-0" id="detailSupervisor">-</p>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">审批时间</label>
+                            <label class="text-muted small" data-i18n="detail.approve_time">审批时间</label>
                             <p class="mb-0" id="detailApproveTime">-</p>
                         </div>
                         <div class="col-12">
-                            <label class="text-muted small">审批意见</label>
+                            <label class="text-muted small" data-i18n="detail.approve_comment">审批意见</label>
                             <p class="mb-0" id="detailApproveComment">-</p>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">备料员</label>
+                            <label class="text-muted small" data-i18n="detail.warehouse_operator">备料员</label>
                             <p class="mb-0" id="detailWarehouseOperator">-</p>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">缺料原因</label>
+                            <label class="text-muted small" data-i18n="detail.short_reason">缺料原因</label>
                             <div class="d-flex align-items-center gap-2">
                                 <p class="mb-0" id="detailShortReason" style="display:inline">-</p>
                                 <input type="text" class="form-control form-control-sm d-none" id="editShortReason" placeholder="输入缺料原因">
@@ -58,19 +58,19 @@
                             </div>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">缺料时间</label>
+                            <label class="text-muted small" data-i18n="detail.short_time">缺料时间</label>
                             <p class="mb-0" id="detailShortTime">-</p>
                         </div>
                         <div class="col-md-3">
-                            <label class="text-muted small">签字人/时间</label>
+                            <label class="text-muted small" data-i18n="detail.signer">签字人/时间</label>
                             <p class="mb-0" id="detailSignInfo">-</p>
                         </div>
                         <div class="col-12" id="signatureImageArea" style="display:none">
-                            <label class="text-muted small">签字图片</label>
+                            <label class="text-muted small" data-i18n="detail.signature_img">签字图片</label>
                             <div><img id="detailSignatureImage" src="" alt="签字" style="max-height:80px;border:1px solid #ddd;border-radius:4px;padding:4px"></div>
                         </div>
                         <div class="col-12">
-                            <label class="text-muted small">备注</label>
+                            <label class="text-muted small" data-i18n="detail.remark">备注</label>
                             <p class="mb-0" id="detailRemark">-</p>
                         </div>
                     </div>
@@ -91,14 +91,16 @@
                             <thead class="table-light">
                                 <tr>
                                     <th style="width:40px">#</th>
-                                    <th>工单号码</th>
+                                    <th data-i18n="form.job_order">工单号码</th>
                                     <th>Part Number</th>
-                                    <th style="width:100px">数量</th>
-                                    <th style="width:100px">单价</th>
-                                    <th style="width:110px">总金额</th>
-                                    <th style="width:90px">库存量</th>
-                                    <th>补料原因</th>
-                                    <th style="min-width:160px">缺料原因</th>
+                                    <th style="width:100px" data-i18n="form.quantity">数量</th>
+                                    <th style="width:100px" data-i18n="form.price">单价</th>
+                                    <th style="width:110px" data-i18n="form.total_amount">总金额</th>
+                                    <th style="width:90px" data-i18n="form.stock_qty">库存量</th>
+                                    <th style="min-width:120px" data-i18n="form.stock_loc">库存位置</th>
+                                    <th data-i18n="form.replenish_reason">补料原因</th>
+                                    <th style="min-width:120px" data-i18n="detail.batch_no">批次号</th>
+                                    <th style="min-width:160px" data-i18n="detail.short_reason">缺料原因</th>
                                     <th style="width:50px"></th>
                                 </tr>
                             </thead>
@@ -122,11 +124,11 @@
                 <div class="modal-dialog">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="actionModalTitle">操作确认</h5>
+                            <h5 class="modal-title" id="actionModalTitle" data-i18n="common.confirm">操作确认</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body" id="actionModalBody">
-                            <p id="actionModalText">确认执行此操作吗？</p>
+                            <p id="actionModalText" data-i18n="common.confirm">确认执行此操作吗？</p>
                             <div id="actionModalExtra" class="d-none">
                                 <div class="mb-3">
                                     <label class="form-label" id="extraLabel"></label>
@@ -135,8 +137,8 @@
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                            <button type="button" class="btn btn-primary" id="actionConfirmBtn">确认</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                            <button type="button" class="btn btn-primary" id="actionConfirmBtn" data-i18n="common.confirm">确认</button>
                         </div>
                     </div>
                 </div>
@@ -162,7 +164,7 @@
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
                             <button type="button" class="btn btn-primary" id="saveSignatureBtn" onclick="saveSignature()">
                                 <i class="fas fa-check me-1"></i>确认签字
                             </button>
@@ -176,18 +178,18 @@
                 <div class="modal-dialog">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title">指定备料员</h5>
+                            <h5 class="modal-title" data-i18n="detail.warehouse_operator">指定备料员</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <div class="mb-3">
-                                <label class="form-label">备料员</label>
+                                <label class="form-label" data-i18n="detail.warehouse_operator">备料员</label>
                                 <input type="text" class="form-control" id="workerInput" placeholder="输入备料员用户名">
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                            <button type="button" class="btn btn-primary" id="assignWorkerConfirmBtn">确定</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                            <button type="button" class="btn btn-primary" id="assignWorkerConfirmBtn" data-i18n="action.ok">确定</button>
                         </div>
                     </div>
                 </div>
@@ -234,7 +236,7 @@ function renderItems(items) {
     const tbody = document.getElementById('itemsDetailBody');
     const countEl = document.getElementById('detailItemCount');
     if (!items || items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">暂无明细</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="text-center text-muted" data-i18n="detail.no_items">暂无明细</td></tr>';
         if (countEl) countEl.textContent = '0';
         return;
     }
@@ -251,7 +253,15 @@ function renderItems(items) {
             <td class="text-end">${item.price != null ? item.price : '-'}</td>
             <td class="text-end"><strong>${item.total_amount != null ? item.total_amount : '-'}</strong></td>
             <td class="text-end">${item.stock_qty != null ? item.stock_qty : '-'}</td>
+            <td>${escapeHtml(item.stock_loc || '-')}</td>
             <td>${item.replenish_reason || '-'}${item.replenish_reason_other ? ' (' + escapeHtml(item.replenish_reason_other) + ')' : ''}</td>
+            <td>
+                <div class="d-flex gap-1 align-items-center">
+                    <input type="text" class="form-control form-control-sm" id="batch_no_${item.id}" value="${escapeHtml(item.batch_no || '')}" placeholder="批次号" style="min-width:120px">
+                    <button class="btn btn-sm btn-outline-info" onclick="autoFillBatch(${item.id}, ${REQUEST_ID}, '${escapeHtml(item.part_number)}', ${item.quantity})" title="自动按FIFO填充批次"><i class="fas fa-magic"></i></button>
+                    <button class="btn btn-sm btn-outline-success" onclick="saveItemBatchNo(${item.id}, ${REQUEST_ID})" title="保存"><i class="fas fa-save"></i></button>
+                </div>
+            </td>
             <td>
                 <div class="d-flex gap-1 align-items-center">
                     <input type="text" class="form-control form-control-sm" id="short_reason_${item.id}" value="${escapeHtml(item.short_reason || '')}" placeholder="缺料原因" style="min-width:120px">
@@ -262,6 +272,57 @@ function renderItems(items) {
         `;
         tbody.appendChild(tr);
     });
+}
+
+/* ========== 自动填充批次号（FIFO） ========== */
+function autoFillBatch(itemId, requestId, partNumber, qtyNeeded) {
+    if (!partNumber) {
+        showToast('error', '无物料号，无法获取批次');
+        return;
+    }
+    fetch('/api/validate/part-lots?part_number=' + encodeURIComponent(partNumber) + '&qty=' + qtyNeeded)
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+            if (!resp.success) {
+                showToast('error', resp.message || '获取失败');
+                return;
+            }
+            var alloc = resp.data.fifo_allocation || [];
+            if (alloc.length === 0) {
+                showToast('error', '无可用的批次库存');
+                return;
+            }
+            var batchStr = alloc.map(function (l) { return l.lot + '(' + l.qty_take + ')'; }).join(', ');
+            document.getElementById('batch_no_' + itemId).value = batchStr;
+            apiPut('/api/requests/' + requestId + '/items/' + itemId + '/batch', {batch_no: batchStr},
+                function (resp2) {
+                    var avail = resp.data.total_available;
+                    showToast('success', '已按FIFO填充: ' + batchStr + ' (可用:' + avail + ')');
+                },
+                function (err2) {
+                    showToast('error', '自动保存失败: ' + (err2.message || ''));
+                }
+            );
+        })
+        .catch(function (err) {
+            showToast('error', '自动填充失败: ' + err.message);
+        });
+}
+
+/* ========== 按行保存批次号 ========== */
+function saveItemBatchNo(itemId, requestId) {
+    var input = document.getElementById('batch_no_' + itemId);
+    if (!input) return;
+    var batchNo = input.value.trim();
+
+    apiPut('/api/requests/' + requestId + '/items/' + itemId + '/batch', {batch_no: batchNo},
+        function (resp) {
+            showToast('success', '批次号已保存');
+        },
+        function (err) {
+            showToast('error', err.message || '保存失败');
+        }
+    );
 }
 
 /* ========== 按行保存缺料原因 ========== */

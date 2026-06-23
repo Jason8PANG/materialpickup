@@ -101,8 +101,8 @@ function handleLogin(e) {
         window.location.href = '/kanban';
     }, function (resp) {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-sign-in-alt me-2"></i>登 录';
-        errorEl.textContent = resp.message || '登录失败';
+        btn.innerHTML = '<i class="fas fa-sign-in-alt me-2"></i>' + __('login.btn');
+        errorEl.textContent = resp.message || __('login.error');
         errorEl.classList.remove('d-none');
     });
 
@@ -168,11 +168,11 @@ function renderKanban(data) {
 
         col.innerHTML = `
             <div class="kanban-column-header">
-                <span>${group.title}</span>
+                <span>${__('status.' + statusKey) || group.title}</span>
                 <span class="count">${group.count}</span>
             </div>
             <div class="kanban-cards">
-                ${group.cards.length === 0 ? '<div class="text-center text-muted py-4"><small>暂无数据</small></div>' : ''}
+                ${group.cards.length === 0 ? '<div class="text-center text-muted py-4"><small>' + __('kanban.no_data') + '</small></div>' : ''}
             </div>
         `;
 
@@ -222,11 +222,11 @@ function renderKanban(data) {
 
             cardEl.innerHTML = `
                 <div class="card-header-row">
-                    <div class="card-job-list">${jobDisplay}</div>
-                    <span class="card-item-badge badge bg-secondary">${itemCount} 项物料</span>
+                    <div class="card-job-list">${card.is_urgent ? '<span class="badge bg-danger me-1"><i class="fas fa-exclamation-triangle"></i> 急料</span>' : ''}${jobDisplay}</div>
+                    <span class="card-item-badge badge bg-secondary">${itemCount} ${__('kanban.item_count')}</span>
                 </div>
-                <div class="card-part-number">${escapeHtml(primaryPartNumber)}${itemCount > 1 ? ' <span class="text-muted">等' + itemCount + '项</span>' : ''}</div>
-                <div class="card-qty">总金额: ${card.total_amount ? parseFloat(card.total_amount).toFixed(2) : '0.00'} | 申请总数: ${card.total_quantity || card.quantity || '-'}</div>
+                <div class="card-part-number">${escapeHtml(primaryPartNumber)}${itemCount > 1 ? ' <span class="text-muted">' + __('kanban.etc') + itemCount + __('kanban.items') + '</span>' : ''}</div>
+                <div class="card-qty">${__('kanban.total_amt')}: ${card.total_amount ? parseFloat(card.total_amount).toFixed(2) : '0.00'} | ${__('kanban.total_qty')}: ${card.total_quantity || card.quantity || '-'}</div>
                 <div class="card-time text-muted small">${card.request_time || ''}</div>
                 <div class="card-footer">${actionHtml}</div>
             `;
@@ -245,7 +245,7 @@ function renderKanban(data) {
     });
 
     const totalEl = document.getElementById('totalCount');
-    if (totalEl) totalEl.textContent = totalCount + ' 张';
+    if (totalEl) totalEl.textContent = __('kanban.total') + ' ' + totalCount + ' ' + __('kanban.items');
 
     if (window.innerWidth < 768) {
         const firstCol = board.querySelector('.kanban-column');
@@ -427,33 +427,33 @@ function renderActions(req) {
 
     // 取消申请：发起人可取消待审批的申请
     if ((role === 'requester' || role === 'admin') && status === 'pending_approval') {
-        actions.push({label: '取消申请', class: 'btn-outline-danger', action: 'cancel'});
+        actions.push({label: __('action.cancel'), class: 'btn-outline-danger', action: 'cancel'});
     }
 
     if (role === 'supervisor' || role === 'admin') {
         if (status === 'pending_approval') {
-            actions.push({label: '审批通过', class: 'btn-success', action: 'approve'});
-            actions.push({label: '驳回', class: 'btn-danger', action: 'reject'});
+            actions.push({label: __('action.approve'), class: 'btn-success', action: 'approve'});
+            actions.push({label: __('action.reject'), class: 'btn-danger', action: 'reject'});
         }
     }
 
     if (role === 'warehouse' || role === 'admin') {
         if (status === 'pending_prep') {
-            actions.push({label: '指定备料员', class: 'btn-outline-secondary', action: 'assign_worker'});
-            actions.push({label: '开始备料', class: 'btn-warning', action: 'start_prep'});
+            actions.push({label: __('action.assign_worker'), class: 'btn-outline-secondary', action: 'assign_worker'});
+            actions.push({label: __('action.start_prep'), class: 'btn-warning', action: 'start_prep'});
         }
         if (status === 'prepping') {
-            actions.push({label: '完成备料', class: 'btn-success', action: 'complete_prep'});
-            actions.push({label: '缺料登记', class: 'btn-danger', action: 'short'});
+            actions.push({label: __('action.complete_prep'), class: 'btn-success', action: 'complete_prep'});
+            actions.push({label: __('action.short'), class: 'btn-danger', action: 'short'});
         }
         if (status === 'short') {
-            actions.push({label: '转为待取料', class: 'btn-warning', action: 'restore_from_short'});
+            actions.push({label: __('action.restore_from_short'), class: 'btn-warning', action: 'restore_from_short'});
         }
     }
 
     if ((role === 'requester' || role === 'warehouse' || role === 'admin') &&
         (status === 'ready_pickup' || status === 'short')) {
-        actions.push({label: '签字确认', class: 'btn-primary', action: 'sign'});
+        actions.push({label: __('action.sign'), class: 'btn-primary', action: 'sign'});
     }
 
     if (actions.length === 0) {

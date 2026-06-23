@@ -98,3 +98,100 @@ def api_validate_material():
             'unit_cost': unit_cost
         }
     })
+
+
+@validate_bp.route('/api/validate/part-stock', methods=['GET'])
+def api_part_stock():
+    """最小包装用：按 Part Number 查库存（排除floor库位），返回库存量、位置、单价"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    part_number = request.args.get('part_number', '').strip()
+    if not part_number:
+        return jsonify({'success': False, 'message': '请输入Part Number'}), 400
+
+    siteref = request.args.get('siteref') or user.get('siteref', '310')
+
+    client = CSIClient(siteref=siteref)
+
+    # Backflush 验证暂时取消
+    # backflush = client.get_item_backflush(part_number)
+    # if backflush is None:
+    #     return jsonify({'success': False, 'message': f'物料 {part_number} 在系统中不存在'}), 404
+    # if backflush is False:
+    #     return jsonify({'success': False, 'message': f'物料 {part_number} 未标记Backflush，不支持最小包装发放'}), 400
+
+    inventory = client.get_inventory(part_number)
+    unit_cost = client.get_item_cost(part_number)
+
+    # 过滤掉名称包含 "floor" 的库位（不区分大小写）
+    valid_locs = []
+    stock_qty = 0
+    if inventory:
+        for inv in inventory:
+            loc_name = (inv.get('Loc') or '').lower()
+            if 'floor' in loc_name:
+                continue
+            qty = float(inv.get('QtyOnHand', 0))
+            valid_locs.append({'loc': inv['Loc'], 'qty': qty})
+            stock_qty += qty
+
+    # 组装位置字符串
+    loc_str = ', '.join([f"{l['loc']}({l['qty']})" for l in valid_locs]) if valid_locs else ''
+    price = unit_cost if unit_cost else 0
+
+    return jsonify({
+        'success': True,
+        'data': {
+            'part_number': part_number,
+            'stock_qty': stock_qty,
+            'price': price,
+            'locations': loc_str,
+            'location_list': valid_locs
+        }
+    })
+
+
+@validate_bp.route('/api/validate/part-lots', methods=['GET'])
+def api_part_lots():
+    """查询物料批号库存，按 FIFO 排序，排除 floor 库位"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    part_number = request.args.get('part_number', '').strip()
+    qty_needed = request.args.get('qty', type=float)
+    if not part_number:
+        return jsonify({'success': False, 'message': '请输入Part Number'}), 400
+
+    siteref = request.args.get('siteref') or user.get('siteref', '310')
+    client = CSIClient(siteref=siteref)
+    lots = client.get_item_lots(part_number)
+
+    # FIFO 分配：按创建时间排序已由 API 完成
+    fifo_allocation = []
+    remaining = qty_needed
+    for lot in lots:
+        if remaining is None or remaining <= 0:
+            break
+        take = min(lot['qty_on_hand'], remaining)
+        fifo_allocation.append({
+            'lot': lot['lot'],
+            'loc': lot['loc'],
+            'qty_take': take,
+            'qty_on_hand': lot['qty_on_hand'],
+        })
+        if remaining is not None:
+            remaining -= take
+
+    return jsonify({
+        'success': True,
+        'data': {
+            'part_number': part_number,
+            'qty_needed': qty_needed,
+            'lots': lots,
+            'fifo_allocation': fifo_allocation,
+            'total_available': sum(l['qty_on_hand'] for l in lots),
+        }
+    })

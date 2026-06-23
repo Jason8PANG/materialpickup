@@ -39,9 +39,9 @@ def create_request():
         # 1. 插入主表
         cursor.execute(
             """INSERT INTO kr_material_request 
-            (siteref, requester, request_time, status, remark)
-            VALUES (%s, %s, %s, 'pending_approval', %s)""",
-            (siteref, user['username'], now, data.get('remark', ''))
+            (siteref, requester, request_time, status, remark, is_urgent)
+            VALUES (%s, %s, %s, 'pending_approval', %s, %s)""",
+            (siteref, user['username'], now, data.get('remark', ''), data.get('is_urgent', 0))
         )
         request_id = cursor.lastrowid
 
@@ -445,3 +445,118 @@ def records():
         'size': size,
         'total_pages': (total + size - 1) // size
     })
+
+
+@request_bp.route('/api/requests/minpack', methods=['POST'])
+def create_minpack_request():
+    """创建最小包装物料申请（无需审批，直接到待备料）"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    if user['role'] not in ('requester', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    data = request.get_json()
+    items = data.get('items', [])
+    if not items:
+        return jsonify({'success': False, 'message': '请至少添加一行物料'}), 400
+
+    siteref = user.get('siteref', '')
+    if not siteref:
+        return jsonify({'success': False, 'message': '站点信息缺失'}), 400
+
+    now = datetime.now()
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+
+        # 插入主表 - 状态直接到 pending_prep（待备料），不需要审批
+        cursor.execute(
+            """INSERT INTO kr_material_request 
+            (siteref, request_type, requester, request_time, status, remark, is_urgent)
+            VALUES (%s, 'minpack', %s, %s, 'pending_prep', %s, %s)""",
+            (siteref, user['username'], now, data.get('remark', ''), data.get('is_urgent', 0))
+        )
+        request_id = cursor.lastrowid
+
+        # 插入明细
+        item_data = []
+        for item in items:
+            qty = float(item['quantity'])
+            price = float(item['price']) if item.get('price') else 0
+            total = qty * price
+            stock_qty = float(item['stock_qty']) if item.get('stock_qty') else None
+            stock_loc = item.get('stock_loc')
+            item_data.append((
+                request_id, item['part_number'], qty, price, total,
+                stock_qty, stock_loc
+            ))
+
+        cursor.executemany(
+            """INSERT INTO kr_request_item 
+            (request_id, job_order, part_number, quantity, price, total_amount, stock_qty, stock_loc)
+            VALUES (%s, NULL, %s, %s, %s, %s, %s, %s)""",
+            item_data
+        )
+
+        # 操作日志
+        cursor.execute(
+            "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
+            "VALUES (%s, %s, 'SUBMIT_MINPACK', %s, %s, %s)",
+            (request_id, user['username'],
+             f"提交最小包装申请: {len(items)}项物料",
+             request.remote_addr, now)
+        )
+        db.commit()
+        cursor.close()
+
+    return jsonify({'success': True, 'id': request_id, 'message': '最小包装申请已提交，仓库将开始备料'})
+
+
+@request_bp.route('/api/requests/check-duplicate-part', methods=['GET'])
+def check_duplicate_part():
+    """检查物料是否已在未完成的申请单中（用于最小包装重复提醒）"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    part_number = request.args.get('part_number', '').strip()
+    if not part_number:
+        return jsonify({'success': False, 'message': '请输入Part Number'}), 400
+
+    siteref = user.get('siteref')
+    conditions = ["i.part_number = %s", "r.status IN ('pending_prep', 'prepping')", "r.is_deleted = 0"]
+    params = [part_number]
+
+    if siteref and user.get('role') != 'admin':
+        conditions.append("r.siteref = %s")
+        params.append(siteref)
+
+    where = " AND ".join(conditions)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        sql = f"""SELECT DISTINCT r.id, r.status, r.requester, r.request_time
+            FROM kr_material_request r
+            JOIN kr_request_item i ON i.request_id = r.id
+            WHERE {where}
+            ORDER BY r.id DESC LIMIT 10"""
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        cursor.close()
+
+    if not rows:
+        return jsonify({'success': True, 'duplicate': False, 'requests': []})
+
+    from app.models import STATUS_LABELS
+    result = []
+    for row in rows:
+        result.append({
+            'id': row['id'],
+            'status': row['status'],
+            'status_label': STATUS_LABELS.get(row['status'], row['status']),
+            'requester': row['requester'],
+            'request_time': str(row['request_time']) if row['request_time'] else ''
+        })
+
+    return jsonify({'success': True, 'duplicate': True, 'requests': result})

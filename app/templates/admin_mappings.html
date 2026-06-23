@@ -13,18 +13,18 @@
         <div class="row g-2 mb-3">
             <div class="col-auto">
                 <select class="form-select form-select-sm" id="filterSite" onchange="loadMappings()">
-                    <option value="">全部站点</option>
+                    <option value="" data-i18n="admin.col_site">全部站点</option>
                     <option value="310">苏州工厂 (310)</option>
                     <option value="410">槟城工厂 (410)</option>
                 </select>
             </div>
             <div class="col-auto">
                 <select class="form-select form-select-sm" id="filterRole" onchange="loadMappings()">
-                    <option value="">全部角色</option>
-                    <option value="admin">管理员</option>
-                    <option value="requester">领料员</option>
-                    <option value="supervisor">主管</option>
-                    <option value="warehouse">仓库</option>
+                    <option value="" data-i18n="admin.col_role">全部角色</option>
+                    <option value="admin" data-i18n="admin.role_admin">管理员</option>
+                    <option value="requester" data-i18n="admin.role_requester">领料员</option>
+                    <option value="supervisor" data-i18n="admin.role_supervisor">主管</option>
+                    <option value="warehouse" data-i18n="admin.role_warehouse">仓库</option>
                 </select>
             </div>
         </div>
@@ -34,18 +34,18 @@
                 <thead class="table-light">
                     <tr>
                         <th>ID</th>
-                        <th>域账号</th>
-                        <th>显示名称</th>
-                        <th>角色</th>
-                        <th>所属站点</th>
-                        <th>邮箱</th>
-                        <th>状态</th>
-                        <th>备注</th>
-                        <th>操作</th>
+                        <th data-i18n="admin.col_domain">域账号</th>
+                        <th data-i18n="admin.col_display">显示名称</th>
+                        <th data-i18n="admin.col_role">角色</th>
+                        <th data-i18n="admin.col_site">所属站点</th>
+                        <th data-i18n="admin.col_email">邮箱</th>
+                        <th data-i18n="admin.col_status">状态</th>
+                        <th data-i18n="detail.remark">备注</th>
+                        <th data-i18n="admin.col_actions">操作</th>
                     </tr>
                 </thead>
                 <tbody id="mappingTableBody">
-                    <tr><td colspan="9" class="text-center text-muted">加载中...</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -57,7 +57,7 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="mappingModalTitle">新增账号</h5>
+                <h5 class="modal-title" id="mappingModalTitle" data-i18n="admin.modal_add">新增账号</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
@@ -67,46 +67,46 @@
                     <input type="text" class="form-control" id="fDomainAccount" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">显示名称</label>
+                    <label class="form-label" data-i18n="admin.col_display">显示名称</label>
                     <input type="text" class="form-control" id="fDisplayName">
                 </div>
                 <div class="mb-3">
                     <label class="form-label">角色 <span class="text-danger">*</span></label>
                     <select class="form-select" id="fRole" onchange="toggleSiteField()">
-                        <option value="requester">领料员</option>
-                        <option value="supervisor">主管</option>
-                        <option value="warehouse">仓库</option>
-                        <option value="admin">管理员</option>
+                        <option value="requester" data-i18n="admin.role_requester">领料员</option>
+                        <option value="supervisor" data-i18n="admin.role_supervisor">主管</option>
+                        <option value="warehouse" data-i18n="admin.role_warehouse">仓库</option>
+                        <option value="admin" data-i18n="admin.role_admin">管理员</option>
                     </select>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">所属站点 <span class="text-danger" id="siteRequired">*</span></label>
                     <select class="form-select" id="fSiteref">
-                        <option value="">请选择站点</option>
+                        <option value="" data-i18n="admin.col_site">请选择站点</option>
                         <option value="310">苏州工厂 (310)</option>
                         <option value="410">槟城工厂 (410)</option>
                     </select>
-                    <small class="text-muted" id="siteAdminHint">管理员可选"跨站"（不选择站点）</small>
+                    <small class="text-muted" id="siteAdminHint" data-i18n="admin.col_site">管理员可选"跨站"（不选择站点）</small>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">邮箱</label>
+                    <label class="form-label" data-i18n="admin.col_email">邮箱</label>
                     <input type="email" class="form-control" id="fEmail">
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">状态</label>
+                    <label class="form-label" data-i18n="admin.col_status">状态</label>
                     <select class="form-select" id="fIsActive">
-                        <option value="1">启用</option>
-                        <option value="0">禁用</option>
+                        <option value="1" data-i18n="admin.status_active">启用</option>
+                        <option value="0" data-i18n="admin.status_disabled">禁用</option>
                     </select>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">备注</label>
+                    <label class="form-label" data-i18n="detail.remark">备注</label>
                     <input type="text" class="form-control" id="fRemark">
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" id="saveMappingBtn">保存</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="saveMappingBtn" data-i18n="common.save">保存</button>
             </div>
         </div>
     </div>

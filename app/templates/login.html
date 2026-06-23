@@ -13,9 +13,9 @@
         <div class="login-card">
             <div class="login-header">
                 <div class="login-logo-wrapper">
-                    <i class="fas fa-clipboard-list login-icon"></i>
+                    <img src="{{ url_for('static', filename='images/logo.png') }}" alt="NAI Logo" style="height:64px;width:auto;display:block;margin:0 auto;">
                 </div>
-                <h3 class="login-title">物料领取看板系统</h3>
+                <h3 class="login-title mt-3" data-i18n="form.part_number">物料领取看板系统</h3>
                 <p class="login-subtitle">Material Requisition Kanban System</p>
             </div>
             <form id="loginForm" onsubmit="return handleLogin(event)">
@@ -39,7 +39,7 @@
                 </button>
             </form>
             <div class="login-footer">
-                <small class="text-muted">&copy; 2026 物料领取看板系统 v2.0</small>
+                <small class="text-muted" data-i18n="form.part_number">&copy; 2026 物料领取看板系统 v2.0</small>
             </div>
         </div>
     </div>

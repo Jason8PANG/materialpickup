@@ -10,11 +10,11 @@
             <div class="col-md-10 mt-2 mt-md-0">
                 <div class="row g-2 align-items-end">
                     <div class="col-3">
-                        <label class="form-label small mb-1">创建时间起</label>
+                        <label class="form-label small mb-1" data-i18n="records.date_from">创建时间起</label>
                         <input type="date" class="form-control form-control-sm" id="dateFrom">
                     </div>
                     <div class="col-3">
-                        <label class="form-label small mb-1">创建时间止</label>
+                        <label class="form-label small mb-1" data-i18n="records.date_to">创建时间止</label>
                         <input type="date" class="form-control form-control-sm" id="dateTo">
                     </div>
                     <div class="col-2">
@@ -38,27 +38,27 @@
             <table class="table table-bordered table-hover table-sm mb-0" style="font-size:12px;white-space:nowrap;">
                 <thead class="table-dark sticky-top" style="position:sticky;top:0;">
                     <tr>
-                        <th>单号</th>
-                        <th>申请人</th>
-                        <th>创建时间</th>
-                        <th>状态</th>
-                        <th>审批人</th>
-                        <th>审批时间</th>
-                        <th>备料人</th>
-                        <th>取料人</th>
-                        <th>取料时间</th>
-                        <th>工单号</th>
-                        <th>物料</th>
-                        <th>数量</th>
-                        <th>库存</th>
-                        <th>单价</th>
-                        <th>总金额</th>
-                        <th>缺料原因</th>
-                        <th>站点</th>
+                        <th><span data-i18n="records.title">单号</span></th>
+                        <th><span data-i18n="approve.requester">申请人</span></th>
+                        <th><span data-i18n="form.time">创建时间</span></th>
+                        <th><span data-i18n="admin.col_status">状态</span></th>
+                        <th><span data-i18n="detail.supervisor">审批人</span></th>
+                        <th><span data-i18n="detail.approve_time">审批时间</span></th>
+                        <th><span data-i18n="detail.warehouse_operator">备料人</span></th>
+                        <th><span data-i18n="detail.signer">取料人</span></th>
+                        <th data-i18n="detail.sign_time">取料时间</th>
+                        <th><span data-i18n="form.job_order">工单号</span></th>
+                        <th><span data-i18n="form.part_number">物料</span></th>
+                        <th><span data-i18n="form.quantity">数量</span></th>
+                        <th><span data-i18n="form.stock_qty">库存</span></th>
+                        <th><span data-i18n="form.price">单价</span></th>
+                        <th><span data-i18n="form.total_amount">总金额</span></th>
+                        <th><span data-i18n="detail.short_reason">缺料原因</span></th>
+                        <th><span data-i18n="admin.col_site">站点</span></th>
                     </tr>
                 </thead>
                 <tbody id="recordsBody">
-                    <tr><td colspan="17" class="text-center text-muted py-4">请输入时间范围后点击查询</td></tr>
+                    <tr><td colspan="17" class="text-center text-muted py-4" data-i18n="common.search">请输入时间范围后点击查询</td></tr>
                 </tbody>
             </table>
         </div>
@@ -107,7 +107,7 @@ function renderRecords(resp) {
     countEl.textContent = '共 ' + resp.total + ' 条记录';
 
     if (!resp.data || resp.data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted py-4">无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted py-4" data-i18n="common.no_data">无数据</td></tr>';
         pagination.classList.add('d-none');
         return;
     }

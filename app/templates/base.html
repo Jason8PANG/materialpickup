@@ -13,7 +13,8 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container-fluid">
             <a class="navbar-brand" href="/kanban">
-                <i class="fas fa-clipboard-list me-2"></i>物料领取看板
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="NAI" style="height:30px;width:auto;margin-right:8px;">
+                <span data-i18n="kanban.title">物料领取看板</span>
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -21,27 +22,33 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/kanban"><i class="fas fa-columns me-1"></i>看板</a>
+                        <a class="nav-link" href="/kanban"><i class="fas fa-columns me-1"></i><span data-i18n="nav.kanban">看板</span></a>
                     </li>
                     {% if session.user.role in ['requester', 'admin'] %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="/request/new"><i class="fas fa-plus-circle me-1"></i>新建申请</a>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-plus-circle me-1"></i><span data-i18n="nav.new">新建</span>
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="/request/new"><i class="fas fa-list me-2"></i><span data-i18n="nav.new_normal">新建按需物料申请</span></a></li>
+                            <li><a class="dropdown-item" href="/request/minpack/new"><i class="fas fa-cube me-2"></i><span data-i18n="nav.new_minpack">新建最小包装物料申请</span></a></li>
+                        </ul>
                     </li>
                     {% endif %}
                     {% if session.user.role in ['warehouse', 'admin'] %}
                     <li class="nav-item">
-                        <a class="nav-link" href="/pending"><i class="fas fa-list me-1"></i>未完成单据</a>
+                        <a class="nav-link" href="/pending"><i class="fas fa-list me-1"></i><span data-i18n="nav.pending">待处理</span></a>
                     </li>
                     {% endif %}
                     <li class="nav-item">
-                        <a class="nav-link" href="/history"><i class="fas fa-history me-1"></i>历史查询</a>
+                        <a class="nav-link" href="/history"><i class="fas fa-history me-1"></i><span data-i18n="nav.history">历史查询</span></a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/records"><i class="fas fa-table me-1"></i>记录查询</a>
+                        <a class="nav-link" href="/records"><i class="fas fa-table me-1"></i><span data-i18n="nav.records">记录查询</span></a>
                     </li>
                     {% if session.user.role == 'admin' %}
                     <li class="nav-item">
-                        <a class="nav-link" href="/admin/mappings"><i class="fas fa-users-cog me-1"></i>账号管理</a>
+                        <a class="nav-link" href="/admin/mappings"><i class="fas fa-users-cog me-1"></i><span data-i18n="nav.admin">账号管理</span></a>
                     </li>
                     {% endif %}
                 </ul>
@@ -56,7 +63,7 @@
                     {% if session.user.role == 'admin' %}
                     <div class="dropdown me-2">
                         <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                            <i class="fas fa-exchange-alt me-1"></i>切换站点
+                            <i class="fas fa-exchange-alt me-1"></i><span data-i18n="nav.switch_site">切换站点</span>
                         </button>
                         <ul class="dropdown-menu" id="siteSwitchMenu">
                             <li><a class="dropdown-item" href="#" data-site="310" onclick="switchSite('310')">苏州工厂 (310)</a></li>
@@ -64,6 +71,17 @@
                         </ul>
                     </div>
                     {% endif %}
+
+                    <!-- 语言切换 -->
+                    <div class="dropdown me-2">
+                        <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-language me-1"></i><span id="langLabel">中文</span>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="#" onclick="switchUILang('zh')">中文</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="switchUILang('en')">EN</a></li>
+                        </ul>
+                    </div>
 
                     <span class="me-3">
                         <i class="fas fa-user-circle me-1"></i>
@@ -77,7 +95,7 @@
                         </span>
                     </span>
                     <button class="btn btn-outline-light btn-sm" onclick="logout()">
-                        <i class="fas fa-sign-out-alt me-1"></i>退出
+                        <i class="fas fa-sign-out-alt me-1"></i><span data-i18n="nav.logout">退出</span>
                     </button>
                 </div>
             </div>
@@ -93,7 +111,7 @@
     <div class="toast-container position-fixed bottom-0 end-0 p-3">
         <div id="toastMsg" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
             <div class="toast-header">
-                <strong class="me-auto" id="toastTitle">提示</strong>
+                <strong class="me-auto" id="toastTitle" data-i18n="common.loading">提示</strong>
                 <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
             </div>
             <div class="toast-body" id="toastBody"></div>
@@ -103,12 +121,35 @@
     <!-- 加载提示 -->
     <div id="loadingOverlay" class="loading-overlay d-none">
         <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">加载中...</span>
+            <span class="visually-hidden" data-i18n="common.loading">加载中...</span>
         </div>
     </div>
 
     <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script>
+    // 语言切换（覆盖 i18n.js 中的 setLang，额外更新 navbar 标签）
+    function switchUILang(lang) {
+        setLang(lang);
+        document.getElementById('langLabel').textContent = lang === 'zh' ? '中文' : 'EN';
+        // 角色名称翻译
+        var roleBadge = document.querySelector('.role-badge');
+        if (roleBadge) {
+            var role = '{{ session.user.role }}';
+            var roleMap = {
+                zh: {'admin': '管理员', 'requester': '领料员', 'supervisor': '主管', 'warehouse': '仓库'},
+                en: {'admin': 'Admin', 'requester': 'Requester', 'supervisor': 'Supervisor', 'warehouse': 'Warehouse'}
+            };
+            roleBadge.textContent = roleMap[lang] && roleMap[lang][role] ? roleMap[lang][role] : role;
+        }
+    }
+    // 页面加载时恢复语言
+    document.addEventListener('DOMContentLoaded', function () {
+        var saved = localStorage.getItem('kanban_lang') || 'zh';
+        switchUILang(saved);
+    });
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

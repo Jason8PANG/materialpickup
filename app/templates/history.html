@@ -17,9 +17,9 @@
                     </div>
                     <div class="col-2">
                         <select class="form-select form-select-sm" id="statusFilter">
-                            <option value="">全部状态</option>
-                            <option value="completed">已完成</option>
-                            <option value="rejected">已驳回</option>
+                            <option value="" data-i18n="admin.col_status">全部状态</option>
+                            <option value="completed" data-i18n="history.completed">已完成</option>
+                            <option value="rejected" data-i18n="history.rejected">已驳回</option>
                         </select>
                     </div>
                     <div class="col-2">
@@ -42,19 +42,19 @@
                     <tr>
                         <th>ID</th>
                         {% if session.user.role == 'admin' %}
-                        <th>站点</th>
+                        <th><span data-i18n="admin.col_site">站点</span></th>
                         {% endif %}
-                        <th>工单号</th>
-                        <th>物料项数</th>
-                        <th>申请人</th>
-                        <th>状态</th>
-                        <th>审批人</th>
-                        <th>申请时间</th>
-                        <th>操作</th>
+                        <th><span data-i18n="form.job_order">工单号</span></th>
+                        <th><span data-i18n="kanban.item_count">物料项数</span></th>
+                        <th><span data-i18n="approve.requester">申请人</span></th>
+                        <th><span data-i18n="admin.col_status">状态</span></th>
+                        <th><span data-i18n="detail.supervisor">审批人</span></th>
+                        <th><span data-i18n="form.time">申请时间</span></th>
+                        <th><span data-i18n="admin.col_actions">操作</span></th>
                     </tr>
                 </thead>
                 <tbody id="historyTableBody">
-                    <tr><td colspan="9" class="text-center text-muted">加载中...</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>

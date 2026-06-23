@@ -331,6 +331,33 @@ def update_item_short_reason(request_id, item_id):
     return jsonify({'success': True, 'message': '缺料原因已保存'})
 
 
+@warehouse_bp.route('/api/requests/<int:request_id>/items/<int:item_id>/batch', methods=['PUT'])
+def update_item_batch_no(request_id, item_id):
+    """保存物料行批次号"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    if user['role'] not in ('warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    data = request.get_json() or {}
+    batch_no = (data.get('batch_no') or '').strip()
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(
+            "UPDATE kr_request_item SET batch_no = %s WHERE id = %s AND request_id = %s",
+            (batch_no if batch_no else None, item_id, request_id)
+        )
+        if cursor.rowcount == 0:
+            cursor.close()
+            return jsonify({'success': False, 'message': '明细行不存在'}), 404
+        db.commit()
+        cursor.close()
+
+    return jsonify({'success': True, 'message': '批次号已保存'})
+
+
 @warehouse_bp.route('/api/requests/pending', methods=['GET'])
 def pending_requests():
     """查询未完成单据（仓库用）"""

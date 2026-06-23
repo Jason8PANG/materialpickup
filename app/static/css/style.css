@@ -56,13 +56,10 @@ body {
 .login-logo-wrapper {
     width: 72px;
     height: 72px;
-    background: linear-gradient(135deg, #3949ab, #7c4dff);
-    border-radius: 18px;
     display: flex;
     align-items: center;
     justify-content: center;
     margin: 0 auto 16px;
-    box-shadow: 0 8px 24px rgba(57, 73, 171, 0.3);
 }
 
 .login-icon {

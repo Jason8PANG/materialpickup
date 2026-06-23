@@ -34,6 +34,16 @@ def request_detail_page(request_id):
     return render_template('request_detail.html', request_id=request_id)
 
 
+@pages.route('/request/minpack/new')
+def minpack_request_page():
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    user = session['user']
+    if user['role'] not in ('requester', 'admin'):
+        return '权限不足', 403
+    return render_template('minpack_request_form.html')
+
+
 @pages.route('/pending')
 def pending_list_page():
     if not session.get('user'):

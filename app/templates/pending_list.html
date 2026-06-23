@@ -15,12 +15,12 @@
                     </div>
                     <div class="col-3">
                         <select class="form-select form-select-sm" id="statusFilter">
-                            <option value="">全部状态</option>
-                            <option value="pending_approval">待审批</option>
-                            <option value="pending_prep">待备料</option>
-                            <option value="prepping">备料中</option>
-                            <option value="short">缺料</option>
-                            <option value="ready_pickup">待取料</option>
+                            <option value="" data-i18n="admin.col_status">全部状态</option>
+                            <option value="pending_approval" data-i18n="status.pending_approval">待审批</option>
+                            <option value="pending_prep" data-i18n="status.pending_prep">待备料</option>
+                            <option value="prepping" data-i18n="status.prepping">备料中</option>
+                            <option value="short" data-i18n="status.short">缺料</option>
+                            <option value="ready_pickup" data-i18n="status.ready_pickup">待取料</option>
                         </select>
                     </div>
                     <div class="col-3">
@@ -39,18 +39,18 @@
                     <tr>
                         <th>ID</th>
                         {% if session.user.role == 'admin' %}
-                        <th>站点</th>
+                        <th><span data-i18n="admin.col_site">站点</span></th>
                         {% endif %}
-                        <th>工单号</th>
-                        <th>物料项数</th>
-                        <th>申请人</th>
-                        <th>状态</th>
-                        <th>申请时间</th>
-                        <th>操作</th>
+                        <th><span data-i18n="form.job_order">工单号</span></th>
+                        <th><span data-i18n="kanban.item_count">物料项数</span></th>
+                        <th><span data-i18n="approve.requester">申请人</span></th>
+                        <th><span data-i18n="admin.col_status">状态</span></th>
+                        <th><span data-i18n="form.time">申请时间</span></th>
+                        <th><span data-i18n="admin.col_actions">操作</span></th>
                     </tr>
                 </thead>
                 <tbody id="pendingTableBody">
-                    <tr><td colspan="8" class="text-center text-muted">加载中...</td></tr>
+                    <tr><td colspan="8" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
