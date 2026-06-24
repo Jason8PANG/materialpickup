@@ -95,6 +95,7 @@ const I18N = {
         'form.short_supply': '来料不足',
         'form.other': '其他',
         'form.please_select': '请选择',
+        'form.normal_title': '新建领料申请',
 
         // === 最小包装申请 ===
         'minpack.title': '新建最小包装物料申请',
@@ -297,6 +298,8 @@ const I18N = {
         'common.validation_failed': '行的物料验证未通过，请修正 Part Number 后再提交',
         'common.keep_one': '至少保留一行物料明细',
         'common.available': '可用',
+        'common.prev_page': '上一页',
+        'common.next_page': '下一页',
     },
 
     en: {
@@ -389,6 +392,7 @@ const I18N = {
         'form.short_supply': 'Short Supply',
         'form.other': 'Other',
         'form.please_select': 'Please select',
+        'form.normal_title': 'New Normal Request',
 
         // === Min Pack ===
         'minpack.title': 'New Min Pack Request',
@@ -591,6 +595,8 @@ const I18N = {
         'common.validation_failed': ' - material validation failed',
         'common.keep_one': 'Keep at least one row',
         'common.available': 'Available',
+        'common.prev_page': 'Prev',
+        'common.next_page': 'Next',
     }
 };
 

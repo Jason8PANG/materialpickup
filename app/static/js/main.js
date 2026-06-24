@@ -222,7 +222,7 @@ function renderKanban(data) {
 
             cardEl.innerHTML = `
                 <div class="card-header-row">
-                    <div class="card-job-list">${card.is_urgent ? '<span class="badge bg-danger me-1"><i class="fas fa-exclamation-triangle"></i> 急料</span>' : ''}${jobDisplay}</div>
+                    <div class="card-job-list">${card.is_urgent ? '<span class="badge bg-danger me-1"><i class="fas fa-exclamation-triangle"></i> ' + __('kanban.urgent') + '</span>' : ''}${jobDisplay}</div>
                     <span class="card-item-badge badge bg-secondary">${itemCount} ${__('kanban.item_count')}</span>
                 </div>
                 <div class="card-part-number">${escapeHtml(primaryPartNumber)}${itemCount > 1 ? ' <span class="text-muted">' + __('kanban.etc') + itemCount + __('kanban.items') + '</span>' : ''}</div>
@@ -666,7 +666,7 @@ function renderPagination(container, currentPage, totalPages, onPageClick) {
 
     const prevLi = document.createElement('li');
     prevLi.className = 'page-item' + (currentPage <= 1 ? ' disabled' : '');
-    prevLi.innerHTML = '<a class="page-link" href="#">上一页</a>';
+    prevLi.innerHTML = '<a class="page-link" href="#">' + __('common.prev_page') + '</a>';
     prevLi.onclick = function (e) {
         e.preventDefault();
         if (currentPage > 1) onPageClick(currentPage - 1);
@@ -691,7 +691,7 @@ function renderPagination(container, currentPage, totalPages, onPageClick) {
 
     const nextLi = document.createElement('li');
     nextLi.className = 'page-item' + (currentPage >= totalPages ? ' disabled' : '');
-    nextLi.innerHTML = '<a class="page-link" href="#">下一页</a>';
+    nextLi.innerHTML = '<a class="page-link" href="#">' + __('common.next_page') + '</a>';
     nextLi.onclick = function (e) {
         e.preventDefault();
         if (currentPage < totalPages) onPageClick(currentPage + 1);

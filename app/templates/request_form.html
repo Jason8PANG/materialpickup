@@ -16,7 +16,7 @@
     <div class="col-lg-12">
         <div class="card shadow-sm">
             <div class="card-header bg-white py-3">
-                <h5 class="mb-0"><i class="fas fa-plus-circle me-2 text-primary"></i>新建领料申请</h5>
+                <h5 class="mb-0"><i class="fas fa-plus-circle me-2 text-primary"></i><span data-i18n="form.normal_title">新建领料申请</span></h5>
             </div>
             <div class="card-body">
                 <!-- 头部信息 -->
@@ -41,7 +41,7 @@
                         <div class="form-check form-check-inline">
                             <input class="form-check-input" type="checkbox" id="isUrgent">
                             <label class="form-check-label fw-bold text-danger" for="isUrgent">
-                                <i class="fas fa-exclamation-triangle me-1"></i>急料
+                                <i class="fas fa-exclamation-triangle me-1"></i><span data-i18n="kanban.urgent">急料</span>
                             </label>
                         </div>
                     </div>
@@ -94,6 +94,14 @@
 <script>
 let itemRowIndex = 0;
 const replenishReasons = ['', '报废', '不良', '来料不足', '其他'];
+function getReasonLabel(reason) {
+    if (!reason) return __('form.please_select');
+    if (reason === '报废') return __('form.scrap');
+    if (reason === '不良') return __('form.defective');
+    if (reason === '来料不足') return __('form.short_supply');
+    if (reason === '其他') return __('form.other');
+    return reason;
+}
 
 // 设置当前时间
 (function() {
@@ -127,9 +135,9 @@ function addItemRow(data) {
         </td>
         <td>
             <select class="form-select form-select-sm" id="replenish_reason_${idx}" onchange="toggleOtherReason(${idx})">
-                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason ? (data.replenish_reason === r ? 'selected':'') : (r === '报废' ? 'selected':'')} data-i18n="form.please_select">${r || '请选择'}</option>`).join('')}
+                ${replenishReasons.map(r => `<option value="${r}" ${data.replenish_reason ? (data.replenish_reason === r ? 'selected':'') : (r === '报废' ? 'selected':'')}>${getReasonLabel(r)}</option>`).join('')}
             </select>
-            <input type="text" class="form-control form-control-sm mt-1 d-none" id="replenish_reason_other_${idx}" value="${escapeHtml(data.replenish_reason_other || '')}" placeholder="其他原因说明">
+            <input type="text" class="form-control form-control-sm mt-1 d-none" id="replenish_reason_other_${idx}" value="${escapeHtml(data.replenish_reason_other || '')}" placeholder="${__('form.reason_other')}">
         </td>
         <td class="text-center">
             <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeItemRow(${idx})" title="删除此行">
@@ -388,9 +396,9 @@ function validateMaterial(inputEl, idx) {
                 var el = document.getElementById(fields[f]);
                 if (el) el.value = '';
             }
-            // 重置补料原因
+            // 重置补料原因（默认报废）
             var reasonEl = document.getElementById('replenish_reason_' + idx);
-            if (reasonEl) reasonEl.value = '';
+            if (reasonEl) reasonEl.value = '报废';
             var reasonOther = document.getElementById('replenish_reason_other_' + idx);
             if (reasonOther) { reasonOther.value = ''; reasonOther.classList.add('d-none'); }
             // 重新计算汇总
