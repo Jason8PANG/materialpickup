@@ -171,15 +171,10 @@
             return;
         }
 
-        // 禁用按钮防止重复提交
+        // 禁用按钮，显示加载中
         document.querySelectorAll('.btn-success, .btn-danger').forEach(function(b) { b.disabled = true; });
         document.getElementById('approveComment').disabled = true;
-
-        // 显示加载状态
-        document.getElementById('approvalContent').classList.add('d-none');
-        document.getElementById('resultMsg').classList.remove('d-none');
-        document.getElementById('resultIcon').innerHTML = '<div class="spinner-border text-primary"></div>';
-        document.getElementById('resultTitle').textContent = '正在处理...';
+        document.querySelector('.container').innerHTML = '<div class="text-center py-5"><div class="spinner-border text-primary" style="width:3rem;height:3rem;"></div><h4 class="mt-3">正在处理...</h4></div>';
 
         fetch('/api/approve/token/' + TOKEN + '/action', {
             method: 'POST',
@@ -188,30 +183,12 @@
         })
         .then(r => r.json())
         .then(resp => {
-            document.getElementById('resultMsg').classList.remove('d-none');
-            var icon = document.getElementById('resultIcon');
-            var title = document.getElementById('resultTitle');
-            var desc = document.getElementById('resultDesc');
-            if (resp.success) {
-                icon.innerHTML = '<i class="fas fa-check-circle text-success"></i>';
-                title.textContent = action === 'approve' ? '已批准通过' : '已驳回';
-                title.className = 'mt-3 text-success';
-                desc.textContent = action === 'approve' ? '审批意见已提交，申请人将收到通知。' : '已驳回该申请，申请人将收到通知。';
-            } else {
-                icon.innerHTML = '<i class="fas fa-exclamation-circle text-warning"></i>';
-                title.textContent = '操作未完成';
-                title.className = 'mt-3 text-warning';
-                desc.textContent = resp.message || '操作失败，请重试或联系管理员。';
-            }
+            document.querySelector('.container').innerHTML = resp.success
+                ? '<div class="text-center py-5"><div style="font-size:4rem;color:#10b981;"><i class="fas fa-check-circle"></i></div><h3 class="mt-3 text-success">审批已完成</h3><p class="text-muted">' + (action === 'approve' ? '已批准通过' : '已驳回') + '</p></div>'
+                : '<div class="text-center py-5"><div style="font-size:4rem;color:#f59e0b;"><i class="fas fa-exclamation-circle"></i></div><h3 class="mt-3 text-warning">操作未完成</h3><p class="text-muted">' + (resp.message || '操作失败，请重试或联系管理员。') + '</p></div>';
         })
         .catch(err => {
-            document.getElementById('resultMsg').classList.remove('d-none');
-            var icon = document.getElementById('resultIcon');
-            var title = document.getElementById('resultTitle');
-            icon.innerHTML = '<i class="fas fa-times-circle text-danger"></i>';
-            title.textContent = '操作失败';
-            title.className = 'mt-3 text-danger';
-            document.getElementById('resultDesc').textContent = '网络错误: ' + err.message;
+            document.querySelector('.container').innerHTML = '<div class="text-center py-5"><div style="font-size:4rem;color:#ef4444;"><i class="fas fa-times-circle"></i></div><h3 class="mt-3 text-danger">操作失败</h3><p class="text-muted">网络错误: ' + err.message + '</p></div>';
         });
     }
 
