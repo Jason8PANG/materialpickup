@@ -177,6 +177,9 @@
 
         // 显示加载状态
         document.getElementById('approvalContent').classList.add('d-none');
+        document.getElementById('resultMsg').classList.remove('d-none');
+        document.getElementById('resultIcon').innerHTML = '<div class="spinner-border text-primary"></div>';
+        document.getElementById('resultTitle').textContent = '正在处理...';
 
         fetch('/api/approve/token/' + TOKEN + '/action', {
             method: 'POST',
