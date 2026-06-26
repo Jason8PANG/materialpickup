@@ -401,7 +401,6 @@ function renderDetail(req, logs) {
     const statusEl = document.getElementById('detailStatus');
     const statusLabel = req.status_label || req.status;
     const statusColors = {
-        'pending_approval': 'bg-primary', 'rejected': 'bg-secondary',
         'pending_prep': 'bg-warning text-dark', 'prepping': 'bg-success',
         'short': 'bg-danger', 'ready_pickup': 'bg-secondary',
         'completed': 'bg-success'
@@ -425,16 +424,13 @@ function renderActions(req) {
 
     let actions = [];
 
-    // 取消申请：发起人可取消待审批的申请
-    if ((role === 'requester' || role === 'admin') && status === 'pending_approval') {
+    // 取消申请：发起人可取消待备料的申请
+    if ((role === 'requester' || role === 'admin') && (status === 'pending_prep' || status === 'pending_approval')) {
         actions.push({label: __('action.cancel'), class: 'btn-outline-danger', action: 'cancel'});
     }
 
-    if (role === 'supervisor' || role === 'admin') {
-        if (status === 'pending_approval') {
-            actions.push({label: __('action.approve'), class: 'btn-success', action: 'approve'});
-            actions.push({label: __('action.reject'), class: 'btn-danger', action: 'reject'});
-        }
+    // 仓库和管理员操作
+    if (role === 'warehouse' || role === 'admin') {
     }
 
     if (role === 'warehouse' || role === 'admin') {
@@ -558,7 +554,6 @@ function renderPendingTable(resp) {
     resp.data.forEach(function (row) {
         const tr = document.createElement('tr');
         const statusColors = {
-            'pending_approval': 'bg-primary',
             'pending_prep': 'bg-warning text-dark',
             'prepping': 'bg-success',
             'short': 'bg-danger',

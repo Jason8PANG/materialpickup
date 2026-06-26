@@ -28,6 +28,34 @@ def create_request():
         if not item.get('job_order') or not item.get('part_number') or not item.get('quantity'):
             return jsonify({'success': False, 'message': f'第{i+1}行缺少必填字段（工单号、物料号、数量）'}), 400
 
+    # 校验工单状态（必须为 R）
+    from app.services.csi_service import CSIClient, parse_job
+    client = CSIClient(siteref=user.get('siteref', '310'))
+    bad_jobs = []
+    for i, item in enumerate(items):
+        job_order = item['job_order'].strip()
+        job, suffix = parse_job(job_order)
+        if not job:
+            bad_jobs.append(f"第{i+1}行工单号格式无效: {job_order}")
+            continue
+        job_info = client.validate_job(job, suffix)
+        if not job_info:
+            bad_jobs.append(f"第{i+1}行工单不存在: {job_order}")
+            continue
+        stat = (job_info.get('Stat') or '').strip()
+        if stat != 'R':
+            bad_jobs.append(f"第{i+1}行工单 {job_order} 状态为 {stat}，仅允许状态 R 的工单提交")
+
+    if bad_jobs:
+        return jsonify({'success': False, 'message': '<br>'.join(bad_jobs[:5])}), 400
+
+    # 校验申请数量不能超过库存量
+    for i, item in enumerate(items):
+        qty = float(item['quantity'])
+        stock_qty = float(item['stock_qty']) if item.get('stock_qty') else None
+        if stock_qty is not None and qty > stock_qty:
+            return jsonify({'success': False, 'message': f'第{i+1}行申请数量({qty})超过库存量({stock_qty})，请修改'}), 400
+
     siteref = user.get('siteref', '')
     if not siteref:
         return jsonify({'success': False, 'message': '站点信息缺失'}), 400
@@ -36,11 +64,11 @@ def create_request():
         cursor = db.cursor()
         now = datetime.now()
 
-        # 1. 插入主表
+        # 1. 插入主表（直接 pending_prep，跳过审批）
         cursor.execute(
             """INSERT INTO kr_material_request 
             (siteref, requester, request_time, status, remark, is_urgent)
-            VALUES (%s, %s, %s, 'pending_approval', %s, %s)""",
+            VALUES (%s, %s, %s, 'pending_prep', %s, %s)""",
             (siteref, user['username'], now, data.get('remark', ''), data.get('is_urgent', 0))
         )
         request_id = cursor.lastrowid
@@ -85,63 +113,70 @@ def create_request():
         db.commit()
         cursor.close()
 
-    # 提交成功后查询主管并发送审批邮件
+    # 提交后发通知邮件（重复申请 或 累计金额超$30，发给410 supervisor）
     try:
         with get_db_connection() as db:
             cursor = db.cursor()
-            # 只查询同站点主管
-            if siteref:
-                cursor.execute(
-                    "SELECT domain_account, email FROM kr_role_mapping "
-                    "WHERE role = 'supervisor' AND is_active = 1 AND siteref = %s "
-                    "AND email IS NOT NULL AND email != ''",
-                    (siteref,)
-                )
-            else:
-                cursor.execute(
-                    "SELECT domain_account, email FROM kr_role_mapping "
-                    "WHERE role = 'supervisor' AND is_active = 1 "
-                    "AND email IS NOT NULL AND email != ''"
-                )
-            supervisors = cursor.fetchall()
+            cursor.execute(
+                "SELECT email FROM kr_role_mapping "
+                "WHERE role = 'supervisor' AND is_active = 1 AND siteref = '410' "
+                "AND email IS NOT NULL AND email != ''"
+            )
+            sup_emails = [r['email'] for r in cursor.fetchall()]
             cursor.close()
 
-        first_item = items[0]
-        for sup in supervisors:
-            token = generate_approval_token(request_id, sup['domain_account'])
-            # 构建含所有明细的 request_info
-            item_list = []
-            for it in items:
-                item_list.append({
-                    'job_order': it['job_order'],
-                    'part_number': it['part_number'],
-                    'quantity': it['quantity'],
-                    'price': str(it['price']) if it.get('price') else '-',
-                })
-            request_info = {
-                'request_id': request_id,
-                'items': item_list,
-                'requester': user['username'],
-                'siteref': siteref,
-                'remark': data.get('remark', ''),
-                'total_amount': sum(
-                    float(it['quantity']) * (float(it['price']) if it.get('price') else 0)
-                    for it in items
-                ),
-                'supervisor_email': sup['email']
-            }
-            approve_url = f"{Config.BASE_URL}/approve/{token}"
-            reject_url = f"{Config.BASE_URL}/approve/{token}?action=reject"
-            send_approval_email(request_info, approve_url, reject_url)
+        if not sup_emails:
+            return jsonify({'success': True, 'id': request_id, 'message': '申请提交成功'})
+
+        alert_msgs = []
+        # 同工单+同物料是否已在其他未完成申请中
+        for item in items:
+            cursor = db.cursor()
+            cursor.execute(
+                """SELECT r.id, r.requester FROM kr_request_item ri
+                JOIN kr_material_request r ON r.id = ri.request_id
+                WHERE ri.job_order = %s AND ri.part_number = %s
+                AND r.id != %s AND r.status IN ('pending_prep','prepping','short','ready_pickup')
+                AND r.is_deleted = 0 LIMIT 5""",
+                (item['job_order'].strip(), item['part_number'].strip(), request_id)
+            )
+            for d in cursor.fetchall():
+                alert_msgs.append(
+                    f"工单 {item['job_order']} 物料 {item['part_number']} 已在申请单 #{d['id']}({d['requester']}) 中"
+                )
+            cursor.close()
+
+        # 同一工单下物料累计金额 >= $30
+        job_totals = {}
+        for it in items:
+            jo = it['job_order'].strip()
+            qty = float(it['quantity'])
+            price = float(it['price']) if it.get('price') else 0
+            job_totals[jo] = job_totals.get(jo, 0) + qty * price
+        for jo, total in job_totals.items():
+            if total >= 30:
+                alert_msgs.append(f"工单 {jo} 本次申请物料累计金额 ${total:.2f} ≥ $30")
+
+        if alert_msgs:
+            from app.services.email_service import send_email
+            subject = f"[物料领取提醒] {user['username']} #{request_id}"
+            body = "<h3>物料申请提醒</h3>"
+            body += f"<p>申请人: {user['username']} | 站点: {siteref} | "
+            body += f"<a href='{Config.BASE_URL}/request/{request_id}'>申请单 #{request_id}</a></p><hr><ul>"
+            for m in alert_msgs:
+                body += f"<li>{m}</li>"
+            body += "</ul><p style='color:#999;font-size:12px;'>物料领取看板系统自动通知</p>"
+            for email in sup_emails:
+                send_email(email, subject, body)
     except Exception as e:
-        print(f"[EMAIL SEND EXCEPTION] {e}")
+        print(f"[NOTIFICATION ERROR] {e}")
 
     return jsonify({'success': True, 'id': request_id, 'message': '申请提交成功'})
 
 
 @request_bp.route('/api/requests/<int:request_id>/cancel', methods=['POST'])
 def cancel_request(request_id):
-    """发起人取消申请单（仅 pending_approval 状态可取消）"""
+    """发起人取消申请单（仅 pending_prep 状态可取消，兼容旧 pending_approval）"""
     user = session.get('user')
     if not user:
         return jsonify({'success': False, 'message': '未登录'}), 401
@@ -168,7 +203,7 @@ def cancel_request(request_id):
             cursor.close()
             return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
 
-        if req['status'] != 'pending_approval':
+        if req['status'] not in ('pending_prep', 'pending_approval'):
             cursor.close()
             return jsonify({'success': False, 'message': '当前状态不允许取消'}), 400
 

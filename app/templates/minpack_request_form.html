@@ -41,9 +41,14 @@
             </div>
 
             <div class="d-flex justify-content-between align-items-center mt-2">
-                <button type="button" class="btn btn-outline-success btn-sm" onclick="addRow()">
-                    <i class="fas fa-plus me-1"></i>添加物料
-                </button>
+                <div>
+                    <button type="button" class="btn btn-outline-info btn-sm me-1" onclick="showCSVModalMinpack()">
+                        <i class="fas fa-file-csv me-1"></i>批量导入
+                    </button>
+                    <button type="button" class="btn btn-outline-success btn-sm" onclick="addRow()">
+                        <i class="fas fa-plus me-1"></i>添加物料
+                    </button>
+                </div>
                 <span class="small text-muted" id="totalInfo" data-i18n="form.total_amount">总金额: 0.00</span>
             </div>
 
@@ -56,11 +61,44 @@
         </form>
     </div>
 </div>
+
+<!-- CSV 导入弹框 -->
+<div class="modal fade" id="csvModalMinpack" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-file-csv me-2"></i>CSV 批量导入</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info py-2 small">
+                    <strong>数据格式（每行一条，逗号分隔）：</strong><br>
+                    <code>Part Number,数量</code><br>
+                    <code>PART123,10</code><br>
+                    <code>PART456,5</code>
+                </div>
+                <textarea class="form-control font-monospace" id="csvTextInputMinpack" rows="8" placeholder="在此粘贴数据..."></textarea>
+                <div class="mt-2">
+                    <input type="file" id="csvFileInputMinpack" accept=".csv" style="display:none" onchange="importCSVFileMinpack(event)">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('csvFileInputMinpack').click()">
+                        <i class="fas fa-upload me-1"></i>上传 CSV 文件
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="processCSVTextMinpack()">导入</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 let rowIdx = 0;
+// CSV 导入错误跟踪
+var _importErrors = {};
 
 document.addEventListener('DOMContentLoaded', function () {
     addRow();
@@ -103,9 +141,96 @@ function addRow() {
     updateRowNumbers();
 }
 
+// ========== CSV 导入（弹框） ==========
+function splitRowMinpack(line) {
+    if (line.indexOf('\t') >= 0) return line.split('\t');
+    return line.split(',');
+}
+
+function showCSVModalMinpack() {
+    document.getElementById('csvTextInputMinpack').value = '';
+    var modal = new bootstrap.Modal(document.getElementById('csvModalMinpack'));
+    modal.show();
+}
+
+function importCSVFileMinpack(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('csvTextInputMinpack').value = e.target.result;
+        processCSVTextMinpack();
+    };
+    reader.readAsText(file);
+}
+
+function processCSVTextMinpack() {
+    var text = document.getElementById('csvTextInputMinpack').value;
+    if (!text.trim()) {
+        showToast('error', '请粘贴数据或上传 CSV 文件');
+        return;
+    }
+    if (text.charCodeAt(0) === 0xFEFF) {
+        text = text.slice(1);
+    }
+    text = text.trim();
+    var lines = text.split(/\r?\n/).filter(function(line) { return line.trim().length > 0; });
+
+    // 如果只有默认空行，先移除它
+    var tbody = document.getElementById('itemsBody');
+    if (tbody.children.length === 1) {
+        var firstRow = tbody.children[0];
+        var firstIdx = firstRow.id.replace('item-row-', '');
+        var firstPart = document.getElementById('part_number_' + firstIdx);
+        if (firstPart && !firstPart.value.trim()) {
+            removeRow(parseInt(firstIdx));
+        }
+    }
+
+    var successCount = 0;
+    var errorCount = 0;
+    var newIndices = [];
+
+    for (var i = 0; i < lines.length; i++) {
+        var cols = splitRowMinpack(lines[i]);
+        var partNumber = cols[0] ? cols[0].trim() : '';
+        var quantity = cols[1] ? cols[1].trim() : '';
+
+        if (!partNumber || !quantity) {
+            errorCount++;
+            continue;
+        }
+
+        addRow();
+        var idx = rowIdx - 1;
+
+        document.getElementById('part_number_' + idx).value = partNumber;
+        document.getElementById('quantity_' + idx).value = quantity;
+
+        _importErrors[idx] = false;
+        newIndices.push(idx);
+        successCount++;
+    }
+
+    // 触发每行的料号校验和库存查询
+    for (var j = 0; j < newIndices.length; j++) {
+        var idx = newIndices[j];
+        var input = document.getElementById('part_number_' + idx);
+        if (input && input.value.trim()) {
+            checkDuplicatePart(input, idx);
+        }
+    }
+
+    showToast('info', '成功导入 ' + successCount + ' 行' + (errorCount > 0 ? '，' + errorCount + ' 行有错误' : '，已触发验证'));
+
+    // 关闭弹框
+    var modal = bootstrap.Modal.getInstance(document.getElementById('csvModalMinpack'));
+    if (modal) modal.hide();
+}
+
 function removeRow(idx) {
     const tr = document.getElementById('item-row-' + idx);
-    if (tr) { tr.remove(); updateRowNumbers(); calcTotal(); }
+    if (tr) { tr.remove(); delete _importErrors[idx]; updateRowNumbers(); calcTotal(); }
 }
 
 function updateRowNumbers() {
@@ -161,8 +286,10 @@ function loadStockInfo(input, idx) {
             .then(function (resp) {
                 if (!resp.success) {
                     infoEl.innerHTML = '<small class="text-danger">' + escapeHtml(resp.message) + '</small>';
+                    _importErrors[idx] = true; // CSV导入行查询失败
                     return;
                 }
+                delete _importErrors[idx]; // CSV导入行查询成功
                 var data = resp.data || {};
                 document.getElementById('stock_qty_' + idx).value = data.stock_qty != null ? data.stock_qty : '-';
                 document.getElementById('price_' + idx).value = data.price != null ? data.price : '-';
@@ -203,6 +330,17 @@ function submitMinpackRequest() {
         submitBtn.innerHTML = '<i class="fas fa-paper-plane me-1"></i>提交申请（无需审批）';
     }
 
+    // 检查 CSV 导入错误
+    for (var ie in _importErrors) {
+        if (_importErrors.hasOwnProperty(ie) && _importErrors[ie]) {
+            var tr = document.getElementById('item-row-' + ie);
+            var rowNum = tr ? tr.querySelector('.item-num').textContent : ie;
+            showToast('error', '第 ' + rowNum + ' 行（CSV导入）库存信息获取失败，请修正后再提交');
+            resetBtn();
+            return;
+        }
+    }
+
     const tbody = document.getElementById('itemsBody');
     const items = [];
     for (const tr of tbody.children) {
@@ -211,6 +349,14 @@ function submitMinpackRequest() {
         const qty = document.getElementById('quantity_' + idx).value.trim();
         if (!pn || !qty) {
             showToast('error', '请填写完整第 ' + tr.querySelector('.item-num').textContent + ' 行（物料号和数量为必填）');
+            resetBtn();
+            return;
+        }
+        // 检查申请数量是否超过库存量
+        var mStockEl = document.getElementById('stock_qty_' + idx);
+        var mStockVal = mStockEl ? mStockEl.value.trim() : '';
+        if (mStockVal && parseFloat(mStockVal) < parseFloat(qty)) {
+            showToast('error', '第 ' + tr.querySelector('.item-num').textContent + ' 行申请数量(' + qty + ') 超过库存量(' + mStockVal + ')，请修改');
             resetBtn();
             return;
         }

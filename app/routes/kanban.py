@@ -4,7 +4,6 @@ from app.models import get_db_connection, get_site_filter, STATUS_LABELS
 kanban_bp = Blueprint('kanban', __name__)
 
 STATUS_ORDER = [
-    'pending_approval',
     'pending_prep',
     'prepping',
     'short',
@@ -46,7 +45,7 @@ def get_kanban_cards():
             (SELECT job_order FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_job_order,
             (SELECT part_number FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_part_number
             FROM kr_material_request r 
-            WHERE r.status IN ('pending_approval','pending_prep','prepping','short','ready_pickup') 
+            WHERE r.status IN ('pending_prep','prepping','short','ready_pickup') 
             AND r.is_deleted = 0"""
 
         if site_filter:
@@ -69,12 +68,10 @@ def get_kanban_cards():
                 # 决定按钮
                 if user['role'] == 'warehouse':
                     card['actions'] = STATUS_ACTIONS_WAREHOUSE.get(s, [])
-                elif user['role'] == 'supervisor' and s == 'pending_approval':
-                    card['actions'] = ['approve', 'reject']
                 elif user['role'] == 'requester':
                     card['actions'] = STATUS_ACTIONS.get(s, [])
                 elif user['role'] == 'admin':
-                    card['actions'] = ['approve', 'reject', 'assign_worker', 'start_prep', 'complete_prep', 'short', 'sign']
+                    card['actions'] = ['assign_worker', 'start_prep', 'complete_prep', 'short', 'sign']
                 else:
                     card['actions'] = []
                 column.append(card)
@@ -112,7 +109,7 @@ def public_kanban_cards():
         (SELECT job_order FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_job_order,
         (SELECT part_number FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_part_number
         FROM kr_material_request r 
-        WHERE r.status IN ('pending_approval','pending_prep','prepping','short','ready_pickup') 
+        WHERE r.status IN ('pending_prep','prepping','short','ready_pickup') 
         AND r.is_deleted = 0 AND r.siteref = %s
         ORDER BY r.is_urgent DESC, r.request_time ASC"""
 

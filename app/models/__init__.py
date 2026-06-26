@@ -56,7 +56,7 @@ def get_site_filter(session_user):
 
 
 STATUS_LABELS = {
-    'pending_approval': '待审批', 'rejected': '已驳回',
+    'rejected': '已驳回',
     'pending_prep': '待备料', 'prepping': '备料中',
     'short': '缺料', 'ready_pickup': '待取料', 'completed': '已完成'
 }

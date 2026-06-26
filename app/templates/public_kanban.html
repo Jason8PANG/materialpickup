@@ -55,11 +55,11 @@ let countdown = 30;
 let refreshTimer = null;
 
 const STATUS_ZH = {
-    'pending_approval': '待审批', 'pending_prep': '待备料',
+    'pending_prep': '待备料',
     'prepping': '备料中', 'short': '缺料', 'ready_pickup': '待取料'
 };
 const STATUS_EN = {
-    'pending_approval': 'Pending', 'pending_prep': 'To Prep',
+    'pending_prep': 'To Prep',
     'prepping': 'Prepping', 'short': 'Short', 'ready_pickup': 'Ready'
 };
 
@@ -123,7 +123,7 @@ function renderBoard(resp) {
         const currencyLabel = lang === 'zh' ? '总金额: ' : 'Total: ';
         const timeLabel = '';
         const colors = {
-            'pending_approval': '#409eff', 'pending_prep': '#e6a23c',
+            'pending_prep': '#e6a23c',
             'prepping': '#67c23a', 'short': '#f56c6c', 'ready_pickup': '#909399'
         };
         html += '<div class="kanban-column" data-status="' + status + '" style="border-top:3px solid ' + (colors[status] || '#ccc') + '">';

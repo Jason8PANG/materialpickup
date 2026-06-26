@@ -50,9 +50,15 @@
                 <!-- 动态明细表格 -->
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h6 class="mb-0"><i class="fas fa-list me-2 text-success"></i><span data-i18n="detail.items">物料明细</span></h6>
-                    <button type="button" class="btn btn-success btn-sm" onclick="addItemRow()">
-                        <i class="fas fa-plus me-1"></i><span data-i18n="form.add_row">添加行</span>
-                    </button>
+                    <div>
+                        <input type="file" id="csvFileInput" accept=".csv" style="display:none" onchange="importCSVFile(event)">
+                        <button type="button" class="btn btn-outline-info btn-sm me-1" onclick="showCSVModal()">
+                            <i class="fas fa-file-csv me-1"></i>批量导入
+                        </button>
+                        <button type="button" class="btn btn-success btn-sm" onclick="addItemRow()">
+                            <i class="fas fa-plus me-1"></i><span data-i18n="form.add_row">添加行</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-bordered table-hover" id="itemsTable">
@@ -89,11 +95,45 @@
         </div>
     </div>
 </div>
+
+<!-- CSV 导入弹框 -->
+<div class="modal fade" id="csvModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-file-csv me-2"></i>CSV 批量导入</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info py-2 small">
+                    <strong>数据格式（每行一条，逗号分隔）：</strong><br>
+                    <code>工单号,Part Number,数量,补料原因</code><br>
+                    <code>J000001-0001,PART123,10,报废</code><br>
+                    <code>ENG0001-0001,PART456,5,不良</code><br>
+                    <span class="text-muted">补料原因可选：报废/不良/来料不足/其他（留空默认报废）</span>
+                </div>
+                <textarea class="form-control font-monospace" id="csvTextInput" rows="8" placeholder="在此粘贴数据..."></textarea>
+                <div class="mt-2">
+                    <input type="file" id="csvFileInput2" accept=".csv" style="display:none" onchange="importCSVFile(event)">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('csvFileInput2').click()">
+                        <i class="fas fa-upload me-1"></i>上传 CSV 文件
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="processCSVText()">导入</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
 let itemRowIndex = 0;
 const replenishReasons = ['', '报废', '不良', '来料不足', '其他'];
+// CSV 导入错误跟踪：存储导入行的 idx，值为 true 表示有错误
+var _importErrors = {};
 function getReasonLabel(reason) {
     if (!reason) return __('form.please_select');
     if (reason === '报废') return __('form.scrap');
@@ -150,6 +190,109 @@ function addItemRow(data) {
     updateSummary();
 }
 
+// ========== CSV 导入（弹框） ==========
+// 智能分割：支持逗号分隔和 Excel 黏贴的 Tab 分隔
+function splitRow(line) {
+    if (line.indexOf('\t') >= 0) {
+        return line.split('\t');
+    }
+    return line.split(',');
+}
+function showCSVModal() {
+    document.getElementById('csvTextInput').value = '';
+    var modal = new bootstrap.Modal(document.getElementById('csvModal'));
+    modal.show();
+}
+
+function importCSVFile(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('csvTextInput').value = e.target.result;
+        processCSVText();
+    };
+    reader.readAsText(file);
+}
+
+function processCSVText() {
+    var text = document.getElementById('csvTextInput').value;
+    if (!text.trim()) {
+        showToast('error', '请粘贴数据或上传 CSV 文件');
+        return;
+    }
+    // 去除 BOM
+    if (text.charCodeAt(0) === 0xFEFF) {
+        text = text.slice(1);
+    }
+    text = text.trim();
+    var lines = text.split(/\r?\n/).filter(function(line) { return line.trim().length > 0; });
+
+    // 如果只有默认空行，直接移除它（绕过 removeItemRow 的至少保留一行限制）
+    var tbody = document.getElementById('itemsBody');
+    if (tbody.children.length === 1) {
+        var firstRow = tbody.children[0];
+        var firstIdx = firstRow.id.replace('item-row-', '');
+        var firstJob = document.getElementById('job_order_' + firstIdx);
+        var firstPart = document.getElementById('part_number_' + firstIdx);
+        if (firstJob && firstPart && !firstJob.value.trim() && !firstPart.value.trim()) {
+            var tr = document.getElementById('item-row-' + firstIdx);
+            if (tr) { tr.remove(); delete _importErrors[firstIdx]; }
+        }
+    }
+    updateRowNumbers();
+    updateSummary();
+
+    var successCount = 0;
+    var errorCount = 0;
+    var newIndices = [];
+
+    for (var i = 0; i < lines.length; i++) {
+        var cols = splitRow(lines[i]);
+        var jobOrder = cols[0] ? cols[0].trim() : '';
+        var partNumber = cols[1] ? cols[1].trim() : '';
+        var quantity = cols[2] ? cols[2].trim() : '';
+        var replenishReason = cols[3] ? cols[3].trim() : '';
+
+        // 必填字段校验
+        if (!jobOrder || !partNumber || !quantity) {
+            errorCount++;
+            continue;
+        }
+
+        addItemRow({
+            job_order: jobOrder,
+            part_number: partNumber,
+            quantity: quantity,
+            replenish_reason: replenishReason || '报废'
+        });
+
+        var idx = itemRowIndex - 1;
+        _importErrors[idx] = false;
+        newIndices.push(idx);
+        successCount++;
+    }
+
+    // 触发每行的工单和物料验证
+    for (var j = 0; j < newIndices.length; j++) {
+        var idx = newIndices[j];
+        var jobInput = document.getElementById('job_order_' + idx);
+        var partInput = document.getElementById('part_number_' + idx);
+        if (jobInput && jobInput.value.trim()) {
+            validateJob(jobInput, idx);
+        }
+        if (partInput && partInput.value.trim()) {
+            validateMaterial(partInput, idx);
+        }
+    }
+
+    showToast('info', '成功导入 ' + successCount + ' 行' + (errorCount > 0 ? '，' + errorCount + ' 行有错误' : '，已触发验证'));
+
+    // 关闭弹框
+    var modal = bootstrap.Modal.getInstance(document.getElementById('csvModal'));
+    if (modal) modal.hide();
+}
+
 function removeItemRow(idx) {
     const tbody = document.getElementById('itemsBody');
     if (tbody.children.length <= 1) {
@@ -158,6 +301,7 @@ function removeItemRow(idx) {
     }
     const tr = document.getElementById('item-row-' + idx);
     if (tr) tr.remove();
+    delete _importErrors[idx]; // 清理导入跟踪
     updateRowNumbers();
     updateSummary();
 }
@@ -207,6 +351,17 @@ function submitRequest() {
         submitBtn.innerHTML = '<i class="fas fa-paper-plane me-1"></i>提交申请';
     }
 
+    // 检查 CSV 导入错误
+    for (var ie in _importErrors) {
+        if (_importErrors.hasOwnProperty(ie) && _importErrors[ie]) {
+            var tr = document.getElementById('item-row-' + ie);
+            var rowNum = tr ? tr.querySelector('.item-num').textContent : ie;
+            showToast('error', '第 ' + rowNum + ' 行（CSV导入）验证未通过，请修正后再提交');
+            resetBtn();
+            return;
+        }
+    }
+
     const tbody = document.getElementById('itemsBody');
     const items = [];
 
@@ -225,6 +380,15 @@ function submitRequest() {
         // 检查物料验证状态
         if (!_validatedItems[idx]) {
             showToast('error', '第 ' + tr.querySelector('.item-num').textContent + ' 行的物料验证未通过，请修正 Part Number 后再提交');
+            resetBtn();
+            return;
+        }
+
+        // 检查申请数量是否超过库存量
+        var stockEl = document.getElementById('stock_qty_' + idx);
+        var stockVal = stockEl ? stockEl.value.trim() : '';
+        if (stockVal && parseFloat(stockVal) < parseFloat(quantity)) {
+            showToast('error', '第 ' + tr.querySelector('.item-num').textContent + ' 行申请数量(' + quantity + ') 超过库存量(' + stockVal + ')，请修改');
             resetBtn();
             return;
         }
@@ -360,6 +524,7 @@ function validateMaterial(inputEl, idx) {
         },
         function (resp) {
             _validatedItems[idx] = true;
+            delete _importErrors[idx]; // CSV导入行验证通过
             inputEl.classList.add('input-valid');
             inputEl.classList.remove('input-invalid');
             var summary = resp.data.stock_summary || '无库存信息';
@@ -386,6 +551,7 @@ function validateMaterial(inputEl, idx) {
         },
         function (err) {
             _validatedItems[idx] = false;
+            _importErrors[idx] = true; // CSV导入行验证失败
             inputEl.classList.add('input-invalid');
             inputEl.classList.remove('input-valid');
             stockInfo.textContent = err.message || '该物料不在工单BOM中或不需要手动领料';
