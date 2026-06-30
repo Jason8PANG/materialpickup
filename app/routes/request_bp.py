@@ -113,50 +113,63 @@ def create_request():
         db.commit()
         cursor.close()
 
-    # 提交后发通知邮件（重复申请 或 累计金额超$30，发给410 supervisor）
+    # 提交后发通知邮件（重复申请 或 累计金额超$30，发给当前站点主管）
     try:
         with get_db_connection() as db:
+            # 查询当前站点主管邮箱
             cursor = db.cursor()
             cursor.execute(
                 "SELECT email FROM kr_role_mapping "
-                "WHERE role = 'supervisor' AND is_active = 1 AND siteref = '410' "
-                "AND email IS NOT NULL AND email != ''"
+                "WHERE role = 'supervisor' AND is_active = 1 AND siteref = %s "
+                "AND email IS NOT NULL AND email != ''",
+                (siteref,)
             )
             sup_emails = [r['email'] for r in cursor.fetchall()]
             cursor.close()
 
-        if not sup_emails:
-            return jsonify({'success': True, 'id': request_id, 'message': '申请提交成功'})
-
-        alert_msgs = []
-        # 同工单+同物料是否已在其他未完成申请中
-        for item in items:
-            cursor = db.cursor()
-            cursor.execute(
-                """SELECT r.id, r.requester FROM kr_request_item ri
-                JOIN kr_material_request r ON r.id = ri.request_id
-                WHERE ri.job_order = %s AND ri.part_number = %s
-                AND r.id != %s AND r.status IN ('pending_prep','prepping','short','ready_pickup')
-                AND r.is_deleted = 0 LIMIT 5""",
-                (item['job_order'].strip(), item['part_number'].strip(), request_id)
-            )
-            for d in cursor.fetchall():
-                alert_msgs.append(
-                    f"工单 {item['job_order']} 物料 {item['part_number']} 已在申请单 #{d['id']}({d['requester']}) 中"
+            alert_msgs = []
+            # 同工单+同物料是否已在其他未完成申请中
+            for item in items:
+                cursor = db.cursor()
+                cursor.execute(
+                    """SELECT r.id, r.requester FROM kr_request_item ri
+                    JOIN kr_material_request r ON r.id = ri.request_id
+                    WHERE ri.job_order = %s AND ri.part_number = %s
+                    AND r.id != %s AND r.status IN ('pending_prep','prepping','short','ready_pickup')
+                    AND r.is_deleted = 0 LIMIT 5""",
+                    (item['job_order'].strip(), item['part_number'].strip(), request_id)
                 )
-            cursor.close()
+                for d in cursor.fetchall():
+                    alert_msgs.append(
+                        f"工单 {item['job_order']} 物料 {item['part_number']} 已在申请单 #{d['id']}({d['requester']}) 中"
+                    )
+                cursor.close()
 
-        # 同一工单下物料累计金额 >= $30
-        job_totals = {}
-        for it in items:
-            jo = it['job_order'].strip()
-            qty = float(it['quantity'])
-            price = float(it['price']) if it.get('price') else 0
-            job_totals[jo] = job_totals.get(jo, 0) + qty * price
-        for jo, total in job_totals.items():
-            if total >= 30:
-                alert_msgs.append(f"工单 {jo} 本次申请物料累计金额 ${total:.2f} ≥ $30")
+            # 同一工单在所有申请单（含已完成）中的累计金额 >= $30
+            current_job_orders = set()
+            for it in items:
+                jo = it['job_order'].strip()
+                current_job_orders.add(jo)
+            if current_job_orders:
+                placeholders = ','.join(['%s'] * len(current_job_orders))
+                cursor = db.cursor()
+                cursor.execute(
+                    f"""SELECT ri.job_order, SUM(ri.total_amount) as total
+                    FROM kr_request_item ri
+                    JOIN kr_material_request r ON r.id = ri.request_id
+                    WHERE ri.job_order IN ({placeholders})
+                    AND r.is_deleted = 0
+                    GROUP BY ri.job_order""",
+                    list(current_job_orders)
+                )
+                for row in cursor.fetchall():
+                    jo = row['job_order']
+                    total = float(row['total'] or 0)
+                    if total >= 30:
+                        alert_msgs.append(f"工单 {jo} 所有申请单累计金额 ${total:.2f} ≥ $30")
+                cursor.close()
 
+        # 在 with 块外发邮件（连接已关闭，但数据已在 alert_msgs 中）
         if alert_msgs:
             from app.services.email_service import send_email
             subject = f"[物料领取提醒] {user['username']} #{request_id}"
@@ -167,7 +180,10 @@ def create_request():
                 body += f"<li>{m}</li>"
             body += "</ul><p style='color:#999;font-size:12px;'>物料领取看板系统自动通知</p>"
             for email in sup_emails:
+                print(f"[NOTIFICATION] 发送提醒邮件至 {email}")
                 send_email(email, subject, body)
+        else:
+            print(f"[NOTIFICATION] 无触发条件，不发送邮件（共检查 {len(sup_emails)} 个主管邮箱）")
     except Exception as e:
         print(f"[NOTIFICATION ERROR] {e}")
 
