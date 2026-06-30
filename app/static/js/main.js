@@ -17,7 +17,14 @@ function apiPost(url, data, onSuccess, onError) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
     })
-        .then(r => r.json())
+        .then(r => {
+            if (!r.ok && r.status === 401) {
+                return r.json().catch(function() {
+                    return {success: false, message: '用户名或密码错误'};
+                });
+            }
+            return r.json();
+        })
         .then(resp => {
             if (resp.success) onSuccess(resp);
             else (onError || showError)(resp);
@@ -101,7 +108,7 @@ function handleLogin(e) {
         window.location.href = '/kanban';
     }, function (resp) {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-sign-in-alt me-2"></i>' + __('login.btn');
+        btn.innerHTML = '<i class="fas fa-sign-in-alt me-2"></i>' + (typeof __ === 'function' ? __('login.btn') : 'Login');
         errorEl.textContent = resp.message || __('login.error');
         errorEl.classList.remove('d-none');
     });
