@@ -404,6 +404,7 @@ function submitRequest() {
             quantity: parseFloat(quantity),
             price: price ? parseFloat(price) : null,
             stock_qty: document.getElementById('stock_qty_' + idx).value.trim() ? parseFloat(document.getElementById('stock_qty_' + idx).value) : null,
+            stock_loc: document.getElementById('stock_loc_' + idx).value.trim() || null,
             replenish_reason: reason || null,
             replenish_reason_other: reasonOther || null
         });

@@ -88,14 +88,15 @@ def create_request():
                 total,
                 float(item['stock_qty']) if item.get('stock_qty') else None,
                 item.get('replenish_reason'),
-                item.get('replenish_reason_other')
+                item.get('replenish_reason_other'),
+                item.get('stock_loc')
             ))
 
         cursor.executemany(
             """INSERT INTO kr_request_item 
             (request_id, job_order, part_number, quantity, price, total_amount, 
-             stock_qty, replenish_reason, replenish_reason_other)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+             stock_qty, replenish_reason, replenish_reason_other, stock_loc)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             item_data
         )
 
