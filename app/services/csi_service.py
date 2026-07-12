@@ -71,7 +71,7 @@ class CSIClient:
     #  IDO Request Service 调用（ue_NAI_* 等自定义 IDO）
     # ------------------------------------------------------------------ #
     def _get_ido(self, ido_name: str, properties: list[str] | None = None,
-                 filter_str: str | None = None) -> list:
+                 filter_str: str | None = None, retry_on_timeout: bool = True) -> list:
         """调用 IDO Request Service，返回记录列表"""
         url = f"{self._ido_base}/ido/load/{ido_name}"
         params = {}
@@ -87,18 +87,25 @@ class CSIClient:
             "X-Infor-MongooseConfig": self._company,
         }
 
-        resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
-        if resp.status_code == 401:
-            # token 失效，刷新后重试一次
-            token = self._fetch_token()[0]
-            self._token = token
-            headers["Authorization"] = f"Bearer {token}"
-            resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
-        resp.raise_for_status()
-        body = resp.json()
-        # 兼容不同返回格式
-        records = body.get("Items") or body.get("value") or body.get("records") or []
-        return records if isinstance(records, list) else [records]
+        for attempt in range(2 if retry_on_timeout else 1):
+            try:
+                resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
+                if resp.status_code == 401:
+                    logger.info(f"[IDO] 401 token expired, refreshing...")
+                    token = self._fetch_token()[0]
+                    self._token = token
+                    headers["Authorization"] = f"Bearer {token}"
+                    resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
+                resp.raise_for_status()
+                body = resp.json()
+                records = body.get("Items") or body.get("value") or body.get("records") or []
+                return records if isinstance(records, list) else [records]
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt == 0 and retry_on_timeout:
+                    logger.warning(f"[IDO] 超时/连接失败，重试一次: {e}")
+                    continue
+                raise
+        return []
 
     # ------------------------------------------------------------------ #
     #  标准 CSI API 调用（MMS005 等）
@@ -150,8 +157,12 @@ class CSIClient:
         """
         try:
             filter_str = f"Job = N'{job}' And Suffix = {suffix}"
+            # 某些环境 Suffix 需要字符串格式，尝试 N'0' 格式
+            alt_filter_str = f"Job = N'{job}' And Suffix = N'{suffix}'"
             props = ["Job", "Suffix", "Item", "Stat", "Description"]
             records = self._get_ido("ue_NAI_Jobs", properties=props, filter_str=filter_str)
+            if not records:
+                records = self._get_ido("ue_NAI_Jobs", properties=props, filter_str=alt_filter_str)
             if records:
                 return records[0]
             return None

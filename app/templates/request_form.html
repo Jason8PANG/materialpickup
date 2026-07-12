@@ -498,8 +498,8 @@ function validateMaterial(inputEl, idx) {
     }
 
     // 解析工单号得到 job 和 suffix
-    // 格式: J000002124-0004
-    var parts = jobFull.match(/^([A-Za-z]\d+)-(\d+)$/);
+    // 格式: J000002124-0004 或 ENG1065773-0000
+    var parts = jobFull.match(/^([A-Za-z]+\d+)-(\d+)$/);
     if (!parts) {
         stockInfo.textContent = '工单号格式无效';
         stockInfo.className = 'stock-info no-stock';
