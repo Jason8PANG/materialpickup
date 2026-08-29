@@ -19,8 +19,9 @@
             <div class="col-6 col-md-2">
                 <select class="form-select form-select-sm" id="fStatus">
                     <option value="">全部状态</option>
-                    <option value="in_stock">在库</option>
                     <option value="in_shop">在车间</option>
+                    <option value="in_stock">在库存</option>
+                    <option value="counting">盘点中</option>
                     <option value="finished">已消完</option>
                 </select>
             </div>
@@ -76,11 +77,13 @@ function loadCoils() {
             if (!resp.success) { tb.innerHTML = '<tr><td colspan="12" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
             if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="12" class="text-center text-muted">无数据</td></tr>'; return; }
             tb.innerHTML = resp.data.map(c => {
-                // 剩余为 0 → 状态显示"已消完"
+                // 盘点中（派生状态）优先于"已消完"显示
+                const isCounting = c.status_label === '盘点中';
                 const zeroRemain = c.remain_mm != null && c.remain_mm <= 0;
-                const stLabel = zeroRemain ? '已消完' : (c.status_label || '-');
-                const stBadge = zeroRemain ? 'bg-dark'
-                    : (c.status === 'in_stock' ? 'bg-success' : c.status === 'in_shop' ? 'bg-warning text-dark' : c.status === 'scrapped' ? 'bg-danger' : 'bg-secondary');
+                const stLabel = isCounting ? '盘点中' : (zeroRemain ? '已消完' : (c.status_label || '-'));
+                const stBadge = isCounting ? 'bg-info text-dark'
+                    : (zeroRemain ? 'bg-dark'
+                        : (c.status === 'in_stock' ? 'bg-success' : c.status === 'in_shop' ? 'bg-warning text-dark' : c.status === 'scrapped' ? 'bg-danger' : 'bg-secondary'));
                 return `<tr>
                 <td>${c.coil_id}</td><td>${c.part_number || '-'}</td><td>${c.lot_no || '-'}</td>
                 <td>${c.coil_length}</td><td>${c.unit || '-'}</td>

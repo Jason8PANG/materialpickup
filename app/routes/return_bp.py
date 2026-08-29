@@ -303,6 +303,6 @@ def coil_info(coil_id):
 
 
 def COIL_STATUS_LABEL(status):
-    labels = {'in_stock': '在库', 'in_shop': '在车间', 'consumed': '已消耗',
+    labels = {'in_stock': '在库', 'in_shop': '在车间',
               'issued': '已出库', 'scrapped': '报废'}
     return labels.get(status, status or '')

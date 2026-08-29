@@ -40,7 +40,6 @@ MAX_BATCH = 500
 COIL_STATUS_LABELS = {
     'in_stock': '在库',
     'in_shop': '在车间',
-    'consumed': '已消耗',
     'issued': '已出库',
     'scrapped': '报废',
 }

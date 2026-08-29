@@ -22,8 +22,8 @@ from app.utils import WhereBuilder, is_en
 wire_bp = Blueprint('wire', __name__)
 
 COIL_STATUS_LABELS = {
-    'in_stock': '在库', 'in_shop': '在车间', 'consumed': '已消耗',
-    'issued': '已出库', 'scrapped': '报废',
+    'in_stock': '在库', 'in_shop': '在车间',
+    'issued': '已出库', 'scrapped': '报废', 'counting': '盘点中',
 }
 
 
@@ -79,8 +79,13 @@ def _build_coil_query():
         wb.add('c.part_number LIKE %s', f"%{args['part_number'].strip()}%")
     if args.get('lot_no'):
         wb.add('c.lot_no LIKE %s', f"%{args['lot_no'].strip()}%")
-    if args.get('status') and args['status'].strip() != 'finished':
+    if args.get('status') and args['status'].strip() not in ('finished', 'counting'):
         wb.add('c.status = %s', args['status'].strip())
+    elif args.get('status') and args['status'].strip() == 'counting':
+        # 派生状态：卷标出现在活跃盘点单（status='counting'）中即视为盘点中
+        wb.add("c.coil_id IN (SELECT i.coil_id FROM kr_inventory_count_item i "
+               "JOIN kr_inventory_count cnt ON cnt.id = i.count_id "
+               "WHERE cnt.status = 'counting')")
     if args.get('siteref'):
         wb.add('c.siteref = %s', args['siteref'].strip())
     if args.get('date_from'):
@@ -104,11 +109,22 @@ def api_coil_lookup(coil_id):
             (coil_id,)
         )
         row = cur.fetchone()
+        counting = False
+        if row:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM kr_inventory_count_item i "
+                "JOIN kr_inventory_count c ON c.id = i.count_id "
+                "WHERE i.coil_id = %s AND c.status = 'counting'",
+                (coil_id,)
+            )
+            counting = cur.fetchone()['n'] > 0
     if not row:
         return jsonify({'success': False, 'message': f'卷标 {coil_id} 不存在'}), 404
     d = dict(row)
     d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status') or '')
-    d['can_count'] = d.get('status') == 'in_shop'
+    if counting:
+        d['status_label'] = '盘点中'
+    d['can_count'] = d.get('status') == 'in_shop' and not counting
     if d.get('coil_length') is not None:
         d['coil_length'] = float(d['coil_length'])
     return jsonify({'success': True, 'data': d})
@@ -131,10 +147,21 @@ def api_coils():
             params
         )
         rows = cur.fetchall()
+        # 活跃盘点中的卷标集合（派生状态：盘点中）
+        counting_ids = set()
+        if rows:
+            cur.execute(
+                "SELECT DISTINCT i.coil_id FROM kr_inventory_count_item i "
+                "JOIN kr_inventory_count c ON c.id = i.count_id "
+                "WHERE c.status = 'counting'"
+            )
+            counting_ids = {r['coil_id'] for r in cur.fetchall()}
     data = []
     for r in rows:
         d = dict(r)
         d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status') or '')
+        if d.get('coil_id') in counting_ids:
+            d['status_label'] = '盘点中'
         if d.get('coil_length') is not None:
             d['coil_length'] = float(d['coil_length'])
         if d.get('used_mm') is not None:
@@ -171,14 +198,26 @@ def export_coils():
             params
         )
         rows = cur.fetchall()
+        # 活跃盘点中的卷标集合（派生状态：盘点中）
+        counting_ids = set()
+        if rows:
+            cur.execute(
+                "SELECT DISTINCT i.coil_id FROM kr_inventory_count_item i "
+                "JOIN kr_inventory_count c ON c.id = i.count_id "
+                "WHERE c.status = 'counting'"
+            )
+            counting_ids = {r['coil_id'] for r in cur.fetchall()}
     buf = _io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(['卷标ID', '物料', 'Lot', '卷长', '单位', '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间'])
     for r in rows:
+        status_label = COIL_STATUS_LABELS.get(r.get('status'), r.get('status') or '')
+        if r.get('coil_id') in counting_ids:
+            status_label = '盘点中'
         writer.writerow([
             r.get('coil_id', ''), r.get('part_number', ''), r.get('lot_no', ''),
             r.get('coil_length', ''), r.get('unit', ''),
-            COIL_STATUS_LABELS.get(r.get('status'), r.get('status') or ''),
+            status_label,
             r.get('siteref', ''), r.get('request_id', ''),
             r.get('used_mm', ''), str(r.get('created_at') or ''),
         ])

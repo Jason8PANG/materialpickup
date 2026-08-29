@@ -29,7 +29,7 @@ external_bp = Blueprint('external', __name__)
 EXTERNAL_KEY = getattr(Config, 'EXTERNAL_API_KEY', '') or ''
 
 COIL_STATUS_LABELS = {
-    'in_stock': '在库', 'in_shop': '在车间', 'consumed': '已消耗',
+    'in_stock': '在库', 'in_shop': '在车间',
     'issued': '已出库', 'scrapped': '报废',
 }
 
@@ -216,6 +216,16 @@ def ext_create_consumption():
         if coil.get('status') != 'in_shop':
             cur.close()
             return jsonify({'success': False, 'error': '卷标ID的状态不正确'}), 400
+        # 盘点锁定检查：卷标在活跃盘点中（盘点单 counting）不允许消耗
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_inventory_count_item i "
+            "JOIN kr_inventory_count c ON c.id = i.count_id "
+            "WHERE i.coil_id = %s AND c.status = 'counting'",
+            (coil_id,)
+        )
+        if cur.fetchone()['n'] > 0:
+            cur.close()
+            return jsonify({'success': False, 'error': f'卷标 {coil_id} 正在盘点中（已锁定），不允许消耗'}), 400
         cur.execute(
             "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
             "WHERE coil_id = %s",
@@ -306,6 +316,16 @@ def ext_create_scrap():
         if coil.get('status') != 'in_shop':
             cur.close()
             return jsonify({'success': False, 'error': '卷标ID的状态不正确'}), 400
+        # 盘点锁定检查：卷标在活跃盘点中（盘点单 counting）不允许报废
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_inventory_count_item i "
+            "JOIN kr_inventory_count c ON c.id = i.count_id "
+            "WHERE i.coil_id = %s AND c.status = 'counting'",
+            (coil_id,)
+        )
+        if cur.fetchone()['n'] > 0:
+            cur.close()
+            return jsonify({'success': False, 'error': f'卷标 {coil_id} 正在盘点中（已锁定），不允许报废'}), 400
         factor = _factor(coil.get('unit'))
         cur.execute(
             """INSERT INTO kr_wire_coil_consumption
