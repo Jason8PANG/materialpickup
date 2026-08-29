@@ -465,9 +465,9 @@ def ext_consumption_list():
             f"SELECT id, coil_id, job_order, job_part_number, part_number, consume_type, stage, "
             f"out_length, unit, converted_length, converted_unit, "
             f"shear_qty, shear_length, actual_shear_length, actual_shear_equipment, "
-            f"checker_first, checker_last, strip_len_a, strip_tol_a, strip_len_b, strip_tol_b, "
-            f"scrap_length_actual, strip_len_a_actual, strip_len_b_actual, "
-            f"actual_shear_length_last, strip_len_a_actual_last, strip_len_b_actual_last, "
+            f"checker_first, checker_last, "
+            f"scrap_length_actual, "
+            f"actual_shear_length_last, "
             f"operator, remark, created_at "
             f"FROM kr_wire_coil_consumption{where} ORDER BY id DESC LIMIT %s OFFSET %s",
             wb_params + [page_size, (page - 1) * page_size]
@@ -477,8 +477,8 @@ def ext_consumption_list():
     for r in rows:
         d = dict(r)
         for f in ('out_length', 'converted_length', 'shear_qty', 'shear_length', 'actual_shear_length',
-                  'scrap_length_actual', 'strip_len_a_actual', 'strip_len_b_actual',
-                  'actual_shear_length_last', 'strip_len_a_actual_last', 'strip_len_b_actual_last'):
+                  'scrap_length_actual',
+                  'actual_shear_length_last'):
             if d.get(f) is not None:
                 d[f] = float(d[f])
         d['consume_type_label'] = 'Scrap' if d.get('consume_type') == 'scrap' else 'consumption'
@@ -578,11 +578,9 @@ def ext_consumption_query():
             f"out_length, unit, converted_length, converted_unit, "
             f"shear_qty, shear_length, actual_shear_length, color, wire_spec, "
             f"shear_equipment, shear_device_no, actual_shear_equipment, "
-            f"checker_first, checker_last, strip_len_a, strip_tol_a, strip_len_b, strip_tol_b, "
-            f"strip_equip_a, strip_actual_equip_a, checker_first_a, checker_last_a, "
-            f"strip_equip_b, strip_actual_equip_b, checker_first_b, checker_last_b, "
-            f"scrap_length_actual, strip_len_a_actual, strip_len_b_actual, "
-            f"actual_shear_length_last, strip_len_a_actual_last, strip_len_b_actual_last, "
+            f"checker_first, checker_last, "
+            f"scrap_length_actual, "
+            f"actual_shear_length_last, "
             f"operator, remark, created_at "
             f"FROM kr_wire_coil_consumption{where} ORDER BY id DESC LIMIT 200",
             wb_params
@@ -592,8 +590,8 @@ def ext_consumption_query():
     for r in rows:
         d = dict(r)
         for f in ('out_length', 'converted_length', 'shear_qty', 'shear_length', 'actual_shear_length',
-                  'scrap_length_actual', 'strip_len_a_actual', 'strip_len_b_actual',
-                  'actual_shear_length_last', 'strip_len_a_actual_last', 'strip_len_b_actual_last'):
+                  'scrap_length_actual',
+                  'actual_shear_length_last'):
             if d.get(f) is not None:
                 d[f] = float(d[f])
         d['consume_type_label'] = 'Scrap' if d.get('consume_type') == 'scrap' else 'consumption'

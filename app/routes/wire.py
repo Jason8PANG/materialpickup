@@ -227,8 +227,7 @@ def api_consumption():
     data = []
     for r in rows:
         d = dict(r)
-        for f in ('out_length', 'converted_length', 'shear_length', 'length_tolerance',
-                  'strip_len_a', 'strip_tol_a', 'strip_len_b', 'strip_tol_b'):
+        for f in ('out_length', 'converted_length', 'shear_length', 'length_tolerance'):
             if d.get(f) is not None:
                 d[f] = float(d[f])
         data.append(d)

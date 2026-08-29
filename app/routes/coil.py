@@ -60,20 +60,6 @@ CONSUMPTION_EXTRA_FIELDS = {
     'actual_shear_equipment': ('text', None),
     'checker_first': ('text', None),
     'checker_last': ('text', None),
-    # ---- A端去皮组 ----
-    'strip_len_a': ('num', None),
-    'strip_tol_a': ('num', None),
-    'strip_equip_a': ('text', None),
-    'strip_actual_equip_a': ('text', None),
-    'checker_first_a': ('text', None),
-    'checker_last_a': ('text', None),
-    # ---- B端去皮组 ----
-    'strip_len_b': ('num', None),
-    'strip_tol_b': ('num', None),
-    'strip_equip_b': ('text', None),
-    'strip_actual_equip_b': ('text', None),
-    'checker_first_b': ('text', None),
-    'checker_last_b': ('text', None),
 }
 
 
@@ -1526,8 +1512,7 @@ def list_consumption(request_id):
         cursor.close()
 
     # 数值字段统一转 float（含宽表数值列），created_at 转字符串
-    numeric_fields = ['out_length', 'converted_length', 'shear_length', 'length_tolerance',
-                      'strip_len_a', 'strip_tol_a', 'strip_len_b', 'strip_tol_b']
+    numeric_fields = ['out_length', 'converted_length', 'shear_length', 'length_tolerance']
     result = []
     for r in rows:
         d = dict(r)

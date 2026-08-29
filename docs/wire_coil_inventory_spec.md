@@ -134,46 +134,6 @@ CREATE TABLE IF NOT EXISTS kr_wire_coil_consumption (
   actual_shear_equipment VARCHAR(64)     DEFAULT NULL COMMENT '实际剪切设备',
   checker_first          VARCHAR(64)     DEFAULT NULL COMMENT '首件确认人',
   checker_last           VARCHAR(64)     DEFAULT NULL COMMENT '末件确认人',
-  -- A端去皮组
-  strip_len_a            DECIMAL(12,2)   DEFAULT NULL COMMENT '去皮尺寸A端',
-  strip_tol_a            DECIMAL(10,2)   DEFAULT NULL COMMENT '去皮尺寸公差A端',
-  strip_equip_a          VARCHAR(64)     DEFAULT NULL COMMENT '去皮A端设备',
-  strip_actual_equip_a   VARCHAR(64)     DEFAULT NULL COMMENT 'A端实际设备',
-  checker_first_a        VARCHAR(64)     DEFAULT NULL COMMENT 'A端首件确认人',
-  checker_last_a         VARCHAR(64)     DEFAULT NULL COMMENT 'A端末件确认人',
-  -- B端去皮组
-  strip_len_b            DECIMAL(12,2)   DEFAULT NULL COMMENT '去皮尺寸B端',
-  strip_tol_b            DECIMAL(10,2)   DEFAULT NULL COMMENT '去皮尺寸公差B端',
-  strip_equip_b          VARCHAR(64)     DEFAULT NULL COMMENT '去皮B端设备',
-  strip_actual_equip_b   VARCHAR(64)     DEFAULT NULL COMMENT 'B端实际设备',
-  checker_first_b        VARCHAR(64)     DEFAULT NULL COMMENT 'B端首件确认人',
-  checker_last_b         VARCHAR(64)     DEFAULT NULL COMMENT 'B端末件确认人',
-  -- 打端组
-  crimp_machine_a        ENUM('Yes','No') DEFAULT NULL COMMENT 'A端打端一体机作业',
-  crimp_machine_b        ENUM('Yes','No') DEFAULT NULL COMMENT 'B端打端一体机作业',
-  manual_crimp_flow      VARCHAR(256)    DEFAULT NULL COMMENT '备料手工打端区作业流程',
-  -- A端端子预加工组
-  prep_time_a            DECIMAL(10,2)   DEFAULT NULL COMMENT 'A端单根预加工备料工时（s）',
-  terminal_part_a        VARCHAR(128)    DEFAULT NULL COMMENT 'A端端子料号',
-  equip_no_a             VARCHAR(64)     DEFAULT NULL COMMENT '设备编号',
-  die_no_a               VARCHAR(64)     DEFAULT NULL COMMENT '刀模编号',
-  height_mm_a            DECIMAL(10,2)   DEFAULT NULL COMMENT '高度（mm）',
-  height_tol_mm_a        DECIMAL(10,2)   DEFAULT NULL COMMENT '高度公差（mm）',
-  pull_force_a           DECIMAL(10,2)   DEFAULT NULL COMMENT '拉力',
-  loose_chain_a          ENUM('散','链') DEFAULT NULL COMMENT '散端/链端（散/链）',
-  terminal_qty_a         INT             DEFAULT NULL COMMENT 'A端端子用量',
-  preinstall_remark_a    VARCHAR(256)    DEFAULT NULL COMMENT '是否提前预装件备注',
-  -- B端端子预加工组
-  prep_time_b            DECIMAL(10,2)   DEFAULT NULL COMMENT 'B端单根预加工备料工时（s）',
-  terminal_part_b        VARCHAR(128)    DEFAULT NULL COMMENT 'B端端子料号',
-  equip_no_b             VARCHAR(64)     DEFAULT NULL COMMENT '设备编号',
-  die_no_b               VARCHAR(64)     DEFAULT NULL COMMENT '刀模编号',
-  height_mm_b            DECIMAL(10,2)   DEFAULT NULL COMMENT '高度（mm）',
-  height_tol_mm_b        DECIMAL(10,2)   DEFAULT NULL COMMENT '高度公差（mm）',
-  pull_force_b           DECIMAL(10,2)   DEFAULT NULL COMMENT '拉力',
-  loose_chain_b          ENUM('散','链') DEFAULT NULL COMMENT '散端/链端（散/链）',
-  terminal_qty_b         INT             DEFAULT NULL COMMENT 'B端端子用量',
-  preinstall_remark_b    VARCHAR(256)    DEFAULT NULL COMMENT '是否提前预装件备注',
   operator               VARCHAR(64)     NOT NULL COMMENT '登记操作人工号',
   remark                 VARCHAR(256)    DEFAULT NULL COMMENT '备注',
   created_at             DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登记时间',
@@ -194,7 +154,7 @@ CREATE TABLE IF NOT EXISTS kr_wire_coil_consumption (
 | job_order | 工单号 | minpack 申请单明细无工单（`kr_request_item.job_order` 为 NULL），此处可为空；normal 类后续若接入可为工单号 |
 | coil_id + out_length | 哪卷消耗多少（原始值，mm） | 支持一卷多次出库（每次一条记录）；已移除 `request_id`，追溯申请单通过 `coil_id → kr_wire_coil.request_id` 上查 |
 | out_length / unit / converted_length / converted_unit | 单位换算三元组 | `out_length` 为录入原始值（mm）；服务端按 `unit`（CSI 单位）查换算系数计算 `converted_length`，`converted_unit` 冗余换算目标单位 |
-| 宽表加工字段（基础/去皮/打端/端子预加工组） | 线材加工过程参数 | 全部可空，出库登记时按弹窗分组填写；未填写保存为 NULL 不报错 |
+| 宽表加工字段（基础组） | 线材加工过程参数（剪切相关） | 全部可空，出库登记时按弹窗填写；未填写保存为 NULL 不报错 |
 
 #### 2.3.1 单位换算规则（换算系数表）
 
@@ -475,13 +435,8 @@ GET /api/coils/<coil_id>/label
 POST /api/requests/<request_id>/consumption
 ```
 
-请求体（含全部新增宽表字段，按弹窗分组组织；以下为完整示例）：
+请求体（含全部新增宽表字段；以下为完整示例）：
 - 基础/线材组：`job_part_number`、`wire_spec`、`color`、`shear_qty`、`shear_length`、`length_tolerance`、`shear_equipment`、`actual_shear_equipment`、`checker_first`、`checker_last`
-- A端去皮组：`strip_len_a`、`strip_tol_a`、`strip_equip_a`、`strip_actual_equip_a`、`checker_first_a`、`checker_last_a`
-- B端去皮组：`strip_len_b`、`strip_tol_b`、`strip_equip_b`、`strip_actual_equip_b`、`checker_first_b`、`checker_last_b`
-- 打端组：`crimp_machine_a`、`crimp_machine_b`、`manual_crimp_flow`
-- A端端子预加工组：`prep_time_a`、`terminal_part_a`、`equip_no_a`、`die_no_a`、`height_mm_a`、`height_tol_mm_a`、`pull_force_a`、`loose_chain_a`、`terminal_qty_a`、`preinstall_remark_a`
-- B端端子预加工组：`prep_time_b`、`terminal_part_b`、`equip_no_b`、`die_no_b`、`height_mm_b`、`height_tol_mm_b`、`pull_force_b`、`loose_chain_b`、`terminal_qty_b`、`preinstall_remark_b`
 
 ```json
 {
@@ -500,42 +455,7 @@ POST /api/requests/<request_id>/consumption
       "shear_equipment": "SL-01",
       "actual_shear_equipment": "SL-01",
       "checker_first": "王五",
-      "checker_last": "李四",
-      "strip_len_a": 5.00,
-      "strip_tol_a": 0.50,
-      "strip_equip_a": "PW-01",
-      "strip_actual_equip_a": "PW-01",
-      "checker_first_a": "王五",
-      "checker_last_a": "李四",
-      "strip_len_b": 5.00,
-      "strip_tol_b": 0.50,
-      "strip_equip_b": "PW-01",
-      "strip_actual_equip_b": "PW-01",
-      "checker_first_b": "王五",
-      "checker_last_b": "李四",
-      "crimp_machine_a": "Yes",
-      "crimp_machine_b": "No",
-      "manual_crimp_flow": "备料手工打端区流程：按 SOP-XX 手工打端并全检",
-      "prep_time_a": 12.50,
-      "terminal_part_a": "TERM-A-001",
-      "equip_no_a": "EQ-01",
-      "die_no_a": "DIE-01",
-      "height_mm_a": 8.00,
-      "height_tol_mm_a": 0.10,
-      "pull_force_a": 25.00,
-      "loose_chain_a": "散",
-      "terminal_qty_a": 100,
-      "preinstall_remark_a": "是，提前预装",
-      "prep_time_b": 12.50,
-      "terminal_part_b": "TERM-B-002",
-      "equip_no_b": "EQ-02",
-      "die_no_b": "DIE-02",
-      "height_mm_b": 8.00,
-      "height_tol_mm_b": 0.10,
-      "pull_force_b": 25.00,
-      "loose_chain_b": "链",
-      "terminal_qty_b": 100,
-      "preinstall_remark_b": ""
+      "checker_last": "李四"
     }
   ]
 }
@@ -573,7 +493,7 @@ GET /api/requests/<request_id>/consumption
 {
   "success": true,
   "data": [
-    { "id": 1, "coil_id": "260814001", "job_order": "J000002124-0004", "part_number": "A123456", "out_length": 250.50, "unit": "M", "converted_length": 0.2505, "converted_unit": "M", "wire_spec": "0.5mm²/22AWG/UL1007", "color": "红", "crimp_machine_a": "Yes", "loose_chain_a": "散", "consume_type": "issue", "operator": "warehouse1", "created_at": "2026-08-14 10:00:00" }
+    { "id": 1, "coil_id": "260814001", "job_order": "J000002124-0004", "part_number": "A123456", "out_length": 250.50, "unit": "M", "converted_length": 0.2505, "converted_unit": "M", "wire_spec": "0.5mm²/22AWG/UL1007", "color": "红", "consume_type": "issue", "operator": "warehouse1", "created_at": "2026-08-14 10:00:00" }
   ]
 }
 ```
@@ -651,7 +571,7 @@ if ((role === 'warehouse' || role === 'admin') && status === 'prepping' && req.r
 
 ### 4.4 出库登记弹窗（outboundModal，分组展示）
 
-弹窗按 **6 组折叠面板 / Tab** 组织：线材基础组、A端去皮组、B端去皮组、打端组、A端端子预加工组、B端端子预加工组。
+弹窗按 **1 组折叠面板** 组织：线材基础组（剪切加工参数）。
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -665,21 +585,6 @@ if ((role === 'warehouse' || role === 'admin') && status === 'prepping' && req.r
 │  颜色[红]  剪切数量[100]  剪切长度[250.5]  长度公差[1.0] │
 │  剪切设备[SL-01] 实际设备[SL-01]                        │
 │  首件确认[王五]  末件确认[李四]                          │
-│  ─────────────────────────────────────────────────────│
-│  ② A端去皮组                                           │
-│  去皮尺寸[5.0] 公差[0.5] 设备[PW-01] 实际设备[PW-01]    │
-│  首件确认[王五] 末件确认[李四]                          │
-│  ③ B端去皮组（同A端布局）                              │
-│  ─────────────────────────────────────────────────────│
-│  ④ 打端组                                              │
-│  A端一体机 [Yes▼/No]  B端一体机 [Yes▼/No]              │
-│  手工打端作业流程 [多行文本框：备料手工打端区流程说明]    │
-│  ─────────────────────────────────────────────────────│
-│  ⑤ A端端子预加工组                                     │
-│  工时(s)[12.5] 端子料号[TERM-A-001] 设备编号[EQ-01]     │
-│  刀模编号[DIE-01] 高度(mm)[8.0] 公差(mm)[0.1] 拉力[25]  │
-│  散/链[散▼] 端子用量[100] 提前预装备注[是，提前预装]     │
-│  ⑥ B端端子预加工组（同A端布局）                        │
 ├────────────────────────────────────────────────────────┤
 │  [取消] [确认出库]                                     │
 └────────────────────────────────────────────────────────┘
@@ -689,9 +594,8 @@ if ((role === 'warehouse' || role === 'admin') && status === 'prepping' && req.r
 
 1. 数据来源：`GET /api/requests/<id>/coils` 过滤 `status == 'in_stock'`；
 2. 出库长度默认填该卷总长（整卷出库），可改小（部分出库）；**单位固定 mm**，旁边只读展示 CSI 单位与转换后长度（`converted_length`，由前端按换算系数表实时预览，最终以后端计算为准）；
-3. ②~⑥ 组默认折叠，展开后填写；**全部为选填**，未填写项提交为空（后端按 NULL 处理）；
-4. `loose_chain_a/b` 为下拉（散/链）、`crimp_machine_a/b` 为下拉（Yes/No），其余为文本/数字输入框；
-5. 提交：`POST /api/requests/<id>/consumption`。
+3. 宽表加工字段全部为选填，未填写项提交为空（后端按 NULL 处理）；
+4. 提交：`POST /api/requests/<id>/consumption`。
 
 ### 4.5 标签预览
 
@@ -907,7 +811,7 @@ unit = rows[0].get("UM") if rows else None
 | R9 | 出库登记卷标必须属于本单且 in_stock | 后端 | 通过 `kr_wire_coil.request_id` 关联判断所属申请单 |
 | R10 | 仅 minpack + prepping 可录入/出库 | 后端 | `request_type='minpack' AND status='prepping'` |
 | R11 | 单位换算由服务端计算 | 后端 | 按 `unit` 查 2.3.1 系数表计算 `converted_length`；CSI 单位为空/未收录时置 NULL 并警告，不阻断 |
-| R12 | 宽表字段取值校验 | 前端 + 后端 | `crimp_machine_a/b` ∈ ('Yes','No')、`loose_chain_a/b` ∈ ('散','链')；数字类字段为数值类型；其余为文本 |
+| R12 | 宽表字段取值校验 | 前端 + 后端 | 数字类字段为数值类型；其余为文本 |
 
 ### 7.2 关键规则说明
 
@@ -948,7 +852,7 @@ WHERE coil_id = %s AND consume_type = 'issue';
 | A12 | 标签打印 | 选择已录入卷标调用打印，Windows 打印机驱动打印出 3"×1" 标签，含卷号/卷号条码/物料/物料条码/长度/单位，条码可扫 |
 | A13 | 站点隔离 | 410 站点 warehouse 无法查看/操作 310 站点的卷标数据 |
 | A14 | 单位转换正确性 | CSI 单位为 M 时录入 250.50 mm → 保存后 `converted_length=0.2505`、`converted_unit='M'`；FT 单位录入 250.50 mm → `250.50÷304.8=0.8219`；系数表外单位不报错，转换字段为 NULL 且页面有警告 |
-| A15 | 宽表字段录入保存 | 出库登记填写全部新增字段（线材基础/去皮A/B/打端/端子预加工A/B），保存后逐字段与数据库一致；未填写的宽表字段保存为 NULL 且不报错 |
+| A15 | 宽表字段录入保存 | 出库登记填写全部新增字段（线材基础组），保存后逐字段与数据库一致；未填写的宽表字段保存为 NULL 且不报错 |
 
 ### 8.2 非功能验收
 
@@ -983,7 +887,7 @@ WHERE coil_id = %s AND consume_type = 'issue';
 
 ## 附录 A：关键设计决策摘要
 
-1. **独立表 + 消耗宽表**：`kr_wire_coil`（每卷一行）+ `kr_wire_coil_consumption`（每卷每次出库/报废一行），均独立于申请单主/明细表；消耗表采用**宽表设计**，一次性冗余线材基础、去皮、打端、端子预加工等加工过程参数，出库登记留存全量数据，避免后续多表关联；已移除 `request_id`，申请单追溯通过 `coil_id → kr_wire_coil.request_id` 上查；不设物理外键，沿用现有逻辑外键风格。
+1. **独立表 + 消耗宽表**：`kr_wire_coil`（每卷一行）+ `kr_wire_coil_consumption`（每卷每次出库/报废一行），均独立于申请单主/明细表；消耗表采用**宽表设计**，一次性冗余线材基础（剪切加工）参数，出库登记留存全量数据，避免后续多表关联；已移除 `request_id`，申请单追溯通过 `coil_id → kr_wire_coil.request_id` 上查；不设物理外键，沿用现有逻辑外键风格。（去皮 A/B、打端、端子预加工组字段已于 2026-08-29 前分批从表结构与代码移除。）
 2. **录入入口收窄**：仅 minpack + prepping + 仓库/管理员，避免正常领料流程受扰。
 3. **单位只读 + 换算服务端化**：CSI 为主数据源，后端回填防篡改；CSI 故障降级为可空。出库登记的 `out_length` 以 mm 为原始录入单位，换算为 CSI 单位的系数表与计算逻辑统一由服务端维护，前端仅只读展示 `converted_length`/`converted_unit`。
 4. **卷号方案**：YYMMDD+3位 自编码 + 唯一索引兜底 + 每日 COUNT 上限，无需额外序列表，简单可靠。
