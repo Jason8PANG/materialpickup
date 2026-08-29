@@ -1,0 +1,40 @@
+# naiwiptrack_site_ref.patch
+# 用途：物料领取看板外部 API (/api/external/*) 将强制要求请求头 X-Site-Ref，
+#       naiwiptrack 后端对看板的所有调用统一携带站点标识。
+# 生成日期：2026-08-29
+# 仓库根：production-tracking（独立 git 仓库，在 naiwiptrack/production-tracking 目录执行 git apply）
+# 改动：1) cuttingController.ts 新增 EXTERNAL_SITE_REF 常量，externalApi headers 追加 X-Site-Ref
+#       2) docker-compose.yml backend.environment 追加 EXTERNAL_SITE_REF=410
+# 说明：# 开头的注释行会被 git apply 自动跳过。
+#
+--- a/backend/src/controllers/cuttingController.ts
++++ b/backend/src/controllers/cuttingController.ts
+@@ -118,6 +118,9 @@
+   process.env.EXTERNAL_API_BASE || 'http://localhost:5000';
+ const EXTERNAL_API_KEY =
+   process.env.EXTERNAL_API_KEY || 'NAI-WIPTRACK-2026';
++// 调用看板外部 API 的站点标识（看板侧强制校验 X-Site-Ref），生产环境用环境变量
++// EXTERNAL_SITE_REF 配置（如 '410'/'310'），默认 '410'（当前联调站点）。
++const EXTERNAL_SITE_REF = process.env.EXTERNAL_SITE_REF || '410';
+ 
+ interface ExternalResult {
+   success: boolean;
+@@ -168,6 +171,7 @@
+     method: options.method || 'GET',
+     headers: {
+       'X-API-Key': EXTERNAL_API_KEY,
++      'X-Site-Ref': EXTERNAL_SITE_REF,
+       'Content-Type': 'application/json',
+     },
+     body: options.body != null ? JSON.stringify(options.body) : undefined,
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -27,6 +27,8 @@
+       - CSI_AUTH_BASIC=TkFJR1JPVVBfUFJEfnROVnlReGE0SmV4YU9ScUUtc09KWFJGempyVjJkcUFaNUZTMlN5MVJLd0U6UlA1d0hBWDdwRXNveDNrSGtVcDEyRVM5dVFpSTZXRk5UQjVub1VtZWJpXzl1MV9oLWxGZjBfc1ZUVE0tbEdrUVo2ZjlnV0pIQVhPNmpoelprSGJfREE=
+       - CSI_TOKEN_URL=https://mingle-sso.inforcloudsuite.com:443/NAIGROUP_PRD/as/token.oauth2
+       - "CSI_USERNAME=NAIGROUP_PRD#2VuvOcvlyIej1k2YlORMyLgB0Ttgu7xDtvpwJle9EA3rbhfmSQKtnHnnc8ze7tPaY_SFOPjvb6Q2RV2kfro8ag"
++      # 看板外部 API 站点标识（310/410），与看板 SITE_CSI_COMPANY 对应
++      - EXTERNAL_SITE_REF=410
+       - CSI_PASSWORD=1AkxlluZ3aBSnUyVUIaNskxeyg9XLt3OsDrj4CqF4QnaxReAYsJSqwruM6bCLf6md0Rzx70nFnk5-WdPSu1ejw
+       - NODE_OPTIONS=--dns-result-order=ipv4first
+       - TZ=Asia/Shanghai

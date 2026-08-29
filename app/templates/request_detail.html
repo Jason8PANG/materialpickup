@@ -280,7 +280,7 @@
                 </div>
             </div>
 
-            <!-- 出库消耗登记弹窗（线卷全库存管理，6 组折叠面板，文档 4.4） -->
+            <!-- 出库消耗登记弹窗（线卷全库存管理，1 组折叠面板，文档 4.4） -->
             <div class="modal fade" id="outboundModal" tabindex="-1" data-bs-backdrop="static">
                 <div class="modal-dialog modal-xl">
                     <div class="modal-content">
@@ -290,7 +290,7 @@
                         </div>
                         <div class="modal-body">
                             <div class="alert alert-light border small py-2 mb-2">
-                                仅列示本单「在库（in_stock）」卷标；出库长度单位为 <b>mm</b>，默认填该卷总长（整卷出库）可改小做部分出库；②~⑥ 加工参数均选填，未填保存为空（NULL）。
+                                仅列示本单「在库（in_stock）」卷标；出库长度单位为 <b>mm</b>，默认填该卷总长（整卷出库）可改小做部分出库；加工参数均选填，未填保存为空（NULL）。
                             </div>
 
                             <!-- ① 线材基础组 -->
@@ -319,14 +319,6 @@
                                                 <label class="small text-muted">工单物料号</label>
                                                 <input type="text" class="form-control form-control-sm" id="ob_job_part_number" placeholder="工单物料号">
                                             </div>
-                                            <div class="col-md-3">
-                                                <label class="small text-muted">线材规格</label>
-                                                <input type="text" class="form-control form-control-sm" id="ob_wire_spec" placeholder="如 0.5mm²/22AWG/UL1007">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="small text-muted">颜色</label>
-                                                <input type="text" class="form-control form-control-sm" id="ob_color">
-                                            </div>
                                             <div class="col-md-2">
                                                 <label class="small text-muted">剪切数量</label>
                                                 <input type="number" class="form-control form-control-sm" id="ob_shear_qty" min="0">
@@ -346,14 +338,6 @@
                                             <div class="col-md-2">
                                                 <label class="small text-muted">实际剪切设备</label>
                                                 <input type="text" class="form-control form-control-sm" id="ob_actual_shear_equipment">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="small text-muted">首件确认人</label>
-                                                <input type="text" class="form-control form-control-sm" id="ob_checker_first">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="small text-muted">末件确认人</label>
-                                                <input type="text" class="form-control form-control-sm" id="ob_checker_last">
                                             </div>
                                         </div>
                                     </div>

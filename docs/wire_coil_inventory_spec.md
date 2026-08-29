@@ -125,15 +125,18 @@ CREATE TABLE IF NOT EXISTS kr_wire_coil_consumption (
   converted_unit         VARCHAR(16)     DEFAULT NULL COMMENT '转换后单位（即 CSI 单位）',
   -- 基础/线材组
   job_part_number        VARCHAR(64)     DEFAULT NULL COMMENT '工单物料号',
-  wire_spec              VARCHAR(128)    DEFAULT NULL COMMENT '线材规格型号（如 0.5mm²/22AWG/UL1007）',
-  color                  VARCHAR(32)     DEFAULT NULL COMMENT '颜色',
   shear_qty              INT             DEFAULT NULL COMMENT '剪切数量',
   shear_length           DECIMAL(12,2)   DEFAULT NULL COMMENT '剪切长度',
+  actual_shear_length    DECIMAL(12,2)   DEFAULT NULL COMMENT '实际剪切长度（外部集成）',
   length_tolerance       DECIMAL(10,2)   DEFAULT NULL COMMENT '长度公差',
   shear_equipment        VARCHAR(64)     DEFAULT NULL COMMENT '剪切设备',
+  shear_device_no        VARCHAR(64)     DEFAULT NULL COMMENT '剪切设备编号（外部集成）',
   actual_shear_equipment VARCHAR(64)     DEFAULT NULL COMMENT '实际剪切设备',
-  checker_first          VARCHAR(64)     DEFAULT NULL COMMENT '首件确认人',
-  checker_last           VARCHAR(64)     DEFAULT NULL COMMENT '末件确认人',
+  -- 外部集成/状态组（naiwiptrack 消耗登记）
+  scrap_length_actual    DECIMAL(12,2)   DEFAULT NULL COMMENT '实际报废长度（外部集成）',
+  stage                  VARCHAR(16)     DEFAULT 'first' COMMENT '阶段：first/last/complete（外部集成）',
+  is_manual              TINYINT(1)      DEFAULT 0 COMMENT '是否手动录入（外部集成）',
+  checker                VARCHAR(64)     DEFAULT NULL COMMENT '确认人（外部集成）',
   operator               VARCHAR(64)     NOT NULL COMMENT '登记操作人工号',
   remark                 VARCHAR(256)    DEFAULT NULL COMMENT '备注',
   created_at             DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登记时间',
@@ -436,7 +439,7 @@ POST /api/requests/<request_id>/consumption
 ```
 
 请求体（含全部新增宽表字段；以下为完整示例）：
-- 基础/线材组：`job_part_number`、`wire_spec`、`color`、`shear_qty`、`shear_length`、`length_tolerance`、`shear_equipment`、`actual_shear_equipment`、`checker_first`、`checker_last`
+- 基础/线材组：`job_part_number`、`shear_qty`、`shear_length`、`length_tolerance`、`shear_equipment`、`actual_shear_equipment`
 
 ```json
 {
@@ -447,15 +450,11 @@ POST /api/requests/<request_id>/consumption
       "out_length": 250.50,
       "remark": "整卷出库",
       "job_part_number": "J000002124-0004",
-      "wire_spec": "0.5mm²/22AWG/UL1007",
-      "color": "红",
       "shear_qty": 100,
       "shear_length": 250.50,
       "length_tolerance": 1.00,
       "shear_equipment": "SL-01",
-      "actual_shear_equipment": "SL-01",
-      "checker_first": "王五",
-      "checker_last": "李四"
+      "actual_shear_equipment": "SL-01"
     }
   ]
 }
@@ -493,7 +492,7 @@ GET /api/requests/<request_id>/consumption
 {
   "success": true,
   "data": [
-    { "id": 1, "coil_id": "260814001", "job_order": "J000002124-0004", "part_number": "A123456", "out_length": 250.50, "unit": "M", "converted_length": 0.2505, "converted_unit": "M", "wire_spec": "0.5mm²/22AWG/UL1007", "color": "红", "consume_type": "issue", "operator": "warehouse1", "created_at": "2026-08-14 10:00:00" }
+    { "id": 1, "coil_id": "260814001", "job_order": "J000002124-0004", "part_number": "A123456", "out_length": 250.50, "unit": "M", "converted_length": 0.2505, "converted_unit": "M", "consume_type": "issue", "operator": "warehouse1", "created_at": "2026-08-14 10:00:00" }
   ]
 }
 ```
@@ -581,10 +580,8 @@ if ((role === 'warehouse' || role === 'admin') && status === 'prepping' && req.r
 │  卷标ID | 物料 | 原长度 | 出库长度(mm) | 工单号          │
 │  260814001 | A123456 | 250.5 | [250.5]  | J00...       │
 │  换算预览(只读): CSI单位 M | 转换后长度 0.2505           │
-│  工单物料号   [J00...]   线材规格 [0.5mm²/22AWG/UL1007] │
-│  颜色[红]  剪切数量[100]  剪切长度[250.5]  长度公差[1.0] │
-│  剪切设备[SL-01] 实际设备[SL-01]                        │
-│  首件确认[王五]  末件确认[李四]                          │
+│  工单物料号   [J00...]   剪切数量[100]  剪切长度[250.5]  │
+│  长度公差[1.0]  剪切设备[SL-01] 实际设备[SL-01]          │
 ├────────────────────────────────────────────────────────┤
 │  [取消] [确认出库]                                     │
 └────────────────────────────────────────────────────────┘

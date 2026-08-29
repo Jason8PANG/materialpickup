@@ -27,8 +27,8 @@ const UNIT_CONVERT_FACTOR = {M: 1000, FT: 304.8, CM: 10, IN: 25.4};
 
 // 出库登记宽表字段 id（与后端 CONSUMPTION_EXTRA_FIELDS 键一致，用于汇总提交）
 const OUTBOUND_EXTRA_FIELDS = [
-    'job_part_number', 'wire_spec', 'color', 'shear_qty', 'shear_length', 'length_tolerance',
-    'shear_equipment', 'actual_shear_equipment', 'checker_first', 'checker_last'
+    'job_part_number', 'shear_qty', 'shear_length', 'length_tolerance',
+    'shear_equipment', 'actual_shear_equipment'
 ];
 
 function convertPreview(length, unit) {

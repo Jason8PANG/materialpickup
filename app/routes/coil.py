@@ -51,15 +51,11 @@ COIL_STATUS_LABELS = {
 CONSUMPTION_EXTRA_FIELDS = {
     # ---- 基础/线材组 ----
     'job_part_number': ('text', None),
-    'wire_spec': ('text', None),
-    'color': ('text', None),
     'shear_qty': ('int', None),
     'shear_length': ('num', None),
     'length_tolerance': ('num', None),
     'shear_equipment': ('text', None),
     'actual_shear_equipment': ('text', None),
-    'checker_first': ('text', None),
-    'checker_last': ('text', None),
 }
 
 

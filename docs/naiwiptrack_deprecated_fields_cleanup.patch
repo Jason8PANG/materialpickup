@@ -1,0 +1,74 @@
+# =====================================================================
+# naiwiptrack 废弃字段清理补丁（交付参考）
+#
+# 注意：此补丁仅作交付参考，未实际应用于 naiwiptrack 源码仓库。
+# 应用方式与说明见 naiwiptrack_deprecated_fields_cleanup.md（同目录）。
+# 生成日期：2026-08-29
+# 请在 naiwiptrack/production-tracking 目录下执行:
+#   git apply --check naiwiptrack_deprecated_fields_cleanup.patch
+#   git apply naiwiptrack_deprecated_fields_cleanup.patch
+# =====================================================================
+--- a/backend/src/controllers/cuttingController.ts
++++ b/backend/src/controllers/cuttingController.ts
+@@ -544,8 +544,6 @@
+         id: r.id,
+         finished_part: r.finished_part,
+         wire_part: r.wire_part,
+-        wire_awg: r.wire_awg,
+-        color: r.color,
+         qty_per_group: Number(r.qty_per_group || 0),
+         cut_length_mm: Number(r.cut_length_mm || 0),
+         length_tol: r.length_tol,
+@@ -689,8 +687,6 @@
+         id: r.id,
+         finished_part: r.finished_part,
+         wire_part: r.wire_part,
+-        wire_awg: r.wire_awg,
+-        color: r.color,
+         qty_per_group: Number(r.qty_per_group || 0),
+         cut_length_mm: Number(r.cut_length_mm || 0),
+         length_tol: r.length_tol,
+@@ -993,8 +989,6 @@
+         shear_qty: qty,
+         actual_shear_length: actLen,
+         scrap_length_actual: scrap,
+-        wire_spec: body.wire_spec || null,
+-        color: body.color || null,
+         cut_length_mm: body.cut_length_mm != null ? Number(body.cut_length_mm) : null,
+         length_tolerance: body.length_tolerance != null ? String(body.length_tolerance) : null,
+         shear_equipment: body.shear_equipment || null,
+--- a/frontend/src/pages/Report.tsx
++++ b/frontend/src/pages/Report.tsx
+@@ -1474,12 +1474,12 @@
+       const data = await res.json();
+       if (!data.success) return;
+       const rows = data.data || [];
+-      const headers = ['ID', t('coilLabel'), t('jobNumberCutting'), t('expJobPartNumber'), t('coilPartNumber'), t('expType'), t('expConsumptionMm'), t('unit'), t('expConvertedLen'), t('expConvertedUnit'), t('expShearQty'), t('expTargetShearLen'), t('actualShearLength'), t('expActualShearEquip'), t('expFirstChecker'), t('expLastChecker'), t('expScrapLen'), t('expStripA'), t('expTolA'), t('expActualStripA'), t('expStripB'), t('expTolB'), t('expActualStripB'), t('expOperator'), t('remark'), t('expCreateTime')];
++      const headers = ['ID', t('coilLabel'), t('jobNumberCutting'), t('expJobPartNumber'), t('coilPartNumber'), t('expType'), t('expConsumptionMm'), t('unit'), t('expConvertedLen'), t('expConvertedUnit'), t('expShearQty'), t('expTargetShearLen'), t('actualShearLength'), t('expActualShearEquip'), t('expScrapLen'), t('expStripA'), t('expTolA'), t('expActualStripA'), t('expStripB'), t('expTolB'), t('expActualStripB'), t('expOperator'), t('remark'), t('expCreateTime')];
+       const csvRows = rows.map((r: any) => [
+         r.id, r.coil_id, r.job_order, r.job_part_number, r.part_number,
+         r.consume_type_label, r.out_length, r.unit, r.converted_length, r.converted_unit,
+         r.shear_qty, r.shear_length, r.actual_shear_length, r.actual_shear_equipment,
+-        r.checker_first, r.checker_last, r.scrap_length_actual,
++        r.scrap_length_actual,
+         r.strip_len_a, r.strip_tol_a, r.strip_len_a_actual,
+         r.strip_len_b, r.strip_tol_b, r.strip_len_b_actual,
+         r.operator, r.remark, r.created_at,
+@@ -2768,8 +2768,6 @@
+                       <TableHead className="text-right">{t('lengthMm')}</TableHead>
+                       <TableHead className="text-right">{t('actualShearLength')}</TableHead>
+                       <TableHead className="text-right">{t('actualScrapLength')}</TableHead>
+-                      <TableHead>{t('checkerFirst')}</TableHead>
+-                      <TableHead>{t('checkerLast')}</TableHead>
+                       <TableHead>{t('operatorLabel')}</TableHead>
+                       <TableHead>{t('createdAt')}</TableHead>
+                     </TableRow>
+@@ -2799,8 +2797,6 @@
+                         <TableCell className="text-right font-mono text-sm">{r.out_length}</TableCell>
+                         <TableCell className="text-right font-mono text-sm">{r.actual_shear_length ?? '—'}</TableCell>
+                         <TableCell className="text-right font-mono text-sm">{r.scrap_length_actual ?? '—'}</TableCell>
+-                        <TableCell className="text-sm">{r.checker_first || '—'}</TableCell>
+-                        <TableCell className="text-sm">{r.checker_last || '—'}</TableCell>
+                         <TableCell className="text-sm">{r.operator || '—'}</TableCell>
+                         <TableCell className="text-sm whitespace-nowrap">{r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</TableCell>
+                       </TableRow>

@@ -3,6 +3,8 @@
   替代其他系统直接读写 materialpickup 库，统一走本服务 API。
 
 认证：请求头 X-API-Key: <EXTERNAL_API_KEY>（Config.EXTERNAL_API_KEY）
+站点：除 confirm-user 外，所有接口须携带 X-Site-Ref（310/410 或公司码 NAIGROUP_PRD_XXX，兼容 NAIGROUP_PROD_XXX），
+      看板强制校验并按站点过滤/落库（见 _resolve_site）。
 Base：/api/external/
 
 接口：
@@ -37,6 +39,51 @@ def _check_api_key():
     if not EXTERNAL_KEY or key != EXTERNAL_KEY:
         return jsonify({'success': False, 'error': 'API Key 无效'}), 401
     return None
+
+
+def _resolve_site():
+    """解析站点标识，返回 (site_or_None, error_or_None)。
+
+    取值优先级：请求头 X-Site-Ref > query 参数 site > JSON body 的 site（仅 POST/DELETE）。
+    规范化：strip 空白；接受两种格式：
+      ① 站点号 '310'/'410'（必须是 Config.SITE_CONFIG 的 key）；
+      ② 公司码 'NAIGROUP_PRD_XXX' / 'NAIGROUP_PROD_XXX'（容错 PRD/PROD、单/双下划线），
+         通过 Config.SITE_CSI_COMPANY 的 value 匹配反查站点号，也兼容去掉
+         'NAIGROUP_PRD_' / 'NAIGROUP_PROD_' 前缀后的值（如 '410'）。
+    """
+    site_val = (request.headers.get('X-Site-Ref') or '').strip()
+    if not site_val:
+        site_val = (request.args.get('site') or '').strip()
+    if not site_val and request.method in ('POST', 'DELETE'):
+        b = request.get_json(silent=True) or {}
+        site_val = str(b.get('site') or '').strip()
+    raw = (site_val or '').upper().replace(' ', '')
+    if raw in Config.SITE_CONFIG:
+        return raw, None
+    # 公司码匹配：NAIGROUP_PRD_XXX / NAIGROUP_PROD_XXX（容错 PRD/PROD、单/双下划线）
+    compact = raw.replace('_', '')
+    if compact:
+        for code, snum in Config.SITE_CSI_COMPANY.items():
+            if compact.replace('PROD', 'PRD') == code.upper().replace('_', ''):
+                return snum, None
+        # 去掉 'NAIGROUP_PRD_'/'NAIGROUP_PROD_' 前缀后的纯站点号（如 '410'）
+        if compact.startswith('NAIGROUP'):
+            rest = compact[len('NAIGROUP'):]
+            for pre in ('PRD', 'PROD'):
+                if rest.startswith(pre):
+                    rest = rest[len(pre):].lstrip('_')
+                    break
+            if rest in Config.SITE_CONFIG:
+                return rest, None
+    return None, '缺少或无效的站点标识（X-Site-Ref），可选站点: 310, 410'
+
+
+def _require_site():
+    """强制要求站点标识：调用 _resolve_site，失败返回 (jsonify 响应, 400)；成功返回站点号字符串"""
+    site, err = _resolve_site()
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+    return site
 
 
 def _factor(unit):
@@ -84,11 +131,14 @@ def ext_coil_lookup(coil_id):
     err = _check_api_key()
     if err:
         return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
-            (coil_id,)
+            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0 AND siteref = %s",
+            (coil_id, site)
         )
         coil = cur.fetchone()
         if not coil:
@@ -131,6 +181,9 @@ def ext_create_consumption():
     if err:
         return err
     b = request.get_json() or {}
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     coil_id = str(b.get('coil_id') or '').strip()
     part_number = (b.get('part_number') or '').strip()
     job_order = (b.get('job_order') or '').strip() or None
@@ -153,8 +206,8 @@ def ext_create_consumption():
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
-            (coil_id,)
+            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0 AND siteref = %s",
+            (coil_id, site)
         )
         coil = cur.fetchone()
         if not coil:
@@ -182,16 +235,15 @@ def ext_create_consumption():
         cur.execute(
             """INSERT INTO kr_wire_coil_consumption
                (coil_id, job_order, job_part_number, part_number, consume_type, out_length, unit,
-                converted_length, converted_unit, wire_spec, color, shear_qty, shear_length,
+                converted_length, converted_unit, shear_qty, shear_length,
                 actual_shear_length, length_tolerance, shear_equipment, shear_device_no,
-                actual_shear_equipment, scrap_length_actual, operator, checker, is_manual, remark, stage)
-               VALUES (%s, %s, %s, %s, 'consumption', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'complete')""",
+                actual_shear_equipment, scrap_length_actual, operator, checker, is_manual, remark, stage,
+                siteref)
+               VALUES (%s, %s, %s, %s, 'consumption', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'complete', %s)""",
             (coil_id, job_order, job_part_number, part_number, out_length,
              coil.get('unit') or None,
              factor and round(out_length / factor, 4) or None,
              factor and coil.get('unit') or None,
-             (b.get('wire_spec') or '').strip() or None,
-             (b.get('color') or '').strip() or None,
              int(qty),
              _num(b.get('cut_length_mm')),
              act_len,
@@ -203,7 +255,8 @@ def ext_create_consumption():
              (b.get('operator') or '').strip() or 'unknown',
              (b.get('checker') or '').strip() or None,
              1 if b.get('is_manual') else 0,
-             (b.get('remark') or '').strip() or None)
+             (b.get('remark') or '').strip() or None,
+             coil.get('siteref'))
         )
         new_id = cur.lastrowid
         db.commit()
@@ -228,6 +281,9 @@ def ext_create_scrap():
     if err:
         return err
     b = request.get_json() or {}
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     coil_id = str(b.get('coil_id') or '').strip()
     part_number = (b.get('part_number') or '').strip()
     job_order = (b.get('job_order') or '').strip() or None
@@ -240,8 +296,8 @@ def ext_create_scrap():
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
-            (coil_id,)
+            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0 AND siteref = %s",
+            (coil_id, site)
         )
         coil = cur.fetchone()
         if not coil:
@@ -254,13 +310,14 @@ def ext_create_scrap():
         cur.execute(
             """INSERT INTO kr_wire_coil_consumption
                (coil_id, job_order, part_number, consume_type, out_length, unit,
-                converted_length, converted_unit, operator, remark)
-               VALUES (%s, %s, %s, 'scrap', %s, %s, %s, %s, %s, %s)""",
+                converted_length, converted_unit, operator, remark, siteref)
+               VALUES (%s, %s, %s, 'scrap', %s, %s, %s, %s, %s, %s, %s)""",
             (coil_id, job_order, part_number, scrap_len, coil.get('unit') or None,
              factor and round(scrap_len / factor, 4) or None,
              factor and coil.get('unit') or None,
              (b.get('operator') or '').strip() or 'unknown',
-             (b.get('remark') or '').strip() or None)
+             (b.get('remark') or '').strip() or None,
+             coil.get('siteref'))
         )
         new_id = cur.lastrowid
         db.commit()
@@ -279,6 +336,9 @@ def ext_create_check():
     if err:
         return err
     b = request.get_json() or {}
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     job_order = (b.get('job_order') or '').strip()
     part_number = (b.get('part_number') or '').strip()
     if not job_order or not part_number:
@@ -313,8 +373,8 @@ def ext_create_check():
                 strip_a_std_length, strip_a_std_tol, strip_a_std_device, strip_a_actual_device, strip_a_actual_length,
                 strip_a_operator, strip_a_checker,
                 strip_b_std_length, strip_b_std_tol, strip_b_std_device, strip_b_actual_device, strip_b_actual_length,
-                strip_b_operator, strip_b_checker, scrap_length)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                strip_b_operator, strip_b_checker, scrap_length, siteref)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (job_order, (b.get('job_part_number') or '').strip() or part_number, part_number,
              _num(b.get('cut_length_mm')), ctype, 1 if b.get('is_manual') else 0,
              _num(b.get('shear_std_length')), str(b.get('shear_std_tol') or '') or None,
@@ -335,7 +395,7 @@ def ext_create_check():
              _num(b.get('strip_b_actual_length')),
              (b.get('strip_b_operator') or '').strip() or None,
              (b.get('strip_b_checker') or '').strip() or None,
-             _num(b.get('scrap_length')))
+             _num(b.get('scrap_length')), site)
         )
         new_id = cur.lastrowid
         db.commit()
@@ -355,6 +415,7 @@ def ext_confirm_user():
     err = _check_api_key()
     if err:
         return err
+    # 不要求站点标识：cutting_confirm_user 表无站点概念（确认人跨站点共用），仅校验 API Key。
     b = request.get_json() or {}
     pwd = str(b.get('password') or '').strip()
     if not pwd:
@@ -387,6 +448,9 @@ def ext_delete_consumption(record_id):
     if err:
         return err
     b = request.get_json(silent=True) or {}
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     pwd = str(b.get('password') or '').strip()
     if not pwd:
         return jsonify({'success': False, 'error': '确认密码必填'}), 400
@@ -408,8 +472,8 @@ def ext_delete_consumption(record_id):
             cur.close()
             return jsonify({'success': False, 'error': '确认密码错误'}), 400
         cur.execute(
-            "SELECT id FROM kr_wire_coil_consumption WHERE id = %s",
-            (record_id,)
+            "SELECT id FROM kr_wire_coil_consumption WHERE id = %s AND siteref = %s",
+            (record_id, site)
         )
         if not cur.fetchone():
             cur.close()
@@ -427,12 +491,17 @@ def ext_consumption_list():
     err = _check_api_key()
     if err:
         return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     try:
         page = max(int(request.args.get('page', 1)), 1)
         page_size = min(max(int(request.args.get('pageSize', 20)), 1), 200)
     except (TypeError, ValueError):
         page, page_size = 1, 20
     wb_where, wb_params = [], []
+    wb_where.append('siteref = %s')
+    wb_params.append(site)
     job = (request.args.get('job') or '').strip()
     part = (request.args.get('part') or '').strip()
     coil_id = (request.args.get('coilId') or '').strip()
@@ -462,12 +531,10 @@ def ext_consumption_list():
         )
         total = cur.fetchone()['c']
         cur.execute(
-            f"SELECT id, coil_id, job_order, job_part_number, part_number, consume_type, stage, "
+            f"SELECT id, coil_id, siteref, job_order, job_part_number, part_number, consume_type, stage, "
             f"out_length, unit, converted_length, converted_unit, "
             f"shear_qty, shear_length, actual_shear_length, actual_shear_equipment, "
-            f"checker_first, checker_last, "
             f"scrap_length_actual, "
-            f"actual_shear_length_last, "
             f"operator, remark, created_at "
             f"FROM kr_wire_coil_consumption{where} ORDER BY id DESC LIMIT %s OFFSET %s",
             wb_params + [page_size, (page - 1) * page_size]
@@ -477,8 +544,7 @@ def ext_consumption_list():
     for r in rows:
         d = dict(r)
         for f in ('out_length', 'converted_length', 'shear_qty', 'shear_length', 'actual_shear_length',
-                  'scrap_length_actual',
-                  'actual_shear_length_last'):
+                  'scrap_length_actual'):
             if d.get(f) is not None:
                 d[f] = float(d[f])
         d['consume_type_label'] = 'Scrap' if d.get('consume_type') == 'scrap' else 'consumption'
@@ -495,12 +561,17 @@ def ext_coils_list():
     err = _check_api_key()
     if err:
         return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     try:
         page = max(int(request.args.get('page', 1)), 1)
         page_size = min(max(int(request.args.get('pageSize', 20)), 1), 200)
     except (TypeError, ValueError):
         page, page_size = 1, 20
     wb_where, wb_params = [], []
+    wb_where.append('c.siteref = %s')
+    wb_params.append(site)
     coil_id = (request.args.get('coilId') or '').strip()
     part = (request.args.get('part') or '').strip()
     status = (request.args.get('status') or '').strip()
@@ -561,7 +632,12 @@ def ext_consumption_query():
     err = _check_api_key()
     if err:
         return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     wb_where, wb_params = [], []
+    wb_where.append('siteref = %s')
+    wb_params.append(site)
     coil_id = (request.args.get('coil_id') or '').strip()
     job_order = (request.args.get('job_order') or '').strip()
     if coil_id:
@@ -574,13 +650,11 @@ def ext_consumption_query():
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            f"SELECT id, coil_id, job_order, job_part_number, part_number, consume_type, stage, "
+            f"SELECT id, coil_id, siteref, job_order, job_part_number, part_number, consume_type, stage, "
             f"out_length, unit, converted_length, converted_unit, "
-            f"shear_qty, shear_length, actual_shear_length, color, wire_spec, "
+            f"shear_qty, shear_length, actual_shear_length, "
             f"shear_equipment, shear_device_no, actual_shear_equipment, "
-            f"checker_first, checker_last, "
             f"scrap_length_actual, "
-            f"actual_shear_length_last, "
             f"operator, remark, created_at "
             f"FROM kr_wire_coil_consumption{where} ORDER BY id DESC LIMIT 200",
             wb_params
@@ -590,8 +664,7 @@ def ext_consumption_query():
     for r in rows:
         d = dict(r)
         for f in ('out_length', 'converted_length', 'shear_qty', 'shear_length', 'actual_shear_length',
-                  'scrap_length_actual',
-                  'actual_shear_length_last'):
+                  'scrap_length_actual'):
             if d.get(f) is not None:
                 d[f] = float(d[f])
         d['consume_type_label'] = 'Scrap' if d.get('consume_type') == 'scrap' else 'consumption'
@@ -608,7 +681,12 @@ def ext_check_query():
     err = _check_api_key()
     if err:
         return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
     wb_where, wb_params = [], []
+    wb_where.append('siteref = %s')
+    wb_params.append(site)
     job_order = (request.args.get('job_order') or '').strip()
     part_number = (request.args.get('part_number') or '').strip()
     check_type = (request.args.get('check_type') or '').strip()
@@ -649,6 +727,10 @@ def ext_cutting_ref():
     err = _check_api_key()
     if err:
         return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
+    # kr_cutting_ref 无 siteref 列，参数为跨站点共享；仅校验站点标识有效性，不做数据过滤
     wb_where, wb_params = [], []
     finished_part = (request.args.get('finished_part') or '').strip()
     wire_part = (request.args.get('wire_part') or '').strip()
@@ -664,7 +746,7 @@ def ext_cutting_ref():
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            f"SELECT id, finished_part, wire_part, wire_awg, color, qty_per_group, cut_length_mm, "
+            f"SELECT id, finished_part, wire_part, qty_per_group, cut_length_mm, "
             f"length_tol, cut_device, device_no, strip_len_a, strip_tol_a, strip_len_b, "
             f"strip_tol_b, term_a, term_b "
             f"FROM kr_cutting_ref{where} ORDER BY wire_part, cut_length_mm",
