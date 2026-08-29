@@ -32,6 +32,19 @@
                         <ul class="dropdown-menu">
                             <li><a class="dropdown-item" href="/request/new"><i class="fas fa-list me-2"></i><span data-i18n="nav.new_normal">新建按需物料申请</span></a></li>
                             <li><a class="dropdown-item" href="/request/minpack/new"><i class="fas fa-cube me-2"></i><span data-i18n="nav.new_minpack">新建最小包装物料申请</span></a></li>
+                            <li><a class="dropdown-item" href="/return/new"><i class="fas fa-undo-alt me-2"></i><span data-i18n="nav.new_return">新建物料退料申请</span></a></li>
+                        </ul>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-tasks me-1"></i><span data-i18n="nav.wire">线材管理</span>
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="/wire/coils"><i class="fas fa-tags me-2"></i><span data-i18n="nav.wire_coils">卷标查询</span></a></li>
+                            <li><a class="dropdown-item" href="/wire/consumption"><i class="fas fa-chart-line me-2"></i><span data-i18n="nav.wire_consumption">线材消耗查询</span></a></li>
+                            <li><a class="dropdown-item" href="/wire/count"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.wire_count">线材库存盘点</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="/wire/adjust"><i class="fas fa-exchange-alt me-2"></i><span data-i18n="nav.wire_adjust">盘点差异调整</span></a></li>
                         </ul>
                     </li>
                     {% endif %}
@@ -126,8 +139,8 @@
     </div>
 
     <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/i18n.js') }}?v=20260824a"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}?v=20260824a"></script>
     <script>
     // 语言切换（覆盖 i18n.js 中的 setLang，额外更新 navbar 标签）
     function switchUILang(lang) {

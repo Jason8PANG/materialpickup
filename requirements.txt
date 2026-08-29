@@ -6,3 +6,6 @@ gunicorn==23.0.0
 ldap3==2.9.1
 httpx==0.28.1
 python-dotenv==1.1.0
+python-barcode>=0.15
+Pillow>=10.0.0
+pywin32>=306; platform_system == "Windows"

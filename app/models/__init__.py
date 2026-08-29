@@ -58,7 +58,8 @@ def get_site_filter(session_user):
 STATUS_LABELS = {
     'rejected': '已驳回',
     'pending_prep': '待备料', 'prepping': '备料中',
-    'short': '缺料', 'ready_pickup': '待取料', 'completed': '已完成'
+    'short': '缺料', 'ready_pickup': '待取料', 'completed': '已完成',
+    'pending_return': '待退料', 'confirmed': '已确认'
 }
 
 
@@ -66,5 +67,6 @@ STATUS_COLORS = {
     'pending_approval': 'bg-primary', 'rejected': 'bg-secondary',
     'pending_prep': 'bg-warning text-dark', 'prepping': 'bg-success',
     'short': 'bg-danger', 'ready_pickup': 'bg-secondary',
-    'completed': 'bg-success'
+    'completed': 'bg-success', 'pending_return': 'bg-info text-dark',
+    'confirmed': 'bg-success'
 }

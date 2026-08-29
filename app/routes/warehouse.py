@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, session
 from datetime import datetime
 from app.models import get_db_connection, get_site_filter
-from app.utils import WhereBuilder
+from app.utils import WhereBuilder, is_en
 
 warehouse_bp = Blueprint('warehouse', __name__)
 
@@ -100,7 +100,41 @@ def complete_prep(request_id):
 
         if req['status'] != 'prepping':
             cursor.close()
-            return jsonify({'success': False, 'message': '当前状态不允许完成备料'}), 400
+            return jsonify({'success': False,
+                            'message': 'Current status does not allow completing prep' if is_en() else '当前状态不允许完成备料'}), 400
+
+        # 卷标按行维护校验：仅最小包装（minpack）申请单 —— A/B 开头物料的每一行
+        # 都必须至少录入 1 个卷标，否则阻止完成备料（卷标录入仅对 minpack 开放）
+        if (req.get('request_type') or '') == 'minpack':
+            cursor.execute(
+                "SELECT id, part_number FROM kr_request_item WHERE request_id = %s",
+                (request_id,)
+            )
+            ab_items = [it for it in cursor.fetchall()
+                        if (it['part_number'] or '')[:1].upper() in ('A', 'B')]
+            if ab_items:
+                placeholders = ','.join(['%s'] * len(ab_items))
+                cursor.execute(
+                    f"SELECT item_id FROM kr_wire_coil WHERE request_id = %s AND item_id IN ({placeholders}) "
+                    f"AND is_deleted = 0 GROUP BY item_id",
+                    [request_id] + [it['id'] for it in ab_items]
+                )
+                covered_item_ids = {r['item_id'] for r in cursor.fetchall()}
+                missing = [it for it in ab_items if it['id'] not in covered_item_ids]
+                if missing:
+                    en = is_en()
+                    row_label = 'row' if en else '行'
+                    parts = ', '.join(f"{it['part_number']}({row_label}{it['id']})" for it in missing)
+                    cursor.close()
+                    if en:
+                        return jsonify({
+                            'success': False,
+                            'message': f'A/B materials require coil entries: {parts}, please maintain coils on the prep detail page'
+                        }), 400
+                    return jsonify({
+                        'success': False,
+                        'message': f'A/B 开头物料必须录入卷标：{parts}，请先在备料详情页维护卷标'
+                    }), 400
 
         now = datetime.now()
         cursor.execute(
@@ -234,7 +268,16 @@ def sign_request(request_id):
             "UPDATE kr_material_request SET status = 'completed', signer = %s, sign_time = %s, signature_data = %s WHERE id = %s",
             (user['username'], now, signature_data, request_id)
         )
-        add_log(cursor, request_id, user['username'], 'SIGN', '签字确认完成', request.remote_addr)
+        # 取料完成（sign）：该申请单关联的在库卷标 → 在车间（已转移至车间库位，脱离仓库库存）
+        cursor.execute(
+            "UPDATE kr_wire_coil SET status = 'in_shop' "
+            "WHERE request_id = %s AND status = 'in_stock'",
+            (request_id,)
+        )
+        moved = cursor.rowcount
+        add_log(cursor, request_id, user['username'], 'SIGN',
+                f'签字确认完成，{moved} 卷标转入车间' if moved else '签字确认完成',
+                request.remote_addr)
         db.commit()
         cursor.close()
 

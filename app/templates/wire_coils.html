@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}卷标查询 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0"><i class="fas fa-tags me-2 text-info"></i><span data-i18n="wire.coils_title">卷标查询</span></h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fCoilId" placeholder="卷标ID">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fPart" placeholder="物料">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fLot" placeholder="Lot">
+            </div>
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fStatus">
+                    <option value="">全部状态</option>
+                    <option value="in_stock">在库</option>
+                    <option value="in_shop">在车间</option>
+                    <option value="finished">已消完</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fSite" placeholder="站点(如410)">
+            </div>
+            <div class="col-6 col-md-2">
+                <button class="btn btn-primary btn-sm w-100" onclick="loadCoils()"><i class="fas fa-search me-1"></i>查询</button>
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" id="fDateFrom"></div>
+            <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" id="fDateTo"></div>
+            <div class="col-6 col-md-2">
+                <a class="btn btn-success btn-sm w-100" id="exportBtn" href="#"><i class="fas fa-file-csv me-1"></i>导出 CSV</a>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>卷标ID</th><th>物料</th><th>Lot</th><th>卷长</th><th>单位</th>
+                        <th>状态</th><th>站点</th><th>申请单</th><th>使用(mm)</th>
+                        <th>剩余长度MM</th><th>剩余长度</th><th>创建时间</th>
+                    </tr>
+                </thead>
+                <tbody id="coilBody">
+                    <tr><td colspan="12" class="text-center text-muted py-4">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function coilQuery() {
+    const p = new URLSearchParams();
+    if (fCoilId.value) p.set('coil_id', fCoilId.value);
+    if (fPart.value) p.set('part_number', fPart.value);
+    if (fLot.value) p.set('lot_no', fLot.value);
+    if (fStatus.value) p.set('status', fStatus.value);
+    if (fSite.value) p.set('siteref', fSite.value);
+    if (fDateFrom.value) p.set('date_from', fDateFrom.value);
+    if (fDateTo.value) p.set('date_to', fDateTo.value);
+    return p.toString();
+}
+function loadCoils() {
+    fetch('/api/wire/coils?' + coilQuery())
+        .then(r => r.json())
+        .then(resp => {
+            const tb = document.getElementById('coilBody');
+            if (!resp.success) { tb.innerHTML = '<tr><td colspan="12" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
+            if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="12" class="text-center text-muted">无数据</td></tr>'; return; }
+            tb.innerHTML = resp.data.map(c => {
+                // 剩余为 0 → 状态显示"已消完"
+                const zeroRemain = c.remain_mm != null && c.remain_mm <= 0;
+                const stLabel = zeroRemain ? '已消完' : (c.status_label || '-');
+                const stBadge = zeroRemain ? 'bg-dark'
+                    : (c.status === 'in_stock' ? 'bg-success' : c.status === 'in_shop' ? 'bg-warning text-dark' : c.status === 'scrapped' ? 'bg-danger' : 'bg-secondary');
+                return `<tr>
+                <td>${c.coil_id}</td><td>${c.part_number || '-'}</td><td>${c.lot_no || '-'}</td>
+                <td>${c.coil_length}</td><td>${c.unit || '-'}</td>
+                <td><span class="badge ${stBadge}">${stLabel}</span></td>
+                <td>${c.siteref || '-'}</td><td>${c.request_id || '-'}</td>
+                <td>${c.used_mm}</td>
+                <td>${c.remain_mm != null ? c.remain_mm : '-'}</td><td>${c.remain_orig != null ? c.remain_orig : '-'}</td>
+                <td>${(c.created_at || '').slice(0, 19).replace('T', ' ')}</td>
+            </tr>`;
+            }).join('');
+        })
+        .catch(() => { document.getElementById('coilBody').innerHTML = '<tr><td colspan="12" class="text-center text-danger">加载失败</td></tr>'; });
+}
+document.getElementById('exportBtn').addEventListener('click', function () {
+    this.href = '/api/wire/coils/export?' + coilQuery();
+});
+document.addEventListener('DOMContentLoaded', loadCoils);
+</script>
+{% endblock %}

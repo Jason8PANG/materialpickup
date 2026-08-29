@@ -100,6 +100,33 @@ def create_request():
             item_data
         )
 
+        # 2.1 发起时自动获取物料单位（CSI），写入 kr_request_item.unit
+        #     后续卷标录入/出库直接读库，不再连 CSI（单位获取只做一次）
+        try:
+            from app.routes.coil import _get_unit_cached
+            from concurrent.futures import ThreadPoolExecutor
+            # 去重物料
+            unique_parts = list(dict.fromkeys(
+                item['part_number'].strip() for item in items if item.get('part_number')
+            ))
+            unit_map = {}
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = {pool.submit(_get_unit_cached, siteref, p): p for p in unique_parts}
+                for fut in futures:
+                    try:
+                        unit_map[futures[fut]] = fut.result() or None
+                    except Exception:
+                        pass
+            for p, u in unit_map.items():
+                if u:
+                    cursor.execute(
+                        "UPDATE kr_request_item SET unit = %s WHERE request_id = %s AND part_number = %s AND (unit IS NULL OR unit = '')",
+                        (u, request_id, p)
+                    )
+        except Exception as e:
+            # 单位获取失败不阻断申请创建，后续可再补
+            print(f"[REQUEST] 发起时获取单位失败: {e}")
+
         # 3. 记录日志
         first_item = items[0]
         item_summary = f"{first_item['part_number']} x {first_item['quantity']}"
@@ -280,12 +307,22 @@ def get_request(request_id):
             (request_id,)
         )
         logs = cursor.fetchall()
+
+        # 退料单：附加退料清单（卷标维度）
+        return_items = []
+        if row.get('request_type') == 'return':
+            cursor.execute(
+                "SELECT * FROM kr_return_item WHERE request_id = %s ORDER BY id",
+                (request_id,)
+            )
+            return_items = cursor.fetchall()
         cursor.close()
 
     result = dict(row)
     result['status_label'] = STATUS_LABELS.get(row['status'], row['status'])
     result['items'] = items
     result['item_count'] = len(items)
+    result['return_items'] = return_items
     # 计算总金额
     total_amount = 0
     for item in items:
@@ -550,6 +587,31 @@ def create_minpack_request():
             VALUES (%s, NULL, %s, %s, %s, %s, %s, %s)""",
             item_data
         )
+
+        # 2.1 发起时自动获取物料单位（CSI），写入 kr_request_item.unit（与 create_request 一致）
+        #     后续卷标录入/出库直接读库，不再连 CSI
+        try:
+            from app.routes.coil import _get_unit_cached
+            from concurrent.futures import ThreadPoolExecutor
+            unique_parts = list(dict.fromkeys(
+                str(item.get('part_number') or '').strip() for item in items if item.get('part_number')
+            ))
+            unit_map = {}
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = {pool.submit(_get_unit_cached, siteref, p): p for p in unique_parts}
+                for fut in futures:
+                    try:
+                        unit_map[futures[fut]] = fut.result() or None
+                    except Exception:
+                        pass
+            for p, u in unit_map.items():
+                if u:
+                    cursor.execute(
+                        "UPDATE kr_request_item SET unit = %s WHERE request_id = %s AND part_number = %s AND (unit IS NULL OR unit = '')",
+                        (u, request_id, p)
+                    )
+        except Exception as e:
+            print(f"[REQUEST] minpack 发起时获取单位失败: {e}")
 
         # 操作日志
         cursor.execute(

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}线材消耗查询 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0"><i class="fas fa-chart-line me-2 text-info"></i><span data-i18n="wire.cons_title">线材消耗查询</span></h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fCoilId" placeholder="卷标ID">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fPart" placeholder="物料">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fJob" placeholder="工单号">
+            </div>
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fType">
+                    <option value="">全部类型</option>
+                    <option value="issue">出库</option>
+                    <option value="consumption">消耗</option>
+                    <option value="scrap">报废</option>
+                    <option value="count_adjust">库存调整</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" id="fDateFrom"></div>
+            <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" id="fDateTo"></div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-auto">
+                <button class="btn btn-primary btn-sm" onclick="loadCons()"><i class="fas fa-search me-1"></i>查询</button>
+            </div>
+            <div class="col-auto">
+                <a class="btn btn-success btn-sm" id="exportBtn" href="#"><i class="fas fa-file-csv me-1"></i>导出 CSV</a>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>卷标ID</th><th>物料</th><th>工单</th><th>类型</th><th>出库长度(mm)</th>
+                        <th>单位</th><th>转换长度</th><th>转换单位</th><th>登记人</th><th>时间</th>
+                    </tr>
+                </thead>
+                <tbody id="consBody">
+                    <tr><td colspan="10" class="text-center text-muted py-4">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function consQuery() {
+    const p = new URLSearchParams();
+    if (fCoilId.value) p.set('coil_id', fCoilId.value);
+    if (fPart.value) p.set('part_number', fPart.value);
+    if (fJob.value) p.set('job_order', fJob.value);
+    if (fType.value) p.set('consume_type', fType.value);
+    if (fDateFrom.value) p.set('date_from', fDateFrom.value);
+    if (fDateTo.value) p.set('date_to', fDateTo.value);
+    return p.toString();
+}
+function loadCons() {
+    fetch('/api/wire/consumption?' + consQuery())
+        .then(r => r.json())
+        .then(resp => {
+            const tb = document.getElementById('consBody');
+            if (!resp.success) { tb.innerHTML = '<tr><td colspan="10" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
+            if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="10" class="text-center text-muted">无数据</td></tr>'; return; }
+            tb.innerHTML = resp.data.map(c => `<tr>
+                <td>${c.coil_id}</td><td>${c.part_number || '-'}</td><td>${c.job_order || '-'}</td>
+                <td>${c.consume_type}</td><td>${c.out_length}</td><td>${c.unit || '-'}</td>
+                <td>${c.converted_length != null ? c.converted_length : '-'}</td><td>${c.converted_unit || '-'}</td>
+                <td>${c.operator || '-'}</td>
+                <td>${(c.created_at || '').slice(0, 19).replace('T', ' ')}</td>
+            </tr>`).join('');
+        })
+        .catch(() => { document.getElementById('consBody').innerHTML = '<tr><td colspan="10" class="text-center text-danger">加载失败</td></tr>'; });
+}
+document.getElementById('exportBtn').addEventListener('click', function () {
+    this.href = '/api/wire/consumption/export?' + consQuery();
+});
+document.addEventListener('DOMContentLoaded', loadCons);
+</script>
+{% endblock %}

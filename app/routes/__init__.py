@@ -44,6 +44,17 @@ def minpack_request_page():
     return render_template('minpack_request_form.html')
 
 
+@pages.route('/return/new')
+def return_request_page():
+    """新建物料退料申请（生产发起，手机/PDA 兼容）"""
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    user = session['user']
+    if user['role'] not in ('requester', 'warehouse', 'admin'):
+        return '权限不足', 403
+    return render_template('return_new.html')
+
+
 @pages.route('/pending')
 def pending_list_page():
     if not session.get('user'):

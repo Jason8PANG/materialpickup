@@ -249,6 +249,54 @@ class CSIClient:
             logger.error(f"[CSI] get_item_backflush error: {e}")
             return None
 
+    def get_item_unit(self, item: str) -> str | None:
+        """
+        获取物料单位 - 查询 IDO ue_GDL_SLItems 的 UM 字段
+        返回单位字符串（如 'M'/'FT'/'EA'），查不到返回 None
+
+        注意：实测带 properties 参数查询 ue_GDL_SLItems 会返回 0 条
+        （IDO properties 过滤不兼容），因此这里**不带 properties 全字段查询**，
+        从返回记录中取 UM/Uom/UnitOfMeasure 字段。
+        """
+        try:
+            filter_str = f"Item = N'{item}'"
+            records = self._get_ido("ue_GDL_SLItems", filter_str=filter_str)
+            if records:
+                for key in ("UM", "Uom", "UnitOfMeasure"):
+                    um = records[0].get(key)
+                    if um:
+                        return str(um).strip()
+            return None
+        except Exception as e:
+            logger.error(f"[CSI] get_item_unit error: {e}")
+            return None
+
+    def get_lot_info(self, item: str, lot: str) -> dict | None:
+        """
+        查询 SLLots（按 Item 过滤验证 Lot 号），返回 DerQtyOnHand（衍生可用数量）。
+        用于卷标录入时验证 Lot 与长度：长度（mm）不得超过 DerQtyOnHand（×换算系数 → mm）。
+        注意：SLLots 与 ue_GDL_SLItems 一样，带 properties 参数查询返回 0 条，
+        因此这里**不带 properties 全字段查询**，从返回记录中取 DerQtyOnHand/QtyOnHand 等字段。
+        返回: {item, lot, der_qty_on_hand, qty_on_hand, lot_status, whse} 或 None（Lot 不存在/查询失败）
+        """
+        try:
+            filter_str = f"Item = N'{item}' And Lot = N'{lot}'"
+            records = self._get_ido("SLLots", filter_str=filter_str)
+            if not records:
+                return None
+            r = records[0]
+            return {
+                'item': r.get('Item', item),
+                'lot': r.get('Lot', lot),
+                'der_qty_on_hand': float(r.get('DerQtyOnHand', 0) or 0),
+                'qty_on_hand': float(r.get('QtyOnHand', 0) or 0),
+                'lot_status': str(r.get('LotStatus', '') or ''),
+                'whse': str(r.get('Whse', '') or ''),
+            }
+        except Exception as e:
+            logger.error(f"[CSI] get_lot_info error: {e}")
+            return None
+
     def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:
         """
         查询物料批号库存（ue_NAI_SLLotLocs），按 FIFO 排序

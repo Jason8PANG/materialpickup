@@ -2,7 +2,7 @@
 const BASE = '';
 
 function apiGet(url, onSuccess, onError) {
-    fetch(BASE + url)
+    fetch(BASE + url, {headers: {'X-Lang': getLang()}})
         .then(r => r.json())
         .then(resp => {
             if (resp.success) onSuccess(resp);
@@ -14,7 +14,7 @@ function apiGet(url, onSuccess, onError) {
 function apiPost(url, data, onSuccess, onError) {
     fetch(BASE + url, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'X-Lang': getLang()},
         body: JSON.stringify(data)
     })
         .then(r => {
@@ -35,7 +35,7 @@ function apiPost(url, data, onSuccess, onError) {
 function apiPut(url, data, onSuccess, onError) {
     fetch(BASE + url, {
         method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'X-Lang': getLang()},
         body: JSON.stringify(data)
     })
         .then(r => r.json())
@@ -47,7 +47,7 @@ function apiPut(url, data, onSuccess, onError) {
 }
 
 function apiDelete(url, onSuccess, onError) {
-    fetch(BASE + url, {method: 'DELETE'})
+    fetch(BASE + url, {method: 'DELETE', headers: {'X-Lang': getLang()}})
         .then(r => r.json())
         .then(resp => {
             if (resp.success) onSuccess(resp);
@@ -195,21 +195,34 @@ function renderKanban(data) {
             let actionHtml = '';
             card.actions.forEach(function (action) {
                 if (action === 'approve') {
-                    actionHtml += `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();doAction(${card.id},'approve')">审批通过</button>`;
+                    actionHtml += `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();doAction(${card.id},'approve')">${__('action.approve')}</button>`;
                 } else if (action === 'reject') {
-                    actionHtml += `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();doAction(${card.id},'reject')">驳回</button>`;
+                    actionHtml += `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();doAction(${card.id},'reject')">${__('action.reject')}</button>`;
                 } else if (action === 'start_prep') {
-                    actionHtml += `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();doAction(${card.id},'start_prep')">开始备料</button>`;
+                    actionHtml += `<button class="btn btn-warning btn-sm" onclick="event.stopPropagation();doAction(${card.id},'start_prep')">${__('action.start_prep')}</button>`;
                 } else if (action === 'complete_prep') {
-                    actionHtml += `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();doAction(${card.id},'complete_prep')">完成备料</button>`;
+                    actionHtml += `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();doAction(${card.id},'complete_prep')">${__('action.complete_prep')}</button>`;
                 } else if (action === 'short') {
-                    actionHtml += `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();doAction(${card.id},'short')">缺料</button>`;
+                    actionHtml += `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();doAction(${card.id},'short')">${__('action.short')}</button>`;
                 } else if (action === 'sign') {
-                    actionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();doAction(${card.id},'sign')">签字取料</button>`;
+                    actionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();doAction(${card.id},'sign')">${__('action.sign')}</button>`;
+                } else if (action === 'confirm_return') {
+                    actionHtml += `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();doAction(${card.id},'confirm_return')">${__('action.confirm_return')}</button>`;
+                } else if (action === 'reject_return') {
+                    actionHtml += `<button class="btn btn-outline-danger btn-sm" onclick="event.stopPropagation();doAction(${card.id},'reject_return')">${__('action.reject_return')}</button>`;
                 } else if (action === 'assign_worker') {
-                    actionHtml += `<button class="btn btn-outline-secondary btn-sm" onclick="event.stopPropagation();showAssignWorker(${card.id})">指定备料员</button>`;
+                    actionHtml += `<button class="btn btn-outline-secondary btn-sm" onclick="event.stopPropagation();showAssignWorker(${card.id})">${__('action.assign_worker')}</button>`;
                 }
             });
+
+            // 退料单：显示卷标明细
+            let returnCoilHtml = '';
+            if (card.return_coils && card.return_coils.length) {
+                returnCoilHtml = '<div class="card-return-coils">' + card.return_coils.map(function (it) {
+                    return '<div class="small">' + escapeHtml(it.coil_id) + ' | ' + escapeHtml(it.part_number || '-') +
+                        ' | 余 ' + it.remain_length + escapeHtml(it.unit || '') + '</div>';
+                }).join('') + '</div>';
+            }
 
             // 卡片显示: 所有工单号
             const itemCount = card.item_count || 0;
@@ -229,10 +242,12 @@ function renderKanban(data) {
 
             cardEl.innerHTML = `
                 <div class="card-header-row">
+                    ${card.request_type_label === '退料' ? '<span class="badge bg-info me-1">退料</span>' : ''}
                     <div class="card-job-list">${card.is_urgent ? '<span class="badge bg-danger me-1"><i class="fas fa-exclamation-triangle"></i> ' + __('kanban.urgent') + '</span>' : ''}${jobDisplay}</div>
                     <span class="card-item-badge badge bg-secondary">${itemCount} ${__('kanban.item_count')}</span>
                 </div>
                 <div class="card-part-number">${escapeHtml(primaryPartNumber)}${itemCount > 1 ? ' <span class="text-muted">' + __('kanban.etc') + itemCount + __('kanban.items') + '</span>' : ''}</div>
+                ${returnCoilHtml}
                 <div class="card-qty">${__('kanban.total_amt')}: ${card.total_amount ? parseFloat(card.total_amount).toFixed(2) : '0.00'} | ${__('kanban.total_qty')}: ${card.total_quantity || card.quantity || '-'}</div>
                 <div class="card-time text-muted small">${card.request_time || ''}</div>
                 <div class="card-footer">${actionHtml}</div>
@@ -277,28 +292,35 @@ function doAction(requestId, action) {
     currentAction = action;
 
     const actionNames = {
-        'approve': '审批通过',
-        'reject': '驳回',
-        'start_prep': '开始备料',
-        'complete_prep': '完成备料',
-        'short': '缺料登记',
-        'sign': '签字取料'
+        'approve': __('action.approve'),
+        'reject': __('action.reject'),
+        'start_prep': __('action.start_prep'),
+        'complete_prep': __('action.complete_prep'),
+        'short': __('action.short'),
+        'sign': __('action.sign'),
+        'confirm_return': __('action.confirm_return'),
+        'reject_return': __('action.reject_return')
     };
 
     document.getElementById('actionModalTitle').textContent = actionNames[action] || action;
-    document.getElementById('actionModalText').textContent = '确认' + (actionNames[action] || action) + '此单据吗？';
+    document.getElementById('actionModalText').textContent = __('action.confirm_text').replace('{action}', actionNames[action] || action);
     document.getElementById('actionModalExtra').classList.add('d-none');
 
     if (action === 'reject') {
         document.getElementById('actionModalExtra').classList.remove('d-none');
-        document.getElementById('extraLabel').textContent = '驳回意见（必填）';
+        document.getElementById('extraLabel').textContent = __('action.reject_label');
         document.getElementById('extraInput').value = '';
-        document.getElementById('extraInput').placeholder = '请填写驳回原因';
+        document.getElementById('extraInput').placeholder = __('action.reject_placeholder');
+    } else if (action === 'reject_return') {
+        document.getElementById('actionModalExtra').classList.remove('d-none');
+        document.getElementById('extraLabel').textContent = __('action.reject_label');
+        document.getElementById('extraInput').value = '';
+        document.getElementById('extraInput').placeholder = __('action.reject_placeholder');
     } else if (action === 'short') {
         document.getElementById('actionModalExtra').classList.remove('d-none');
-        document.getElementById('extraLabel').textContent = '缺料原因（必填）';
+        document.getElementById('extraLabel').textContent = __('action.short_label');
         document.getElementById('extraInput').value = '';
-        document.getElementById('extraInput').placeholder = '请填写缺料原因';
+        document.getElementById('extraInput').placeholder = __('action.short_placeholder');
     }
 
     document.getElementById('actionConfirmBtn').onclick = confirmAction;
@@ -309,8 +331,8 @@ function confirmAction() {
     const extraInput = document.getElementById('extraInput');
     const comment = extraInput ? extraInput.value.trim() : '';
 
-    if ((currentAction === 'reject' || currentAction === 'short') && !comment) {
-        showToast('error', '请填写必要信息');
+    if ((currentAction === 'reject' || currentAction === 'short' || currentAction === 'reject_return') && !comment) {
+        showToast('error', __('action.required'));
         return;
     }
 
@@ -323,13 +345,16 @@ function confirmAction() {
         'start_prep': '/api/requests/' + currentRequestId + '/start-prep',
         'complete_prep': '/api/requests/' + currentRequestId + '/complete-prep',
         'short': '/api/requests/' + currentRequestId + '/short',
-        'sign': '/api/requests/' + currentRequestId + '/sign'
+        'sign': '/api/requests/' + currentRequestId + '/sign',
+        'confirm_return': '/api/returns/' + currentRequestId + '/confirm',
+        'reject_return': '/api/returns/' + currentRequestId + '/reject'
     };
 
     const dataMap = {
         'approve': {comment: comment},
         'reject': {comment: comment},
-        'short': {short_reason: comment}
+        'short': {short_reason: comment},
+        'reject_return': {reason: comment}
     };
 
     apiPost(urlMap[currentAction], dataMap[currentAction] || {}, function (resp) {
@@ -404,9 +429,9 @@ function renderDetail(req, logs) {
         siteEl.textContent = req.siteref || '-';
     }
 
-    // 状态标签
+    // 状态标签（前端 i18n 优先，英文界面显示英文）
     const statusEl = document.getElementById('detailStatus');
-    const statusLabel = req.status_label || req.status;
+    const statusLabel = __('status.' + req.status) || req.status_label || req.status;
     const statusColors = {
         'pending_prep': 'bg-warning text-dark', 'prepping': 'bg-success',
         'short': 'bg-danger', 'ready_pickup': 'bg-secondary',
@@ -446,6 +471,7 @@ function renderActions(req) {
             actions.push({label: __('action.start_prep'), class: 'btn-warning', action: 'start_prep'});
         }
         if (status === 'prepping') {
+            // 卷标信息/出库登记已改为备料详情页内按行维护，此处不再显示页面级按钮
             actions.push({label: __('action.complete_prep'), class: 'btn-success', action: 'complete_prep'});
             actions.push({label: __('action.short'), class: 'btn-danger', action: 'short'});
         }
@@ -470,7 +496,17 @@ function renderActions(req) {
         const btn = document.createElement('button');
         btn.className = 'btn ' + act.class + ' me-2';
         btn.textContent = act.label;
-        if (act.action === 'assign_worker') {
+        if (act.action === 'coil_info') {
+            btn.onclick = function () {
+                if (typeof openCoilModal === 'function') openCoilModal(req.id);
+                else showToast('error', '卷标功能模块未加载');
+            };
+        } else if (act.action === 'outbound_register') {
+            btn.onclick = function () {
+                if (typeof openOutboundModal === 'function') openOutboundModal(req.id);
+                else showToast('error', '出库登记模块未加载');
+            };
+        } else if (act.action === 'assign_worker') {
             btn.onclick = function () {
                 if (typeof showAssignWorker === 'function') {
                     showAssignWorker(req.id);
@@ -577,7 +613,7 @@ function renderPendingTable(resp) {
             <td><strong>${escapeHtml(primaryJobOrder)}</strong></td>
             <td><span class="badge bg-secondary">${itemCount} 项</span></td>
             <td>${escapeHtml(row.requester)}</td>
-            <td><span class="badge ${statusColors[row.status] || 'bg-secondary'}">${row.status_label}</span></td>
+            <td><span class="badge ${statusColors[row.status] || 'bg-secondary'}">${__('status.' + row.status) || row.status_label}</span></td>
             <td>${row.request_time || '-'}</td>
             <td><a href="/request/${row.id}" class="btn btn-sm btn-outline-primary">详情</a></td>
         `;
@@ -645,7 +681,7 @@ function renderHistoryTable(resp) {
             <td><strong>${escapeHtml(primaryJobOrder)}</strong></td>
             <td><span class="badge bg-secondary">${itemCount} 项</span></td>
             <td>${escapeHtml(row.requester)}</td>
-            <td><span class="badge ${statusColors[row.status] || 'bg-secondary'}">${row.status_label}</span></td>
+            <td><span class="badge ${statusColors[row.status] || 'bg-secondary'}">${__('status.' + row.status) || row.status_label}</span></td>
             <td>${escapeHtml(row.supervisor || '-')}</td>
             <td>${row.request_time || '-'}</td>
             <td><a href="/request/${row.id}" class="btn btn-sm btn-outline-primary">详情</a></td>

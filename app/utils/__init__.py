@@ -2,6 +2,14 @@
 工具函数模块
 """
 
+from flask import request
+
+
+def is_en():
+    """请求语言判断：前端 api 请求带 X-Lang 头（读 localStorage kanban_lang）。
+    用于后端错误消息按语言返回（EN 界面显示英文提示）。"""
+    return (request.headers.get('X-Lang') or '').strip().lower() == 'en'
+
 
 class WhereBuilder:
     """安全的 WHERE 子句构建器

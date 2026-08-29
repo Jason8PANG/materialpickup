@@ -12,10 +12,9 @@
             <div class="card shadow-sm mb-3">
                 <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">
-                        <i class="fas fa-file-alt me-2 text-primary"></i>
-                        申请单 #<span id="detailId"></span>
+                        <i class="fas fa-file-alt me-2 text-primary"></i><span data-i18n="detail.request_title">申请单</span> #<span id="detailId"></span>
                         <small class="ms-3 text-success">
-                            <i class="fas fa-cny me-1"></i>总金额: <strong><span id="detailTotalAmount">-</span></strong>
+                            <i class="fas fa-cny me-1"></i><span data-i18n="detail.total_amount">总金额</span>: <strong><span id="detailTotalAmount">-</span></strong>
                         </small>
                     </h5>
                     <div>
@@ -53,7 +52,7 @@
                             <label class="text-muted small" data-i18n="detail.short_reason">缺料原因</label>
                             <div class="d-flex align-items-center gap-2">
                                 <p class="mb-0" id="detailShortReason" style="display:inline">-</p>
-                                <input type="text" class="form-control form-control-sm d-none" id="editShortReason" placeholder="输入缺料原因">
+                                <input type="text" class="form-control form-control-sm d-none" id="editShortReason" placeholder="输入缺料原因" data-i18n="detail.short_placeholder">
                                 <button class="btn btn-outline-primary btn-sm d-none" id="saveShortReasonBtn" onclick="saveShortReason()"><i class="fas fa-save"></i></button>
                             </div>
                         </div>
@@ -81,8 +80,7 @@
             <div class="card shadow-sm mb-3">
                 <div class="card-header bg-white py-3">
                     <h5 class="mb-0">
-                        <i class="fas fa-list me-2 text-success"></i>
-                        物料明细 <span class="badge bg-secondary ms-1" id="detailItemCount">0</span>
+                        <i class="fas fa-list me-2 text-success"></i><span data-i18n="detail.items_title">物料明细</span> <span class="badge bg-secondary ms-1" id="detailItemCount">0</span>
                     </h5>
                 </div>
                 <div class="card-body p-0">
@@ -105,6 +103,23 @@
                                 </tr>
                             </thead>
                             <tbody id="itemsDetailBody">
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- 退料清单（仅退料单显示） -->
+                    <div id="returnItemsCard" class="d-none">
+                        <h6 class="mt-3"><i class="fas fa-undo-alt me-1 text-info"></i><span data-i18n="returndetail.title">退料清单</span></h6>
+                        <table class="table table-hover table-bordered mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th data-i18n="returndetail.coil_id">卷标ID</th>
+                                    <th data-i18n="returndetail.part">物料号</th>
+                                    <th data-i18n="returndetail.unit">单位</th>
+                                    <th data-i18n="returndetail.remain">剩余长度</th>
+                                </tr>
+                            </thead>
+                            <tbody id="returnItemsBody">
                             </tbody>
                         </table>
                     </div>
@@ -195,6 +210,224 @@
                 </div>
             </div>
 
+            <!-- 卷标信息录入弹窗（线卷全库存管理） -->
+            <style>
+                /* 已录入卷标表格：鼠标所在行背景浅色高亮 */
+                #existingCoilsBody tr:hover { background-color: #eef6ff; }
+                #existingCoilsBody tr:hover td { background-color: #eef6ff; }
+                #existingCoilsBody tr.coil-row-selected,
+                #existingCoilsBody tr.coil-row-selected td { background-color: #d6e9ff !important; }
+            </style>
+            <div class="modal fade" id="coilModal" tabindex="-1" data-bs-backdrop="static">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="fas fa-tags me-2 text-info"></i><span data-i18n="coils.modal_title">卷标信息录入</span> <span class="text-muted" id="coilModalTitle"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="alert alert-warning py-2 small mb-3" data-i18n="coils.alert">
+                                物料号以 <b>A/B</b> 开头必须录入卷标；Part Number / 单位 / 卷号由系统自动带出（只读）；仅需填写<b>长度</b>，保存后转入下方「已录入卷标」列表。
+                            </div>
+                            <div id="inStockCoilsBox" class="d-none mb-3"></div>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0" data-i18n="coils.enter_title">录入新卷标</h6>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-sm mb-2">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th style="width:24%">Part Number</th>
+                                            <th style="width:12%" data-i18n="coils.unit_readonly">单位(只读)</th>
+                                            <th style="width:20%" data-i18n="coils.coil_id">卷标ID</th>
+                                            <th style="width:20%">Lot</th>
+                                            <th style="width:14%" data-i18n="coils.length">长度</th>
+                                            <th style="width:8%"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="coilRowsBody"></tbody>
+                                </table>
+                            </div>
+                            <div class="d-flex justify-content-between align-items-center mt-3 mb-1">
+                                <h6 class="mb-0"><span data-i18n="coils.title">已录入卷标（本单）</span></h6>
+                                <button id="batchPrintBtn" class="btn btn-sm btn-outline-success" disabled
+                                        onclick="printBatchSelected()" title="勾选多行后批量打印所选卷标">
+                                    <i class="fas fa-print me-1"></i><span data-i18n="coils.batch_print">批量打印所选</span>
+                                </button>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-sm mb-2 table-hover">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th style="width:40px" class="text-center" title="选择该行" data-i18n="coils.select">选</th>
+                                            <th data-i18n="coils.coil_id">卷标ID</th><th>Lot</th><th data-i18n="coils.part">物料</th><th data-i18n="coils.length">长度</th><th data-i18n="coils.unit">单位</th><th data-i18n="coils.status">状态</th>
+                                            <th style="width:70px" class="text-center" data-i18n="coils.print">打印</th>
+                                            <th style="width:70px" class="text-center" data-i18n="coils.preview">预览</th>
+                                            <th style="width:80px" class="text-center" data-i18n="coils.unuse">取消选用</th>
+                                            <th style="width:70px" class="text-center" data-i18n="coils.delete">删除</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="existingCoilsBody"></tbody>
+                                </table>
+                            </div>
+                            <h6 class="mt-3">标签预览（3 inch × 1 inch 缩放）</h6>
+                            <div id="labelPreviewBox" class="d-none mb-2"></div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 出库消耗登记弹窗（线卷全库存管理，6 组折叠面板，文档 4.4） -->
+            <div class="modal fade" id="outboundModal" tabindex="-1" data-bs-backdrop="static">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="fas fa-sign-out-alt me-2 text-primary"></i>出库消耗登记 <span class="text-muted" id="outboundModalTitle"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="alert alert-light border small py-2 mb-2">
+                                仅列示本单「在库（in_stock）」卷标；出库长度单位为 <b>mm</b>，默认填该卷总长（整卷出库）可改小做部分出库；②~⑥ 加工参数均选填，未填保存为空（NULL）。
+                            </div>
+
+                            <!-- ① 线材基础组 -->
+                            <div class="card mb-2">
+                                <div class="card-header py-2" role="button" data-bs-toggle="collapse" data-bs-target="#obGroupBase" aria-expanded="true">
+                                    <b>① 线材基础组</b> <small class="text-muted">（卷标选择 + 出库长度 + 线材信息）</small>
+                                </div>
+                                <div class="collapse show" id="obGroupBase">
+                                    <div class="card-body">
+                                        <div class="table-responsive mb-2">
+                                            <table class="table table-bordered table-sm">
+                                                <thead class="table-light">
+                                                    <tr>
+                                                        <th style="width:36px"></th>
+                                                        <th>卷标ID</th><th>物料</th><th>原长度</th>
+                                                        <th style="width:120px">出库长度(mm)</th>
+                                                        <th style="width:150px">换算预览(只读)</th>
+                                                        <th style="width:150px">工单号(可选)</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="outboundRowsBody"></tbody>
+                                            </table>
+                                        </div>
+                                        <div class="row g-2">
+                                            <div class="col-md-3">
+                                                <label class="small text-muted">工单物料号</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_job_part_number" placeholder="工单物料号">
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="small text-muted">线材规格</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_wire_spec" placeholder="如 0.5mm²/22AWG/UL1007">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">颜色</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_color">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">剪切数量</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_shear_qty" min="0">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">剪切长度</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_shear_length" step="0.01">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">长度公差</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_length_tolerance" step="0.01">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">剪切设备</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_shear_equipment">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">实际剪切设备</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_actual_shear_equipment">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">首件确认人</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_checker_first">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="small text-muted">末件确认人</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_checker_last">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- ② A端去皮组 -->
+                            <div class="card mb-2">
+                                <div class="card-header py-2" role="button" data-bs-toggle="collapse" data-bs-target="#obGroupStripA">
+                                    <b>② A端去皮组</b> <small class="text-muted">（选填）</small>
+                                </div>
+                                <div class="collapse" id="obGroupStripA">
+                                    <div class="card-body">
+                                        <div class="row g-2">
+                                            <div class="col-md-2"><label class="small text-muted">去皮尺寸</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_strip_len_a" step="0.01"></div>
+                                            <div class="col-md-2"><label class="small text-muted">公差</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_strip_tol_a" step="0.01"></div>
+                                            <div class="col-md-2"><label class="small text-muted">设备</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_strip_equip_a"></div>
+                                            <div class="col-md-2"><label class="small text-muted">实际设备</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_strip_actual_equip_a"></div>
+                                            <div class="col-md-2"><label class="small text-muted">首件确认</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_checker_first_a"></div>
+                                            <div class="col-md-2"><label class="small text-muted">末件确认</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_checker_last_a"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- ③ B端去皮组 -->
+                            <div class="card mb-2">
+                                <div class="card-header py-2" role="button" data-bs-toggle="collapse" data-bs-target="#obGroupStripB">
+                                    <b>③ B端去皮组</b> <small class="text-muted">（选填）</small>
+                                </div>
+                                <div class="collapse" id="obGroupStripB">
+                                    <div class="card-body">
+                                        <div class="row g-2">
+                                            <div class="col-md-2"><label class="small text-muted">去皮尺寸</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_strip_len_b" step="0.01"></div>
+                                            <div class="col-md-2"><label class="small text-muted">公差</label>
+                                                <input type="number" class="form-control form-control-sm" id="ob_strip_tol_b" step="0.01"></div>
+                                            <div class="col-md-2"><label class="small text-muted">设备</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_strip_equip_b"></div>
+                                            <div class="col-md-2"><label class="small text-muted">实际设备</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_strip_actual_equip_b"></div>
+                                            <div class="col-md-2"><label class="small text-muted">首件确认</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_checker_first_b"></div>
+                                            <div class="col-md-2"><label class="small text-muted">末件确认</label>
+                                                <input type="text" class="form-control form-control-sm" id="ob_checker_last_b"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <h6 class="mt-2">出库记录（本单）</h6>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-sm">
+                                    <thead class="table-light">
+                                        <tr><th>卷标ID</th><th>物料</th><th>出库长度(mm)</th><th>转换后</th><th>工单号</th><th>操作人</th><th>时间</th></tr>
+                                    </thead>
+                                    <tbody id="consumptionBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                            <button type="button" class="btn btn-primary" onclick="submitOutbound()"><i class="fas fa-check me-1"></i>确认出库</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 日志时间线 -->
             <div class="card shadow-sm">
                 <div class="card-header bg-white py-3">
@@ -210,6 +443,8 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20260824d"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -224,12 +459,38 @@ function loadRequestDetail() {
         document.getElementById('detailContent').classList.remove('d-none');
         renderDetail(resp.request, resp.logs);
         renderItems(resp.request.items || []);
+        renderReturnItems(resp.request);
         renderActions(resp.request);
         renderLogs(resp.logs);
     }, function (err) {
         document.getElementById('detailLoading').innerHTML =
             '<p class="text-danger">加载失败: ' + (err.message || '未知错误') + '</p>';
     });
+}
+
+function renderReturnItems(request) {
+    // 退料单：显示退料清单（卷标维度）
+    const card = document.getElementById('returnItemsCard');
+    if (!card) return;
+    if (request.request_type !== 'return') {
+        card.classList.add('d-none');
+        return;
+    }
+    card.classList.remove('d-none');
+    const tbody = document.getElementById('returnItemsBody');
+    const items = request.return_items || [];
+    if (items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">' + __('returndetail.no_items') + '</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map(function (it) {
+        return '<tr>' +
+            '<td>' + escapeHtml(it.coil_id) + '</td>' +
+            '<td>' + escapeHtml(it.part_number || '-') + '</td>' +
+            '<td>' + escapeHtml(it.unit || '') + '</td>' +
+            '<td>' + (it.remain_length != null ? it.remain_length : '-') + '</td>' +
+            '</tr>';
+    }).join('');
 }
 
 function renderItems(items) {
@@ -245,6 +506,13 @@ function renderItems(items) {
     tbody.innerHTML = '';
     items.forEach(function (item, i) {
         const tr = document.createElement('tr');
+        const hasBatch = !!(item.batch_no && String(item.batch_no).trim());
+        const coilDisabled = hasBatch ? '' : 'disabled';
+        const coilIsAB = isABPart(item.part_number);
+        const coilBtnCls = coilIsAB ? 'btn-warning' : 'btn-outline-info';
+        const coilBtnTitle = coilIsAB ? '维护卷标（A/B 开头必须录入）' : '维护卷标（可选）';
+        // 纯图标按钮（紧凑，不撑高行）：A/B 黄色高亮，必填信息用 title 提示
+        const coilBtnInner = '<i class="fas fa-tags"></i>';
         tr.innerHTML = `
             <td class="text-center">${i + 1}</td>
             <td><strong>${escapeHtml(item.job_order)}</strong></td>
@@ -260,6 +528,9 @@ function renderItems(items) {
                     <input type="text" class="form-control form-control-sm" id="batch_no_${item.id}" value="${escapeHtml(item.batch_no || '')}" placeholder="批次号" style="min-width:120px">
                     <button class="btn btn-sm btn-outline-info" onclick="autoFillBatch(${item.id}, ${REQUEST_ID}, '${escapeHtml(item.part_number)}', ${item.quantity})" title="自动按FIFO填充批次"><i class="fas fa-magic"></i></button>
                     <button class="btn btn-sm btn-outline-success" onclick="saveItemBatchNo(${item.id}, ${REQUEST_ID})" title="保存"><i class="fas fa-save"></i></button>
+                    <button class="btn btn-sm ${coilBtnCls}" id="coil_btn_${item.id}" data-part="${escapeHtml(item.part_number)}"
+                            onclick="openCoilModalByItem(${item.id}, '${escapeHtml(item.part_number)}', ${REQUEST_ID})"
+                            title="${coilBtnTitle}" ${coilDisabled}>${coilBtnInner}</button>
                 </div>
             </td>
             <td>
@@ -298,6 +569,7 @@ function autoFillBatch(itemId, requestId, partNumber, qtyNeeded) {
                 function (resp2) {
                     var avail = resp.data.total_available;
                     showToast('success', '已按FIFO填充: ' + batchStr + ' (可用:' + avail + ')');
+                    enableCoilBtn(itemId);
                 },
                 function (err2) {
                     showToast('error', '自动保存失败: ' + (err2.message || ''));
@@ -318,11 +590,28 @@ function saveItemBatchNo(itemId, requestId) {
     apiPut('/api/requests/' + requestId + '/items/' + itemId + '/batch', {batch_no: batchNo},
         function (resp) {
             showToast('success', '批次号已保存');
+            enableCoilBtn(itemId);
         },
         function (err) {
             showToast('error', err.message || '保存失败');
         }
     );
+}
+
+/* ========== 卷标按钮（按申请单行维护） ========== */
+function enableCoilBtn(itemId) {
+    var btn = document.getElementById('coil_btn_' + itemId);
+    if (!btn) return;
+    btn.disabled = false;
+    var part = btn.getAttribute('data-part') || '';
+    var isAB = isABPart(part);
+    btn.className = 'btn btn-sm ' + (isAB ? 'btn-warning' : 'btn-outline-info');
+    btn.title = isAB ? '维护卷标（A/B 开头必须录入）' : '维护卷标（可选）';
+    btn.innerHTML = '<i class="fas fa-tags"></i>';
+}
+
+function openCoilModalByItem(itemId, partNumber, requestId) {
+    openCoilModal(requestId, itemId, partNumber);
 }
 
 /* ========== 按行保存缺料原因 ========== */
@@ -396,16 +685,18 @@ function doAction(requestId, action) {
     currentAction = action;
 
     const actionNames = {
-        'approve': '审批通过',
-        'reject': '驳回',
-        'start_prep': '开始备料',
-        'complete_prep': '完成备料',
-        'short': '缺料登记',
-        'sign': '签字取料'
+        'approve': __('action.approve'),
+        'reject': __('action.reject'),
+        'start_prep': __('action.start_prep'),
+        'complete_prep': __('action.complete_prep'),
+        'short': __('action.short'),
+        'sign': __('action.sign'),
+        'confirm_return': __('action.confirm_return'),
+        'reject_return': __('action.reject_return')
     };
 
     document.getElementById('actionModalTitle').textContent = actionNames[action] || action;
-    document.getElementById('actionModalText').textContent = '确认' + (actionNames[action] || action) + '此单据吗？';
+    document.getElementById('actionModalText').textContent = __('action.confirm_text').replace('{action}', actionNames[action] || action);
     document.getElementById('actionModalExtra').classList.add('d-none');
 
     if (action === 'sign') {
@@ -414,14 +705,19 @@ function doAction(requestId, action) {
         return;
     } else if (action === 'reject') {
         document.getElementById('actionModalExtra').classList.remove('d-none');
-        document.getElementById('extraLabel').textContent = '驳回意见（必填）';
+        document.getElementById('extraLabel').textContent = __('action.reject_label');
         document.getElementById('extraInput').value = '';
-        document.getElementById('extraInput').placeholder = '请填写驳回原因';
+        document.getElementById('extraInput').placeholder = __('action.reject_placeholder');
+    } else if (action === 'reject_return') {
+        document.getElementById('actionModalExtra').classList.remove('d-none');
+        document.getElementById('extraLabel').textContent = __('action.reject_label');
+        document.getElementById('extraInput').value = '';
+        document.getElementById('extraInput').placeholder = __('action.reject_placeholder');
     } else if (action === 'short') {
         document.getElementById('actionModalExtra').classList.remove('d-none');
-        document.getElementById('extraLabel').textContent = '缺料原因（必填）';
+        document.getElementById('extraLabel').textContent = __('action.short_label');
         document.getElementById('extraInput').value = '';
-        document.getElementById('extraInput').placeholder = '请填写缺料原因';
+        document.getElementById('extraInput').placeholder = __('action.short_placeholder');
     }
 
     document.getElementById('actionConfirmBtn').onclick = confirmAction;
@@ -432,8 +728,8 @@ function confirmAction() {
     const extraInput = document.getElementById('extraInput');
     const comment = extraInput ? extraInput.value.trim() : '';
 
-    if ((currentAction === 'reject' || currentAction === 'short') && !comment) {
-        showToast('error', '请填写必要信息');
+    if ((currentAction === 'reject' || currentAction === 'short' || currentAction === 'reject_return') && !comment) {
+        showToast('error', __('action.required'));
         return;
     }
 
@@ -447,13 +743,16 @@ function confirmAction() {
         'restore_from_short': '/api/requests/' + currentRequestId + '/restore-from-short',
         'cancel': '/api/requests/' + currentRequestId + '/cancel',
         'short': '/api/requests/' + currentRequestId + '/short',
-        'sign': '/api/requests/' + currentRequestId + '/sign'
+        'sign': '/api/requests/' + currentRequestId + '/sign',
+        'confirm_return': '/api/returns/' + currentRequestId + '/confirm',
+        'reject_return': '/api/returns/' + currentRequestId + '/reject'
     };
 
     const dataMap = {
         'approve': {comment: comment},
         'reject': {comment: comment},
-        'short': {short_reason: comment}
+        'short': {short_reason: comment},
+        'reject_return': {reason: comment}
     };
 
     apiPost(urlMap[currentAction], dataMap[currentAction] || {}, function (resp) {

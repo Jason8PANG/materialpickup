@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}线材库存盘点 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="row g-3">
+    <!-- 左：盘点单列表 + 新建 -->
+    <div class="col-md-5">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0"><i class="fas fa-clipboard-check me-2 text-info"></i><span data-i18n="wire.count_title">线材库存盘点</span></h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-2">
+                    <textarea class="form-control form-control-sm" id="newCountNote" rows="2" placeholder="备注(可选)"></textarea>
+                </div>
+                <div class="mb-2">
+                    <input type="text" class="form-control form-control-sm" id="newCoilInput" placeholder="扫描/输入卷标ID，回车添加">
+                </div>
+                <div class="mb-2">
+                    <span class="badge bg-secondary" id="selCount">已选 0 卷</span>
+                    <button class="btn btn-outline-danger btn-sm float-end" onclick="clearSel()">清空</button>
+                </div>
+                <div class="mb-3" style="max-height:180px;overflow:auto">
+                    <table class="table table-sm table-bordered mb-0">
+                        <thead class="table-light"><tr><th>卷标ID</th><th>物料</th><th>Lot</th><th></th></tr></thead>
+                        <tbody id="selBody"></tbody>
+                    </table>
+                </div>
+                <button class="btn btn-primary w-100" onclick="createCount()"><i class="fas fa-plus me-1"></i>创建盘点单</button>
+                <hr>
+                <div class="table-responsive" style="max-height:320px;overflow:auto">
+                    <table class="table table-sm table-bordered mb-0">
+                        <thead class="table-light">
+                            <tr><th>盘点单号</th><th>状态</th><th>卷数</th><th>创建人</th><th></th></tr>
+                        </thead>
+                        <tbody id="countListBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 右：盘点详情 -->
+    <div class="col-md-7">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0" id="detailTitle">盘点详情</h5>
+                <div id="detailActions"></div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th>卷标ID</th><th>物料</th><th>Lot</th><th>原始数量</th><th>单位</th>
+                                <th>使用(mm)</th><th>剩余(mm)</th><th>盘点实际(mm)</th><th>差异(mm)</th><th>转换差异</th>
+                            </tr>
+                        </thead>
+                        <tbody id="countDetailBody">
+                            <tr><td colspan="10" class="text-center text-muted py-4">请选择左侧盘点单</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let currentCountId = null;
+const STATUS = {'pending': '待开始', 'counting': '盘点中', 'completed': '已完成'};
+
+function loadCounts() {
+    fetch('/api/wire/counts').then(r => r.json()).then(resp => {
+        const tb = document.getElementById('countListBody');
+        if (!resp.success) { tb.innerHTML = '<tr><td colspan="5" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
+        tb.innerHTML = resp.data.map(c => `<tr>
+            <td><a href="#" onclick="openCount(${c.id});return false;">${c.count_no}</a></td>
+            <td><span class="badge ${c.status === 'counting' ? 'bg-warning text-dark' : c.status === 'completed' ? 'bg-success' : 'bg-secondary'}">${STATUS[c.status] || c.status}</span></td>
+            <td>${c.item_count}</td><td>${c.created_by || '-'}</td>
+            <td><button class="btn btn-sm btn-outline-danger" onclick="delCount(${c.id})"><i class="fas fa-trash"></i></button></td>
+        </tr>`).join('');
+    });
+}
+function openCount(id) {
+    currentCountId = id;
+    document.getElementById('detailTitle').textContent = '盘点详情 #' + id;
+    document.getElementById('detailActions').innerHTML = '';
+    fetch('/api/wire/counts/' + id).then(r => r.json()).then(resp => {
+        if (!resp.success) { alert(resp.message); return; }
+        const {count, items} = resp.data;
+        const actions = document.getElementById('detailActions');
+        let html = '';
+        if (count.status === 'pending') {
+            html += '<button class="btn btn-warning btn-sm" onclick="startCount()"><i class="fas fa-lock me-1"></i>开启盘点（锁定卷标）</button>';
+        } else if (count.status === 'counting') {
+            html += '<button class="btn btn-success btn-sm" onclick="completeCount()"><i class="fas fa-check me-1"></i>完成盘点</button>';
+            html += ' <a class="btn btn-primary btn-sm" href="/api/wire/counts/' + id + '/report"><i class="fas fa-file-pdf me-1"></i>PDF 报告</a>';
+        } else {
+            html += '<a class="btn btn-primary btn-sm" href="/api/wire/counts/' + id + '/report"><i class="fas fa-file-pdf me-1"></i>PDF 报告</a>';
+        }
+        actions.innerHTML = html;
+        const tb = document.getElementById('countDetailBody');
+        if (!items.length) { tb.innerHTML = '<tr><td colspan="10" class="text-center text-muted">无明细</td></tr>'; return; }
+        tb.innerHTML = items.map(it => {
+            const locked = count.status === 'counting';
+            const measured = it.actual_mm != null;
+            const input = locked
+                ? `<input type="number" class="form-control form-control-sm actual-input" data-item="${it.id}" placeholder="实测(mm)" min="0" step="0.01" value="${it.actual_mm != null ? it.actual_mm : ''}" onchange="measure(${it.id}, this.value)">`
+                : (it.actual_mm != null ? it.actual_mm : '-');
+            return `<tr>
+                <td>${it.coil_id}</td><td>${it.part_number || '-'}</td><td>${it.lot_no || '-'}</td>
+                <td>${it.original_qty}</td><td>${it.unit || '-'}</td>
+                <td>${it.used_mm}</td><td>${it.remain_mm != null ? it.remain_mm : '-'}</td>
+                <td>${input}</td>
+                <td class="${it.diff_mm != null && it.diff_mm < 0 ? 'text-danger' : it.diff_mm > 0 ? 'text-success' : ''}">${it.diff_mm != null ? it.diff_mm : '-'}</td>
+                <td>${it.diff_converted != null ? it.diff_converted : '-'}</td>
+            </tr>`;
+        }).join('');
+    });
+}
+function measure(itemId, val) {
+    if (!val || isNaN(val)) return;
+    fetch('/api/wire/counts/' + currentCountId + '/items/' + itemId + '/measure', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({actual_mm: parseFloat(val)})
+    }).then(r => r.json()).then(resp => {
+        if (resp.success) { openCount(currentCountId); }
+        else { alert(resp.message); }
+    });
+}
+function startCount() {
+    if (!confirm('开启盘点后，所选卷标将锁定（不允许消耗），确认开启？')) return;
+    fetch('/api/wire/counts/' + currentCountId + '/start', {method: 'POST'})
+        .then(r => r.json()).then(resp => {
+            alert(resp.message); loadCounts(); openCount(currentCountId);
+        });
+}
+function completeCount() {
+    if (!confirm('确认完成盘点并生成报告？')) return;
+    fetch('/api/wire/counts/' + currentCountId + '/complete', {method: 'POST'})
+        .then(r => r.json()).then(resp => {
+            alert(resp.message); loadCounts(); openCount(currentCountId);
+        });
+}
+// ---- 新建盘点 ----
+const sel = [];  // [{coil_id, part_number, lot_no, status, status_label}]
+document.getElementById('newCoilInput').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const v = this.value.trim();
+    if (!v) return;
+    if (!/^\d{9}$/.test(v)) { alert('卷标ID应为9位数字'); return; }
+    if (sel.some(c => c.coil_id === v)) { alert('已选择该卷标'); return; }
+    // 查询卷标信息（物料/Lot/状态）并校验仅线边仓可盘点
+    fetch('/api/wire/coils/lookup/' + v)
+        .then(r => r.json())
+        .then(resp => {
+            if (!resp.success) { alert(resp.message); this.focus(); return; }
+            const d = resp.data;
+            if (!d.can_count) {
+                alert(`卷标 ${v} 状态为「${d.status_label}」，仅线边仓（在车间）物料可盘点`);
+                this.value = '';
+                this.focus();
+                return;
+            }
+            sel.push({coil_id: v, part_number: d.part_number || '', lot_no: d.lot_no || '',
+                      status_label: d.status_label});
+            this.value = '';
+            renderSel();
+        });
+});
+function renderSel() {
+    document.getElementById('selCount').textContent = '已选 ' + sel.length + ' 卷';
+    document.getElementById('selBody').innerHTML = sel.map(c =>
+        `<tr><td>${c.coil_id}</td><td>${c.part_number || '-'}</td><td>${c.lot_no || '-'}</td>` +
+        `<td><button class="btn btn-sm btn-outline-danger" onclick="removeSel('${c.coil_id}')"><i class="fas fa-times"></i></button></td></tr>`).join('');
+}
+function removeSel(cid) { const i = sel.findIndex(c => c.coil_id === cid); if (i >= 0) sel.splice(i, 1); renderSel(); }
+function clearSel() { sel.length = 0; renderSel(); }
+function createCount() {
+    if (!sel.length) { alert('请先选择要盘点的卷标'); return; }
+    fetch('/api/wire/counts', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({coil_ids: sel.map(c => c.coil_id), note: document.getElementById('newCountNote').value.trim()})
+    }).then(r => r.json()).then(resp => {
+        alert(resp.message);
+        if (resp.success) { sel.length = 0; renderSel(); loadCounts(); }
+    });
+}
+function delCount(id) {
+    if (!confirm('确认删除该盘点单？')) return;
+    fetch('/api/wire/counts/' + id, {method: 'DELETE'}).then(r => r.json()).then(resp => { alert(resp.message); loadCounts(); });
+}
+document.addEventListener('DOMContentLoaded', loadCounts);
+</script>
+{% endblock %}

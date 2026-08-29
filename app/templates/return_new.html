@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container py-3" style="max-width:640px;">
+    <div class="d-flex align-items-center mb-3">
+        <a href="/kanban" class="btn btn-outline-secondary btn-sm me-2 d-lg-none"><i class="fas fa-arrow-left"></i></a>
+        <h4 class="mb-0" data-i18n="return.title">物料退料申请</h4>
+    </div>
+    <p class="text-muted small" data-i18n="return.hint">扫描或输入<b>卷标ID</b>（Enter 确认），自动带出物料号、单位、剩余长度。提交后由仓库在看板「待退料」确认。</p>
+
+    <!-- 卷标扫码输入 -->
+    <div class="card mb-3">
+        <div class="card-body">
+            <label class="form-label fw-bold" data-i18n="return.coil_id">卷标ID</label>
+            <div class="input-group input-group-lg">
+                <input type="text" id="coilInput" class="form-control form-control-lg" autocomplete="off"
+                       placeholder="扫描或输入卷标ID后回车" data-i18n="return.placeholder" inputmode="numeric">
+                <button class="btn btn-primary btn-lg" id="addCoilBtn" type="button"><i class="fas fa-plus"></i> <span data-i18n="return.add">添加</span></button>
+            </div>
+            <div id="coilFeedback" class="mt-2 small"></div>
+        </div>
+    </div>
+
+    <!-- 已添加卷标列表 -->
+    <div class="card mb-3">
+        <div class="card-header bg-white fw-bold"><span data-i18n="return.added_list">已添加卷标（</span><span id="coilCount">0</span>）</div>
+        <ul class="list-group list-group-flush" id="coilList"></ul>
+    </div>
+
+    <!-- 备注 -->
+    <div class="mb-3">
+        <textarea id="remarkInput" class="form-control" rows="2" data-i18n="return.remark" placeholder="备注（可选）"></textarea>
+    </div>
+
+    <button class="btn btn-success btn-lg w-100" id="submitBtn" disabled>
+        <i class="fas fa-paper-plane me-1"></i> <span data-i18n="return.submit">提交退料申请</span>
+    </button>
+</div>
+
+<style>
+    @media (max-width: 576px) {
+        .btn-lg { font-size: 1.1rem; padding: 0.7rem 1rem; }
+        #coilInput { font-size: 1.25rem; }
+    }
+    .coil-item { display: flex; align-items: center; justify-content: space-between; }
+    .coil-item .badge { font-size: 0.8rem; }
+</style>
+
+<script>
+(function () {
+    const coils = [];
+    const coilInput = document.getElementById('coilInput');
+    const coilList = document.getElementById('coilList');
+    const coilCount = document.getElementById('coilCount');
+    const coilFeedback = document.getElementById('coilFeedback');
+    const submitBtn = document.getElementById('submitBtn');
+
+    function render() {
+        coilList.innerHTML = '';
+        if (coils.length === 0) {
+            coilList.innerHTML = '<li class="list-group-item text-muted text-center">' + __('return.empty_list') + '</li>';
+        }
+        coils.forEach(function (c, i) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item coil-item';
+            li.innerHTML =
+                '<div>' +
+                '<div class="fw-bold">' + escapeHtml(c.coil_id) + '</div>' +
+                '<small class="text-muted">' + escapeHtml(c.part_number || '-') +
+                (c.unit ? ' | ' + escapeHtml(c.unit) : '') +
+                ' | ' + __('instock.remain') + ' ' + c.remain_length + escapeHtml(c.unit || '') + '</small>' +
+                '</div>' +
+                '<button class="btn btn-outline-danger btn-sm" onclick="removeCoil(' + i + ')"><i class="fas fa-trash"></i></button>';
+            li.appendChild(document.createElement('span'));
+            coilList.appendChild(li);
+        });
+        coilCount.textContent = coils.length;
+        submitBtn.disabled = coils.length === 0;
+    }
+
+    window.removeCoil = function (idx) {
+        coils.splice(idx, 1);
+        render();
+    };
+
+    function addCoil() {
+        const coilId = coilInput.value.trim();
+        if (!coilId) { coilInput.focus(); return; }
+        if (coils.some(function (c) { return c.coil_id === coilId; })) {
+            coilFeedback.innerHTML = '<span class="text-warning">' + __('return.in_list') + ': ' + escapeHtml(coilId) + '</span>';
+            coilInput.value = '';
+            coilInput.focus();
+            return;
+        }
+        coilFeedback.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin"></i> ' + __('return.querying') + '</span>';
+        fetch('/api/returns/coil-info/' + encodeURIComponent(coilId), {headers: {'X-Lang': getLang()}})
+            .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+            .then(function (res) {
+                if (!res.ok || !res.j.success) {
+                    coilFeedback.innerHTML = '<span class="text-danger">' + escapeHtml(res.j.message || __('return.coil_id') + ' Error') + '</span>';
+                    coilInput.focus();
+                    return;
+                }
+                const d = res.j.data;
+                if (!d.can_return) {
+                    coilFeedback.innerHTML = '<span class="text-danger">' + escapeHtml(coilId) + ' ' + __('return.not_returnable') +
+                        escapeHtml(d.status_label) + __('return.not_returnable2') + '</span>';
+                    coilInput.focus();
+                    return;
+                }
+                coils.push(d);
+                render();
+                coilFeedback.innerHTML = '<span class="text-success"><i class="fas fa-check"></i> ' + __('return.added_ok') + ' ' + escapeHtml(d.coil_id) + '</span>';
+                coilInput.value = '';
+                coilInput.focus();
+            })
+            .catch(function () {
+                coilFeedback.innerHTML = '<span class="text-danger">' + __('return.network_error') + '</span>';
+            });
+    }
+
+    document.getElementById('addCoilBtn').addEventListener('click', addCoil);
+    coilInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); addCoil(); }
+    });
+
+    submitBtn.addEventListener('click', function () {
+        if (coils.length === 0) return;
+        submitBtn.disabled = true;
+        fetch('/api/returns', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Lang': getLang()},
+            body: JSON.stringify({
+                coil_ids: coils.map(function (c) { return c.coil_id; }),
+                remark: document.getElementById('remarkInput').value.trim()
+            })
+        })
+        .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+        .then(function (res) {
+            if (res.ok && res.j.success) {
+                showToast('success', res.j.message || '退料申请已提交');
+                coils.length = 0;
+                document.getElementById('remarkInput').value = '';
+                render();
+                coilInput.focus();
+            } else {
+                showToast('error', res.j.message || '提交失败');
+                submitBtn.disabled = false;
+            }
+        })
+        .catch(function () {
+            showToast('error', '网络错误，请重试');
+            submitBtn.disabled = false;
+        });
+    });
+
+    coilInput.focus();
+})();
+</script>
+{% endblock %}

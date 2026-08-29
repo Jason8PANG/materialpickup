@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}盘点差异调整 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 col-lg-6">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0"><i class="fas fa-exchange-alt me-2 text-info"></i>盘点差异调整</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info py-2 small">
+                    输入已完成的盘点单号，点击执行：将盘点差异写入卷标消耗表（工单号 = 盘点单号，消耗数量 = 差异数量，可正可负）。
+                    同一盘点单号仅可执行一次。
+                </div>
+                <div class="input-group mb-3">
+                    <input type="text" class="form-control" id="countNoInput" placeholder="盘点单号，如 INV20260828001" autocomplete="off">
+                    <button class="btn btn-primary" id="execBtn" onclick="execAdjust()"><i class="fas fa-play me-1"></i>执行</button>
+                </div>
+                <div id="resultBox"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function execAdjust() {
+    const countNo = document.getElementById('countNoInput').value.trim();
+    if (!countNo) { alert('请输入盘点单号'); return; }
+    const btn = document.getElementById('execBtn');
+    btn.disabled = true;
+    fetch('/api/wire/adjust', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({count_no: countNo})
+    }).then(r => r.json()).then(resp => {
+        document.getElementById('resultBox').innerHTML =
+            `<div class="alert ${resp.success ? 'alert-success' : 'alert-danger'} py-2">${resp.message}</div>`;
+        btn.disabled = false;
+    }).catch(() => {
+        document.getElementById('resultBox').innerHTML = '<div class="alert alert-danger py-2">执行失败，请检查服务</div>';
+        btn.disabled = false;
+    });
+}
+document.getElementById('countNoInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') execAdjust();
+});
+</script>
+{% endblock %}

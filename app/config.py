@@ -12,16 +12,22 @@ class Config:
     # MySQL
     MYSQL_HOST = os.environ.get('MYSQL_HOST', '10.0.6.86')
     MYSQL_PORT = int(os.environ.get('MYSQL_PORT', 33306))
-    MYSQL_USER = os.environ.get('MYSQL_USER', 'powerbi')
-    MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '!Q1234567')
+    MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
+    MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', 'root07')
     MYSQL_DB = os.environ.get('MYSQL_DB', 'materialpickup')
-    
+
+    # 外部系统集成 API Key（naiwiptrack 等调用 /api/external/* 时须带 X-API-Key 请求头）
+    EXTERNAL_API_KEY = os.environ.get('EXTERNAL_API_KEY', 'NAI-WIPTRACK-2026')
+
+    # 确认人密码回退（cutting_confirm_user 表未命中时使用）
+    CUTTING_CONFIRM_PASSWORD = os.environ.get('CUTTING_CONFIRM_PASSWORD', '')
+    CUTTING_CONFIRM_NAME = os.environ.get('CUTTING_CONFIRM_NAME', '')
+
     # 连接 URI
     SQLALCHEMY_DATABASE_URI = f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}?charset=utf8mb4'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
-    # Session 安全配置
-    SESSION_TYPE = 'filesystem'
+    # Session 安全配置（Flask 原生 signed-cookie session，无服务端文件存储）
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'
     SESSION_PERMANENT = True
@@ -81,4 +87,32 @@ class Config:
     SITE_CSI_WHSE = {
         '310': os.environ.get('CSI_WHSE_310', 'S301'),
         '410': os.environ.get('CSI_WHSE_410', 'S401'),
+    }
+
+    # ============================================================ #
+    #  线卷标签打印配置（线卷全库存管理）
+    # ============================================================ #
+    # 目标打印机名称；空则取系统默认打印机
+    LABEL_PRINTER_NAME = os.environ.get('LABEL_PRINTER_NAME', '')
+    # 打印通道：gdi（GDI 驱动打印，通用）/ raw_zpl（ZPL 指令直发，Zebra）/
+    #           raw_tspl（TSPL 指令直发，TSC）/ gateway（Windows 打印网关代理）
+    LABEL_PRINT_CHANNEL = os.environ.get('LABEL_PRINT_CHANNEL', 'gdi')
+    # 打印机型号（raw 通道选择指令模板用，如 'Zebra'/'TSC'），当前未强制使用
+    LABEL_PRINTER_MODEL = os.environ.get('LABEL_PRINTER_MODEL', '')
+    # Windows 打印网关（方案 C）：主后端跑 Linux 时，转发打印请求到装有驱动+pywin32 的 Windows 服务
+    LABEL_PRINT_GATEWAY_URL = os.environ.get('LABEL_PRINT_GATEWAY_URL', '')
+    LABEL_PRINT_GATEWAY_TOKEN = os.environ.get('LABEL_PRINT_GATEWAY_TOKEN', '')
+
+    # ============================================================ #
+    #  线卷单位换算系数表（线卷全库存管理，文档 2.3.1）
+    # ============================================================ #
+    # 换算公式：converted_length = out_length(mm) ÷ 系数
+    # out_length 为出库登记的原始录入值（单位固定 mm）；
+    # 系数按物料在 CSI 中的单位（kr_wire_coil.unit）确定。
+    # 未收录 / CSI 单位为空时 converted_length / converted_unit 置 NULL 并给出警告（不阻断登记）。
+    UNIT_CONVERT_FACTOR = {
+        'M': 1000,     # 米：1 m = 1000 mm
+        'FT': 304.8,   # 英尺：1 ft = 304.8 mm
+        'CM': 10,      # 厘米：1 cm = 10 mm
+        'IN': 25.4,    # 英寸：1 in = 25.4 mm
     }

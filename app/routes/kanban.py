@@ -7,7 +7,8 @@ STATUS_ORDER = [
     'pending_prep',
     'prepping',
     'short',
-    'ready_pickup'
+    'ready_pickup',
+    'pending_return'
 ]
 
 STATUS_ACTIONS = {
@@ -15,7 +16,8 @@ STATUS_ACTIONS = {
     'pending_prep': [],
     'prepping': ['short'],
     'short': [],
-    'ready_pickup': ['sign']
+    'ready_pickup': ['sign'],
+    'pending_return': []
 }
 
 STATUS_ACTIONS_WAREHOUSE = {
@@ -23,7 +25,8 @@ STATUS_ACTIONS_WAREHOUSE = {
     'pending_prep': ['assign_worker', 'start_prep'],
     'prepping': ['complete_prep', 'short'],
     'short': [],
-    'ready_pickup': []
+    'ready_pickup': [],
+    'pending_return': ['confirm_return', 'reject_return']
 }
 
 
@@ -43,9 +46,10 @@ def get_kanban_cards():
             (SELECT ROUND(SUM(total_amount), 2) FROM kr_request_item WHERE request_id = r.id) as total_amount,
             (SELECT GROUP_CONCAT(DISTINCT job_order ORDER BY id SEPARATOR ', ') FROM kr_request_item WHERE request_id = r.id) as job_orders,
             (SELECT job_order FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_job_order,
-            (SELECT part_number FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_part_number
+            (SELECT part_number FROM kr_request_item WHERE request_id = r.id ORDER BY id LIMIT 1) as primary_part_number,
+            (SELECT COUNT(*) FROM kr_return_item WHERE request_id = r.id) as return_coil_count
             FROM kr_material_request r 
-            WHERE r.status IN ('pending_prep','prepping','short','ready_pickup') 
+            WHERE r.status IN ('pending_prep','prepping','short','ready_pickup','pending_return') 
             AND r.is_deleted = 0"""
 
         if site_filter:
@@ -55,6 +59,19 @@ def get_kanban_cards():
             cursor.execute(base_sql + " ORDER BY r.is_urgent DESC, r.request_time ASC")
 
         rows = cursor.fetchall()
+
+        # 退料单附加卷标明细（物料号/单位/剩余长度列表）
+        return_coil_map = {}
+        return_ids = [r['id'] for r in rows if r['status'] == 'pending_return']
+        if return_ids:
+            ph = ','.join(['%s'] * len(return_ids))
+            cursor.execute(
+                f"SELECT request_id, coil_id, part_number, unit, remain_length "
+                f"FROM kr_return_item WHERE request_id IN ({ph}) ORDER BY id",
+                return_ids
+            )
+            for it in cursor.fetchall():
+                return_coil_map.setdefault(it['request_id'], []).append(it)
         cursor.close()
 
     # 按状态分组
@@ -65,13 +82,22 @@ def get_kanban_cards():
             if row['status'] == s:
                 card = dict(row)
                 card['status_label'] = STATUS_LABELS.get(s, s)
+                # 退料单：附加卷标明细
+                if row['status'] == 'pending_return':
+                    card['request_type_label'] = '退料'
+                    card['return_coils'] = return_coil_map.get(row['id'], [])
+                else:
+                    card['request_type_label'] = '最小包装' if row.get('request_type') == 'minpack' else '领料'
                 # 决定按钮
                 if user['role'] == 'warehouse':
                     card['actions'] = STATUS_ACTIONS_WAREHOUSE.get(s, [])
                 elif user['role'] == 'requester':
                     card['actions'] = STATUS_ACTIONS.get(s, [])
                 elif user['role'] == 'admin':
-                    card['actions'] = ['assign_worker', 'start_prep', 'complete_prep', 'short', 'sign']
+                    if row['status'] == 'pending_return':
+                        card['actions'] = ['confirm_return', 'reject_return']
+                    else:
+                        card['actions'] = ['assign_worker', 'start_prep', 'complete_prep', 'short', 'sign']
                 else:
                     card['actions'] = []
                 column.append(card)
