@@ -53,6 +53,7 @@ X-Site-Ref: NAIGROUP_PROD_410  // 公司码（容错 PRD/PROD、单/双下划线
 | 9 | DELETE | `/api/external/consumption/<id>` | **删除消耗记录**（需确认人密码） | 必需 |
 | 10 | GET | `/api/external/consumption/list` | **消耗记录分页列表** | 必需 |
 | 11 | GET | `/api/external/coils/list` | **卷标信息分页列表** | 必需 |
+| 12 | GET | `/api/external/part-stock/<part>` | **库位库存查询**（Floor/Other/Total，待实现） | 必需 |
 
 ---
 
@@ -231,6 +232,29 @@ GET /api/external/coils/list?page=1&pageSize=20&coilId=&part=&status=
 - 参数：`coilId`（精确）、`part`（物料模糊）、`status`（in_stock/in_shop/scrapped...）
 - 响应：`{"success": true, "data": [...], "total": N, "page": 1, "pageSize": 20}`
 - data 字段：`coil_id, part_number, status, status_label, coil_length, unit, siteref, used_mm, scrapped_mm, total_used_mm, remain_mm, remain_orig, created_at`（used_mm=consumption 汇总、scrapped_mm=scrap 汇总、total_used_mm=全部汇总）
+
+### 3.12 库位库存查询（part-stock，看板已实现 2026-08-31）
+```
+GET /api/external/part-stock/<part>
+```
+- 需带 `X-API-Key` + `X-Site-Ref`（强制站点校验，按站点查 SLItemLocs）
+- **用途**：生产跟踪后端 `GET /api/cutting/part-stock/:part?siteRef=` 已改为转发本接口（不再直连 CSI）。当前后端请求 `X-Site-Ref` 传的是调用方站点（如 `NAIGROUP_PROD_410`），看板 `_resolve_site` 可直接解析。
+- **数据源**：实时调用 Infor CSI IDO `SLItemLocs`（`CSIClient(siteref=site).get_inventory(part)`，QtyOnHand>0，按站点公司上下文），**非** csi_datawarehouse 下载表 SLITEMLOC；单位经 `_factor` 换算（FT=304.8/M=1000）；库位名含 `floor`（不区分大小写）归 Floor，其余归 Other。
+- 响应（data 结构与旧 CSI 直连返回保持一致，前端无需改动）：
+```json
+{
+  "success": true,
+  "data": {
+    "item": "A080507", "unit": "FT",
+    "floor_qty": 5722.489, "floor_qty_mm": 1744214.6472,
+    "other_qty": 23855, "other_qty_mm": 7271004,
+    "total_on_hand": 29577.489, "total_on_hand_mm": 9015218.647200001,
+    "floor_locations": [{"location": "FLoor-Core", "qty": 5722.489, "unit": "FT", "qty_mm": 1744214.6472}],
+    "other_locations": [{"location": "RM-P040-1", "qty": 23855, "unit": "FT", "qty_mm": 7271004}]
+  }
+}
+```
+- 失败：`{"success": false, "error": "..."}` + 4xx/5xx（后端透传状态码；`unit` 查不到时 `*_mm` 可为 null）
 
 ---
 

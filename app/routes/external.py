@@ -150,6 +150,14 @@ def ext_coil_lookup(coil_id):
             (coil_id,)
         )
         used = float(cur.fetchone()['used'] or 0)
+        # 盘点中派生状态检查：卷标在活跃盘点单（counting）中则视为「盘点中」
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_inventory_count_item i "
+            "JOIN kr_inventory_count c ON c.id = i.count_id "
+            "WHERE i.coil_id = %s AND c.status = 'counting'",
+            (coil_id,)
+        )
+        counting = cur.fetchone()['n'] > 0
     factor = _factor(coil.get('unit'))
     total_mm = float(coil['coil_length'] or 0) * factor if factor and coil.get('coil_length') is not None else None
     remain_mm = round(total_mm - used, 2) if total_mm is not None else None
@@ -162,7 +170,8 @@ def ext_coil_lookup(coil_id):
             'unit': coil.get('unit') or '',
             'coil_length': float(coil['coil_length']) if coil.get('coil_length') is not None else None,
             'status': coil.get('status'),
-            'status_label': COIL_STATUS_LABELS.get(coil.get('status'), coil.get('status') or ''),
+            'status_label': '盘点中' if counting else COIL_STATUS_LABELS.get(coil.get('status'), coil.get('status') or ''),
+            'counting': counting,
             'siteref': coil.get('siteref'),
             'request_id': coil.get('request_id'),
             'used_mm': used,
@@ -780,4 +789,74 @@ def ext_cutting_ref():
             if d.get(f) is not None:
                 d[f] = float(d[f])
         data.append(d)
+    return jsonify({'success': True, 'data': data})
+
+
+# ================================================================== #
+#  库位库存查询（实时 CSI IDO，非本地下载表）
+# ================================================================== #
+@external_bp.route('/api/external/part-stock/<part>', methods=['GET'])
+def ext_part_stock(part):
+    """物料库位库存查询（Floor / Other / Total On Hand）。
+
+    数据源：**实时调用 Infor CSI IDO `SLItemLocs`**（CSIClient.get_inventory，
+    QtyOnHand>0），**不是** csi_datawarehouse 下载表 SLITEMLOC。
+    单位换算：Config.UNIT_CONVERT_FACTOR（FT=304.8 / M=1000 / ...）。
+    归类：库位名含 'floor'（不区分大小写）→ Floor；其余 → Other。
+    响应 data 结构与旧 CSI 直连返回保持一致（前端无需改动）：
+      item/unit/floor_qty/other_qty/total_on_hand + *_mm + *_locations
+    """
+    err = _check_api_key()
+    if err:
+        return err
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
+    part = (part or '').strip()
+    if not part:
+        return jsonify({'success': False, 'error': '物料号必填'}), 400
+
+    from app.services.csi_service import CSIClient
+
+    try:
+        client = CSIClient(siteref=site)
+        # 实时 IDO SLItemLocs（按站点公司上下文 X-Infor-MongooseConfig）
+        records = client.get_inventory(part)
+        unit = client.get_item_unit(part) or None
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'CSI 实时库存查询失败: {e}'}), 502
+
+    factor = _factor(unit) if unit else None
+    floor_locations, other_locations = [], []
+    for r in records:
+        loc = (r.get('Loc') or '').strip()
+        qty = _num(r.get('QtyOnHand'), 0) or 0
+        if qty <= 0:
+            continue
+        item = {
+            'location': loc,
+            'qty': qty,
+            'unit': unit,
+            'qty_mm': round(qty * factor, 4) if factor else None,
+        }
+        if 'floor' in loc.lower():
+            floor_locations.append(item)
+        else:
+            other_locations.append(item)
+
+    floor_qty = round(sum(x['qty'] for x in floor_locations), 4)
+    other_qty = round(sum(x['qty'] for x in other_locations), 4)
+    total_on_hand = round(floor_qty + other_qty, 4)
+    data = {
+        'item': part,
+        'unit': unit,
+        'floor_qty': floor_qty,
+        'floor_qty_mm': round(floor_qty * factor, 4) if factor else None,
+        'other_qty': other_qty,
+        'other_qty_mm': round(other_qty * factor, 4) if factor else None,
+        'total_on_hand': total_on_hand,
+        'total_on_hand_mm': round(total_on_hand * factor, 4) if factor else None,
+        'floor_locations': floor_locations,
+        'other_locations': other_locations,
+    }
     return jsonify({'success': True, 'data': data})

@@ -4,11 +4,21 @@
  * 依赖：main.js 中的 apiGet/apiPost/showToast/escapeHtml
  * ========================================================== */
 
+// 批次号比对 warning 视觉（浅黄色边框）：内联注入样式，不动其他文件
+(function () {
+    if (typeof document === 'undefined') return;
+    var s = document.createElement('style');
+    s.textContent = '.coil-lot-input.is-warning{border-color:#ffc107 !important;' +
+                    'box-shadow:0 0 0 0.2rem rgba(255,193,7,.25) !important;}';
+    document.head.appendChild(s);
+})();
+
 let coilState = {
     requestId: null,
     request: null,
     requestItems: [],   // 本单去重后的物料列表
     unitMap: {},        // part_number -> unit（CSI 只读回填）
+    batchByPart: {},    // part_number -> 去重批次号数组（明细 batch_no 拆分后）
     rows: [],           // 录入行 {part_number, coil_id, length}
     existingCoils: [],  // 已录入卷标
     previewCoil: null,  // 当前预览的卷标
@@ -50,7 +60,7 @@ function coilTotalMm(coil) {
 
 function openCoilModal(requestId, itemId, partNumber) {
     coilState = {requestId: requestId, request: null, requestItems: [], unitMap: {},
-                 rows: [], existingCoils: [], previewCoil: null, itemId: itemId || null,
+                 batchByPart: {}, rows: [], existingCoils: [], previewCoil: null, itemId: itemId || null,
                  defaultPart: partNumber || '', defaultLot: ''};
 
     document.getElementById('coilModalTitle').textContent = '#' + requestId;
@@ -61,6 +71,23 @@ function openCoilModal(requestId, itemId, partNumber) {
         // 物料列表（保留所有申请单行，同一物料多行不合并；
         // item_id 为空录入时由后端自动分配到未覆盖行）
         coilState.requestItems = items.map(function (it) { return it.part_number; });
+        // 批次号映射：按 part_number 聚合明细 batch_no，供卷标 Lot 录入比对用。
+        // 兼容 "LOT001(100), LOT002(50)" 与直接 "LOT001"：按逗号拆分，取每段括号前部分，
+        // trim 后去重（大小写不敏感）存入数组；空 batch_no / 空物料跳过。
+        coilState.batchByPart = {};
+        items.forEach(function (it) {
+            var p = it.part_number, b = it.batch_no;
+            if (!p || !b || !String(b).trim()) return;
+            if (!coilState.batchByPart[p]) coilState.batchByPart[p] = [];
+            String(b).split(',').forEach(function (seg) {
+                var one = seg.split('(')[0].trim();
+                if (!one) return;
+                var exists = coilState.batchByPart[p].some(function (x) {
+                    return x.toUpperCase() === one.toUpperCase();
+                });
+                if (!exists) coilState.batchByPart[p].push(one);
+            });
+        });
         // Lot 默认值：仅从「维护卷标图标所在行」带出（无该行则留空白，不 fallback）
         let defItem = null;
         if (coilState.itemId) { defItem = items.find(function (it) { return it.id === coilState.itemId; }); }
@@ -299,6 +326,41 @@ function validateLotForRow(idx) {
         if (lenInput) lenInput.classList.add('is-invalid');
         showToast('error', msg);
     });
+
+    // 批次号比对（叠加检查，不影响上面 SLLots 的 is-valid/is-invalid）：
+    // Lot 与申请单明细 batch_no 不一致时仅黄色 warning 提示，不阻断输入与保存
+    checkLotAgainstBatch(lotInput, partNumber, lotNo);
+}
+
+function setLotWarning(lotInput) {
+    if (!lotInput) return;
+    lotInput.classList.add('is-warning');
+}
+
+function clearLotWarning(lotInput) {
+    if (!lotInput) return;
+    lotInput.classList.remove('is-warning');
+}
+
+function checkLotAgainstBatch(lotInput, partNumber, lotNo) {
+    // 明细批次号集合；为空（该物料明细均未填 batch_no）→ 跳过比对
+    const batchList = coilState.batchByPart[partNumber];
+    if (!batchList || batchList.length === 0) {
+        clearLotWarning(lotInput);
+        return;
+    }
+    // 大小写不敏感比较：输入的 lot 与任一批次号相等即匹配
+    const want = lotNo.toUpperCase();
+    const matched = batchList.some(function (b) {
+        return String(b).toUpperCase() === want;
+    });
+    if (matched) {
+        clearLotWarning(lotInput);
+        return;
+    }
+    // 不匹配：仅 warning 提示，保留原值、不加 is-invalid、不阻断
+    setLotWarning(lotInput);
+    showToast('info', 'Lot ' + lotNo + ' 与物料明细批次号 ' + batchList.join(', ') + ' 不一致');
 }
 
 function saveCoilRow(idx, retryCount) {

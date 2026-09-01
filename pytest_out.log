@@ -1,8 +1,0 @@
-============================= test session starts =============================
-platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0
-rootdir: D:\Workbuddy\多智能体\物料领取看板
-plugins: anyio-4.14.2
-collected 99 items
-
-tests\test_wire_coil.py ........................F....................... [ 48%]
-.FFF.....FF......F..........

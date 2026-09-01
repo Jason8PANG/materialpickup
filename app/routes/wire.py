@@ -209,7 +209,7 @@ def export_coils():
             counting_ids = {r['coil_id'] for r in cur.fetchall()}
     buf = _io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(['卷标ID', '物料', 'Lot', '卷长', '单位', '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间'])
+    writer.writerow(['卷标ID', '物料', 'Lot', '卷长', '单位', '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间', '最后更新时间'])
     for r in rows:
         status_label = COIL_STATUS_LABELS.get(r.get('status'), r.get('status') or '')
         if r.get('coil_id') in counting_ids:
@@ -219,7 +219,7 @@ def export_coils():
             r.get('coil_length', ''), r.get('unit', ''),
             status_label,
             r.get('siteref', ''), r.get('request_id', ''),
-            r.get('used_mm', ''), str(r.get('created_at') or ''),
+            r.get('used_mm', ''), str(r.get('created_at') or ''), str(r.get('updated_at') or ''),
         ])
     return Response(
         '\ufeff' + buf.getvalue(),

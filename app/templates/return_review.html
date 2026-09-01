@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container py-3" style="max-width:640px;">
+    <div class="d-flex align-items-center mb-3">
+        <a href="/kanban" class="btn btn-outline-secondary btn-sm me-2 d-lg-none"><i class="fas fa-arrow-left"></i></a>
+        <h4 class="mb-0" data-i18n="return_review.title">退料复核</h4>
+    </div>
+    <p class="text-muted small">扫描或输入<b>退回卷标ID</b>，系统自动匹配待退料单，逐卷选择 CSI 库位完成退回；不匹配则维护原因不予退料。</p>
+
+    <!-- 卷标扫码输入 -->
+    <div class="card mb-3">
+        <div class="card-body">
+            <label class="form-label fw-bold" data-i18n="return_review.coil_id">卷标ID</label>
+            <div class="input-group input-group-lg">
+                <input type="text" id="coilInput" class="form-control form-control-lg" autocomplete="off"
+                       maxlength="9" inputmode="numeric" data-i18n="return_review.placeholder"
+                       placeholder="扫描或输入卷标ID后回车">
+                <button class="btn btn-primary btn-lg" id="scanBtn" type="button"><i class="fas fa-search"></i></button>
+            </div>
+            <div id="scanFeedback" class="mt-2 small"></div>
+        </div>
+    </div>
+
+    <!-- 匹配成功（可退回） -->
+    <div class="card mb-3 d-none" id="matchedArea">
+        <div class="card-header bg-success text-white fw-bold" data-i18n="return_review.coil_info">卷标信息</div>
+        <div class="card-body">
+            <div class="mb-1"><span class="text-muted" data-i18n="return_review.coil_id">卷标ID</span>：<strong id="mCoilId"></strong></div>
+            <div class="mb-1"><span class="text-muted" data-i18n="return_review.return_no">退料单号</span>：<strong id="mReturnNo"></strong></div>
+            <div class="mb-1"><span class="text-muted" data-i18n="return_review.part">物料号</span>：<span id="mPart"></span></div>
+            <div class="mb-1"><span class="text-muted" data-i18n="return_review.status">状态</span>：<span id="mStatus"></span></div>
+            <div class="mb-3"><span class="text-muted" data-i18n="return_review.remain">剩余长度</span>：<span id="mRemain"></span></div>
+
+            <label class="form-label fw-bold" data-i18n="return_review.location">退回库位</label>
+            <div id="locationBox"></div>
+
+            <button class="btn btn-success btn-lg w-100 mt-3" id="confirmBtn" type="button">
+                <i class="fas fa-check-circle me-1"></i> <span data-i18n="return_review.confirm_btn">确认退回</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- 状态异常（已处理） -->
+    <div class="card mb-3 d-none" id="statusErrorArea">
+        <div class="card-body">
+            <div class="alert alert-warning mb-0" data-i18n="return_review.status_error">卷标已处理或状态异常，无法操作</div>
+        </div>
+    </div>
+
+    <!-- 不匹配（不予退料） -->
+    <div class="card mb-3 d-none" id="unmatchedArea">
+        <div class="card-body">
+            <div class="alert alert-danger" data-i18n="return_review.not_matched">未匹配到待退料单，或卷标不存在</div>
+            <label class="form-label fw-bold" data-i18n="return_review.reject_reason">不匹配原因</label>
+            <textarea id="reasonInput" class="form-control" rows="3" data-i18n="return_review.reject_placeholder"
+                      placeholder="请填写不予退料原因"></textarea>
+            <button class="btn btn-outline-danger btn-lg w-100 mt-3" id="rejectBtn" type="button">
+                <i class="fas fa-times-circle me-1"></i> <span data-i18n="return_review.reject_btn">不予退料</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+    @media (max-width: 576px) {
+        .btn-lg { font-size: 1.1rem; padding: 0.7rem 1rem; }
+        #coilInput { font-size: 1.25rem; }
+    }
+</style>
+
+<script>
+(function () {
+    const coilInput = document.getElementById('coilInput');
+    const scanFeedback = document.getElementById('scanFeedback');
+    const matchedArea = document.getElementById('matchedArea');
+    const statusErrorArea = document.getElementById('statusErrorArea');
+    const unmatchedArea = document.getElementById('unmatchedArea');
+
+    let currentCoilId = '';
+    let currentReturnId = null;
+
+    function hideAll() {
+        matchedArea.classList.add('d-none');
+        statusErrorArea.classList.add('d-none');
+        unmatchedArea.classList.add('d-none');
+    }
+
+    function scan() {
+        const coilId = coilInput.value.trim();
+        if (!coilId) { coilInput.focus(); return; }
+        currentCoilId = coilId;
+        hideAll();
+        scanFeedback.innerHTML = '<span class="text-muted"><i class="fas fa-spinner fa-spin"></i> ' + __('return_review.querying') + '</span>';
+
+        fetch('/api/returns/review/coil/' + encodeURIComponent(coilId), {headers: {'X-Lang': getLang()}})
+            .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+            .then(function (res) {
+                if (!res.ok || !res.j.success) {
+                    scanFeedback.innerHTML = '<span class="text-danger">' + escapeHtml(res.j.message || '查询失败') + '</span>';
+                    coilInput.focus();
+                    return;
+                }
+                renderResult(res.j);
+            })
+            .catch(function () {
+                scanFeedback.innerHTML = '<span class="text-danger">网络错误，请重试</span>';
+            });
+    }
+
+    function renderResult(d) {
+        hideAll();
+        scanFeedback.innerHTML = '';
+        currentReturnId = d.return_id;
+
+        if (d.matched && d.status === 'in_shop') {
+            // 匹配且可退回
+            document.getElementById('mCoilId').textContent = d.coil_id;
+            document.getElementById('mReturnNo').textContent = d.return_id || '-';
+            document.getElementById('mPart').textContent = d.part_number || '-';
+            document.getElementById('mStatus').textContent = d.status_label || d.status || '-';
+            document.getElementById('mRemain').textContent = (d.remain_length != null ? d.remain_length : '-') + (d.unit ? ' ' + escapeHtml(d.unit) : '');
+
+            const locBox = document.getElementById('locationBox');
+            const locs = d.available_locations || [];
+            if (locs.length > 0) {
+                let opts = locs.map(function (l) { return '<option value="' + escapeHtml(l) + '">' + escapeHtml(l) + '</option>'; }).join('');
+                locBox.innerHTML = '<select class="form-select" id="locationSelect">' + opts + '</select>';
+            } else {
+                locBox.innerHTML = '<input class="form-control" value="Stock" readonly>';
+            }
+            matchedArea.classList.remove('d-none');
+        } else if (d.matched) {
+            // 匹配但状态异常
+            statusErrorArea.classList.remove('d-none');
+        } else {
+            // 不匹配或卷标不存在
+            document.getElementById('reasonInput').value = '';
+            unmatchedArea.classList.remove('d-none');
+        }
+    }
+
+    function confirmReturn() {
+        const sel = document.getElementById('locationSelect');
+        const location = sel ? sel.value : 'Stock';
+        const btn = document.getElementById('confirmBtn');
+        btn.disabled = true;
+        fetch('/api/returns/review/' + encodeURIComponent(currentCoilId) + '/confirm', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Lang': getLang()},
+            body: JSON.stringify({return_id: currentReturnId, location: location})
+        })
+        .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+        .then(function (res) {
+            btn.disabled = false;
+            if (res.ok && res.j.success) {
+                showToast('success', res.j.message || __('return_review.confirm_success'));
+                resetForNext();
+            } else {
+                showToast('error', res.j.message || '操作失败');
+            }
+        })
+        .catch(function () {
+            btn.disabled = false;
+            showToast('error', '网络错误，请重试');
+        });
+    }
+
+    function rejectCoil() {
+        const reason = document.getElementById('reasonInput').value.trim();
+        if (!reason) {
+            showToast('error', __('return_review.reason_required'));
+            return;
+        }
+        const btn = document.getElementById('rejectBtn');
+        btn.disabled = true;
+        fetch('/api/returns/review/' + encodeURIComponent(currentCoilId) + '/reject', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Lang': getLang()},
+            body: JSON.stringify({reason: reason})
+        })
+        .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+        .then(function (res) {
+            btn.disabled = false;
+            if (res.ok && res.j.success) {
+                showToast('success', res.j.message || __('return_review.reject_success'));
+                resetForNext();
+            } else {
+                showToast('error', res.j.message || '操作失败');
+            }
+        })
+        .catch(function () {
+            btn.disabled = false;
+            showToast('error', '网络错误，请重试');
+        });
+    }
+
+    function resetForNext() {
+        hideAll();
+        coilInput.value = '';
+        scanFeedback.innerHTML = '';
+        currentCoilId = '';
+        currentReturnId = null;
+        coilInput.focus();
+    }
+
+    document.getElementById('scanBtn').addEventListener('click', scan);
+    document.getElementById('confirmBtn').addEventListener('click', confirmReturn);
+    document.getElementById('rejectBtn').addEventListener('click', rejectCoil);
+    coilInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); scan(); }
+    });
+
+    coilInput.focus();
+})();
+</script>
+{% endblock %}

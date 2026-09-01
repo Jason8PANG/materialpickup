@@ -45,11 +45,11 @@
                     <tr>
                         <th>卷标ID</th><th>物料</th><th>Lot</th><th>卷长</th><th>单位</th>
                         <th>状态</th><th>站点</th><th>申请单</th><th>使用(mm)</th>
-                        <th>剩余长度MM</th><th>剩余长度</th><th>创建时间</th>
+                        <th>剩余长度MM</th><th>剩余长度</th><th>创建时间</th><th>最后更新时间</th>
                     </tr>
                 </thead>
                 <tbody id="coilBody">
-                    <tr><td colspan="12" class="text-center text-muted py-4">加载中...</td></tr>
+                    <tr><td colspan="13" class="text-center text-muted py-4">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -74,8 +74,8 @@ function loadCoils() {
         .then(r => r.json())
         .then(resp => {
             const tb = document.getElementById('coilBody');
-            if (!resp.success) { tb.innerHTML = '<tr><td colspan="12" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
-            if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="12" class="text-center text-muted">无数据</td></tr>'; return; }
+            if (!resp.success) { tb.innerHTML = '<tr><td colspan="13" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
+            if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="13" class="text-center text-muted">无数据</td></tr>'; return; }
             tb.innerHTML = resp.data.map(c => {
                 // 盘点中（派生状态）优先于"已消完"显示
                 const isCounting = c.status_label === '盘点中';
@@ -92,10 +92,11 @@ function loadCoils() {
                 <td>${c.used_mm}</td>
                 <td>${c.remain_mm != null ? c.remain_mm : '-'}</td><td>${c.remain_orig != null ? c.remain_orig : '-'}</td>
                 <td>${(c.created_at || '').slice(0, 19).replace('T', ' ')}</td>
+                <td>${(c.updated_at || '').slice(0, 19).replace('T', ' ')}</td>
             </tr>`;
             }).join('');
         })
-        .catch(() => { document.getElementById('coilBody').innerHTML = '<tr><td colspan="12" class="text-center text-danger">加载失败</td></tr>'; });
+        .catch(() => { document.getElementById('coilBody').innerHTML = '<tr><td colspan="13" class="text-center text-danger">加载失败</td></tr>'; });
 }
 document.getElementById('exportBtn').addEventListener('click', function () {
     this.href = '/api/wire/coils/export?' + coilQuery();

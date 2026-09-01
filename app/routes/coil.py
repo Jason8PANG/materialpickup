@@ -855,14 +855,27 @@ def request_in_stock_coils(request_id):
                 parts
             )
             for r in cursor.fetchall():
-                remain = round(float(r['coil_length'] or 0) - float(r['used'] or 0), 2)
+                unit = (r['unit'] or '').strip().upper()
+                factor = Config.UNIT_CONVERT_FACTOR.get(unit) if unit else None
+                coil_length = float(r['coil_length'] or 0)
+                used = float(r['used'] or 0)
+                is_return = bool(r['is_return'])
+                if is_return:
+                    # 退回的卷标：确认退料时 coil_length 已回写为「剩余长度」（原始单位），
+                    # 不能再减历史消耗（历史消耗在回写时已扣，且 used 单位为 mm，直接相减会
+                    # 单位不一致+重复扣减 → remain 恒为负 → 卷标被 continue 过滤掉）。
+                    remain = coil_length
+                else:
+                    # 未退回的在库卷标：coil_length 为原始长度，used(mm) 须换算原始单位后相减
+                    used_orig = used / factor if factor else used
+                    remain = round(coil_length - used_orig, 2)
                 if remain <= 0:
                     continue
                 result.setdefault(r['part_number'], []).append({
                     'coil_id': r['coil_id'],
                     'remain_length': remain,
                     'unit': r['unit'] or '',
-                    'is_return': bool(r['is_return']),
+                    'is_return': is_return,
                 })
         cursor.close()
 
