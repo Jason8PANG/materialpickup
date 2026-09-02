@@ -120,16 +120,24 @@ function handleFullscreenChange() {
         document.body.classList.remove('kanban-fullscreen');
         updateFullscreenBtn(false);
         stopAutoRefresh();
+        // 退出后复位倒计时，避免残留旧值
+        countdown = 30;
+        updateCountdownDisplay();
     }
 }
 
 function updateFullscreenBtn(isFullscreen) {
     var btn = document.getElementById('fullscreenBtn');
+    if (!btn) return;
     if (isFullscreen) {
-        btn.innerHTML = '<i class="fas fa-compress me-1"></i><span data-i18n="kanban.fullscreen">退出全屏</span>';
+        // data-i18n 与文本必须用 exit_fullscreen key，否则语言切换/重载时
+        // setLang 会把 span 重译回「全屏」，导致文案与实际状态不符
+        btn.innerHTML = '<i class="fas fa-compress me-1"></i><span data-i18n="kanban.exit_fullscreen">' +
+            (typeof __ === 'function' ? __('kanban.exit_fullscreen') : '退出全屏') + '</span>';
         btn.className = 'btn btn-outline-warning btn-sm me-2';
     } else {
-        btn.innerHTML = '<i class="fas fa-expand me-1"></i><span data-i18n="kanban.fullscreen">全屏</span>';
+        btn.innerHTML = '<i class="fas fa-expand me-1"></i><span data-i18n="kanban.fullscreen">' +
+            (typeof __ === 'function' ? __('kanban.fullscreen') : '全屏') + '</span>';
         btn.className = 'btn btn-outline-success btn-sm me-2';
     }
 }
@@ -168,5 +176,14 @@ function updateCountdownDisplay() {
 
 document.addEventListener('fullscreenchange', handleFullscreenChange);
 document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+
+// F11 浏览器原生全屏不会触发 fullscreenchange，会导致页面全屏态/自动刷新不同步；
+// 拦截后统一走 Fullscreen API（与全屏按钮同一条路径）。
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'F11') {
+        e.preventDefault();
+        toggleFullscreen();
+    }
+});
 </script>
 {% endblock %}
