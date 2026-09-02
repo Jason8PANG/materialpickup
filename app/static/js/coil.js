@@ -546,24 +546,30 @@ function renderLabelPreview(coil) {
     box.style.border = '1px dashed #999';
     box.style.position = 'relative';
     box.style.background = '#fff';
-    // 与 ZPL/TSPL/GDI 版式一致（两行左右分栏）：
-    //   行1 上半：左上 卷标ID 大字 | 右上 Code128 条码（内容 = 卷标ID）
-    //   行2 下半：左下 Part : xxx  | 右下 Lenght :xxx
-    // 卷标ID 18px bold + nowrap：9 位约占 0~95px，与条码 left:170 留足间距，避免重叠
-    // 期初半卷「始」角标：右上 x≈306px（对应打印端 x600dot），条码右缘 ~296px，不覆盖、不出纸边
+    // 与 ZPL/TSPL/GDI 版式一致（80×26mm → 320×104px，右 margin 5mm=20px → 内容右缘 300px）：
+    //   行1 左上：卷标ID 大字（x20 y22，9 位约占 20~115px）
+    //   右上角标：期初半卷「始」（放大 18px bold，right:20 贴 300px 右缘，位于条码上方 y14）
+    //   条码区  ：Code128 右对齐贴 300px（渲染后动态算 left = 300 − 条码宽），y42 高 22
+    //   行2     ：左下 Part : xxx（y66）| 右下 Lenght :xxx（left 与条码左缘对齐）
     const initialBadge = coil.is_initial_half
-        ? '<div style="position:absolute;left:306px;top:18px;font-size:12px;font-weight:bold;">始</div>'
+        ? '<div style="position:absolute;right:20px;top:14px;font-size:18px;font-weight:bold;">始</div>'
         : '';
     box.innerHTML = `
-        <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:16px;height:34px;"></svg>
-        <div style="position:absolute;left:18px;top:18px;font-size:18px;font-weight:bold;white-space:nowrap;">${escapeHtml(coilId)}</div>
+        <div style="position:absolute;left:20px;top:22px;font-size:18px;font-weight:bold;white-space:nowrap;">${escapeHtml(coilId)}</div>
         ${initialBadge}
-        <div style="position:absolute;left:18px;top:64px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
-        <div style="position:absolute;left:170px;top:64px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
+        <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:42px;height:22px;"></svg>
+        <div style="position:absolute;left:20px;top:66px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
+        <div id="previewLenghtText" style="position:absolute;left:170px;top:66px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
     `;
     if (window.JsBarcode) {
         try {
-            JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1.4, height: 34, displayValue: false, margin: 0});
+            JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1.4, height: 22, displayValue: false, margin: 0});
+            // 条码右对齐到 300px（320 − 20px 右 margin）；Lenght 与条码左缘对齐
+            const svg = document.getElementById('previewBarcodeCoil');
+            const bw = svg.getBBox().width;
+            const left = Math.max(0, 300 - bw);
+            svg.style.left = left + 'px';
+            document.getElementById('previewLenghtText').style.left = left + 'px';
         } catch (e) {
             console.warn('JsBarcode 渲染失败', e);
         }

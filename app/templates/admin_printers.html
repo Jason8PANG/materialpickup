@@ -81,6 +81,18 @@ function channelLabel(ch) {
     return __('printers.channel_' + (ch === 'raw_zpl' ? 'zpl' : (ch === 'raw_tspl' ? 'tspl' : (ch === 'gateway' ? 'gateway' : 'gdi'))));
 }
 
+// 属性上下文转义。escapeHtml 是文本上下文（textContent→innerHTML），不会转义双引号，
+// 直接放进 data-printer-name="..." 会截断属性，因此属性值必须用本函数转义。
+function escAttr(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 function loadPrinters() {
     apiGet('/api/site-printers', function (resp) {
         const tbody = document.getElementById('printerTableBody');
@@ -97,7 +109,13 @@ function loadPrinters() {
                 '<td><span class="badge bg-info">' + escapeHtml(channelLabel(p.channel)) + '</span></td>' +
                 '<td>' + escapeHtml(p.remark || '-') + '</td>' +
                 '<td class="text-center">' +
-                    '<button class="btn btn-sm btn-outline-primary me-1" onclick="showEditModal(' + p.id + ', \'' + escapeHtml(p.siteref) + '\', \'' + escapeHtml(p.printer_name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(p.channel) + '\', \'' + escapeHtml(p.remark || '').replace(/'/g, "\\'") + '\')" title="' + __('printers.edit') + '"><i class="fas fa-edit"></i></button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary me-1" ' +
+                        'data-id="' + escAttr(p.id) + '" ' +
+                        'data-siteref="' + escAttr(p.siteref) + '" ' +
+                        'data-printer-name="' + escAttr(p.printer_name) + '" ' +
+                        'data-channel="' + escAttr(p.channel) + '" ' +
+                        'data-remark="' + escAttr(p.remark || '') + '" ' +
+                        'title="' + __('printers.edit') + '" onclick="showEditModalFromBtn(this)"><i class="fas fa-edit"></i></button>' +
                     '<button class="btn btn-sm btn-outline-danger" onclick="deletePrinter(' + p.id + ')" title="' + __('printers.delete') + '"><i class="fas fa-trash"></i></button>' +
                 '</td>' +
                 '</tr>';
@@ -118,13 +136,15 @@ function showAddModal() {
     new bootstrap.Modal(document.getElementById('printerModal')).show();
 }
 
-function showEditModal(id, siteref, printerName, channel, remark) {
-    document.getElementById('editId').value = id;
+// 读取按钮 data-* 属性回填弹窗。数据经 HTML 属性传递：浏览器只做实体解码，
+// 不会像 JS 字符串字面量那样把 "\\" 折叠成 "\"，因此 UNC 路径 \\server\printer 得以完整保留。
+function showEditModalFromBtn(btn) {
+    document.getElementById('editId').value = btn.dataset.id;
     document.getElementById('printerModalTitle').textContent = __('printers.edit');
-    document.getElementById('fSiteref').value = siteref;
-    document.getElementById('fPrinterName').value = printerName;
-    document.getElementById('fChannel').value = channel;
-    document.getElementById('fRemark').value = remark;
+    document.getElementById('fSiteref').value = btn.dataset.siteref;
+    document.getElementById('fPrinterName').value = btn.dataset.printerName;
+    document.getElementById('fChannel').value = btn.dataset.channel;
+    document.getElementById('fRemark').value = btn.dataset.remark || '';
     new bootstrap.Modal(document.getElementById('printerModal')).show();
 }
 
