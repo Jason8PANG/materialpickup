@@ -427,6 +427,8 @@ def create_coils(request_id):
                 'unit': str(it.get('unit') or '').strip(),
                 'lot_no': str(it.get('lot_no') or '').strip() or None,
                 'item_id': item_id,
+                # 期初半卷：仅接受 1/true/yes 为是，其余（含字符串 "0"/false/空）为否
+                'is_initial_half': 1 if str(it.get('is_initial_half') or '').lower() in ('1', 'true', 'yes') else 0,
             })
 
         # R4：A/B 开头物料必须至少录入一行卷标（前端已拦，后端兜底）
@@ -514,6 +516,7 @@ def create_coils(request_id):
                     'unit': it['unit'],
                     'status': 'in_stock',
                     'item_id': it.get('item_id'),
+                    'is_initial_half': 1 if it.get('is_initial_half') else 0,
                 })
 
             # 5. 操作日志
@@ -543,10 +546,11 @@ def _insert_coil_with_retry(cursor, it, request_id, siteref, operator, now, max_
         try:
             cursor.execute(
                 """INSERT INTO kr_wire_coil
-                   (coil_id, part_number, lot_no, coil_length, unit, status, request_id, siteref, operator, item_id, remark, created_at)
-                   VALUES (%s, %s, %s, %s, %s, 'in_stock', %s, %s, %s, %s, %s, %s)""",
+                   (coil_id, part_number, lot_no, coil_length, unit, status, request_id, siteref, operator, item_id, is_initial_half, remark, created_at)
+                   VALUES (%s, %s, %s, %s, %s, 'in_stock', %s, %s, %s, %s, %s, %s, %s)""",
                 (it['coil_id'], it['part_number'], it.get('lot_no'), it['length'], it['unit'],
-                 request_id, siteref, operator, it.get('item_id'), it.get('remark'), now)
+                 request_id, siteref, operator, it.get('item_id'), 1 if it.get('is_initial_half') else 0,
+                 it.get('remark'), now)
             )
             return True, cursor.lastrowid, None
         except IntegrityError as e:

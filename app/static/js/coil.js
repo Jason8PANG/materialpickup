@@ -195,7 +195,7 @@ function addCoilRow(part_number) {
     }
     const firstPart = part_number || (coilState.requestItems[0] || '');
     const idx = coilState.rows.length;
-    coilState.rows.push({part_number: firstPart, lot_no: coilState.defaultLot || '', coil_id: '', length: ''});
+    coilState.rows.push({part_number: firstPart, lot_no: coilState.defaultLot || '', coil_id: '', length: '', is_initial_half: false});
     renderCoilRows();
     updatePreview();
     // 自动生成卷标ID（全局唯一）
@@ -255,7 +255,7 @@ function renderCoilRows() {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (coilState.rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">暂无录入行，点击「添加一行」开始录入</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">暂无录入行，点击「添加一行」开始录入</td></tr>';
         return;
     }
     coilState.rows.forEach(function (row, idx) {
@@ -275,7 +275,7 @@ function renderCoilRows() {
                 <input type="text" class="form-control form-control-sm coil-id-input" data-idx="${idx}"
                        value="${escapeHtml(row.coil_id)}" placeholder="${__('coils.coilid_placeholder')}" maxlength="9" readonly style="background:#f5f5f5">
             </td>
-            <td style="width:20%">
+            <td style="width:16%">
                 <input type="text" class="form-control form-control-sm coil-lot-input" data-idx="${idx}"
                        value="${escapeHtml(row.lot_no || '')}" placeholder="Lot" maxlength="64"
                        onblur="validateLotForRow(${idx})">
@@ -284,6 +284,11 @@ function renderCoilRows() {
                 <input type="number" class="form-control form-control-sm coil-length-input" data-idx="${idx}"
                        value="${row.length}" min="0" step="0.01" placeholder="${__('coils.length_placeholder')}${unit && unit !== '-' ? ' (' + escapeHtml(unit) + ')' : ''}"
                        onblur="validateLotForRow(${idx})">
+            </td>
+            <td class="text-center align-middle">
+                <input type="checkbox" class="form-check-input coil-initial-input" data-idx="${idx}"
+                       ${row.is_initial_half ? 'checked' : ''}
+                       title="期初半卷：勾选后打印标签时右上角加「始」角标">
             </td>
             <td class="text-center" style="width:90px">
                 <button type="button" class="btn btn-sm btn-success" onclick="saveCoilRow(${idx})" title="保存该卷标"><i class="fas fa-save"></i></button>
@@ -381,7 +386,8 @@ function saveCoilRow(idx, retryCount) {
             length: length,
             lot_no: (row.lot_no || '').trim(),
             unit: coilState.unitMap[partNumber] || '',
-            item_id: coilState.itemId  // 按申请单行绑定
+            item_id: coilState.itemId,  // 按申请单行绑定
+            is_initial_half: !!row.is_initial_half  // 期初半卷：勾选后标签右上角加「始」角标
         }]
     }, function (resp) {
         showToast('success', '卷标已保存');
@@ -424,7 +430,7 @@ function renderExistingCoils() {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (!coilState.existingCoils || coilState.existingCoils.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
         return;
     }
     // 从后往前删除：仅最后一条（id 最大，列表末尾）允许删除
@@ -457,6 +463,7 @@ function renderExistingCoils() {
             <td>${c.coil_length}</td>
             <td>${escapeHtml(c.unit || '-')}</td>
             <td><span class="badge ${c.status === 'in_stock' ? 'bg-success' : c.status === 'issued' ? 'bg-secondary' : 'bg-danger'}">${escapeHtml(c.status_label || c.status)}</span></td>
+            <td class="text-center">${c.is_initial_half ? '<span class="badge bg-danger" title="期初半卷">始</span>' : ''}</td>
             <td class="text-center" onclick="event.stopPropagation()">
                 <button class="btn btn-sm btn-outline-success" onclick="printCoils(['${escapeHtml(c.coil_id)}'])" title="打印本行卷标"><i class="fas fa-print"></i></button>
             </td>
@@ -517,7 +524,8 @@ function updatePreview() {
             coil_id: row.coil_id,
             part_number: row.part_number,
             length: parseFloat(row.length) || 0,
-            unit: coilState.unitMap[row.part_number] || ''
+            unit: coilState.unitMap[row.part_number] || '',
+            is_initial_half: !!row.is_initial_half
         });
     } else {
         const box = document.getElementById('labelPreviewBox');
@@ -541,16 +549,21 @@ function renderLabelPreview(coil) {
     // 与 ZPL/TSPL/GDI 版式一致（两行左右分栏）：
     //   行1 上半：左上 卷标ID 大字 | 右上 Code128 条码（内容 = 卷标ID）
     //   行2 下半：左下 Part : xxx  | 右下 Lenght :xxx
-    // 卷标ID 22px bold：9 位约 0~150px，与条码 left:170 留 ≥20px 间距，避免重叠
+    // 卷标ID 18px bold + nowrap：9 位约占 0~95px，与条码 left:170 留足间距，避免重叠
+    // 期初半卷「始」角标：右上 x≈306px（对应打印端 x600dot），条码右缘 ~296px，不覆盖、不出纸边
+    const initialBadge = coil.is_initial_half
+        ? '<div style="position:absolute;left:306px;top:18px;font-size:12px;font-weight:bold;">始</div>'
+        : '';
     box.innerHTML = `
         <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:16px;height:34px;"></svg>
-        <div style="position:absolute;left:20px;top:18px;font-size:22px;font-weight:bold;">${escapeHtml(coilId)}</div>
-        <div style="position:absolute;left:20px;top:64px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
+        <div style="position:absolute;left:18px;top:18px;font-size:18px;font-weight:bold;white-space:nowrap;">${escapeHtml(coilId)}</div>
+        ${initialBadge}
+        <div style="position:absolute;left:18px;top:64px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
         <div style="position:absolute;left:170px;top:64px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
     `;
     if (window.JsBarcode) {
         try {
-            JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1.5, height: 34, displayValue: false, margin: 0});
+            JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1.4, height: 34, displayValue: false, margin: 0});
         } catch (e) {
             console.warn('JsBarcode 渲染失败', e);
         }
@@ -594,7 +607,8 @@ function saveCoils(printAfter) {
             coil_id: row.coil_id,
             length: len,
             lot_no: (row.lot_no || '').trim(),
-            unit: coilState.unitMap[row.part_number] || ''
+            unit: coilState.unitMap[row.part_number] || '',
+            is_initial_half: !!row.is_initial_half  // 期初半卷
         });
     });
 
@@ -791,6 +805,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (isNaN(idx) || !coilState.rows[idx]) return;
                 coilState.rows[idx].part_number = e.target.value;
                 renderCoilRows();
+                updatePreview();
+            } else if (e.target.classList.contains('coil-initial-input')) {
+                // 期初半卷：行内复选框 → state + 预览角标实时同步
+                const idx = parseInt(e.target.dataset.idx, 10);
+                if (isNaN(idx) || !coilState.rows[idx]) return;
+                coilState.rows[idx].is_initial_half = e.target.checked;
                 updatePreview();
             }
         });

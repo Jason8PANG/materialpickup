@@ -281,6 +281,28 @@ def _ensure_wire_coil_lot_no(conn, cursor):
     print('[OK] kr_wire_coil 已补充 lot_no 列（Lot 批次号）')
 
 
+def _ensure_wire_coil_initial_half(conn, cursor):
+    """
+    kr_wire_coil 补齐 is_initial_half 列（幂等，可重复执行）：
+    期初半卷标记。录入新卷标时行内勾选；勾选后标签打印时在右上角加「始」角标
+    （视觉标识，扫码枪读条码不受影响）。
+    """
+    cursor.execute(
+        "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'kr_wire_coil' "
+        "AND COLUMN_NAME = 'is_initial_half'"
+    )
+    if cursor.fetchone()['n']:
+        return
+
+    cursor.execute(
+        "ALTER TABLE kr_wire_coil ADD COLUMN is_initial_half TINYINT(1) NOT NULL DEFAULT 0 "
+        "COMMENT '期初半卷标记：1=是（录入时勾选，标签右上角打「始」角标）' AFTER is_deleted"
+    )
+    conn.commit()
+    print('[OK] kr_wire_coil 已补充 is_initial_half 列（期初半卷标记）')
+
+
 def _ensure_request_item_unit(conn, cursor):
     """
     kr_request_item 补齐 unit 列（幂等，可重复执行）。
@@ -499,6 +521,9 @@ def migrate():
 
         # 旧表升级：kr_wire_coil 补齐 lot_no 列（Lot 批次号）
         _ensure_wire_coil_lot_no(conn, cursor)
+
+        # 旧表升级：kr_wire_coil 补齐 is_initial_half 列（期初半卷标记，「始」角标）
+        _ensure_wire_coil_initial_half(conn, cursor)
 
         # 旧表升级：kr_request_item 补齐 unit 列（申请单发起时从 CSI 获取单位，后续读库）
         _ensure_request_item_unit(conn, cursor)
