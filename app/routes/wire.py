@@ -312,6 +312,9 @@ def adjust_page():
     if not session.get('user'):
         from flask import redirect, url_for
         return redirect(url_for('pages.login_page'))
+    # 盘点差异调整仅限仓库人员/管理员操作
+    if session['user']['role'] not in ('warehouse', 'admin'):
+        return '权限不足', 403
     return render_template('wire_adjust.html')
 
 

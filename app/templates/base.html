@@ -46,8 +46,6 @@
                             <li><a class="dropdown-item" href="/wire/consumption"><i class="fas fa-chart-line me-2"></i><span data-i18n="nav.wire_consumption">线材消耗查询</span></a></li>
                             <li><a class="dropdown-item" href="/wire/count"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.wire_count">线材库存盘点</span></a></li>
                             <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="/wire/adjust"><i class="fas fa-exchange-alt me-2"></i><span data-i18n="nav.wire_adjust">盘点差异调整</span></a></li>
-                            <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="/cutting/specs"><i class="fas fa-cut me-2"></i><span data-i18n="nav.cutting_specs">裁线规格管理</span></a></li>
                         </ul>
                     </li>
@@ -60,6 +58,11 @@
                     {% if session.user.role in ['warehouse', 'admin'] %}
                     <li class="nav-item">
                         <a class="nav-link" href="/return/review"><i class="fas fa-clipboard-check me-1"></i><span data-i18n="nav.return_review">退料复核</span></a>
+                    </li>
+                    {% endif %}
+                    {% if session.user.role in ['warehouse', 'admin'] %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/wire/adjust"><i class="fas fa-exchange-alt me-1"></i><span data-i18n="nav.wire_adjust">盘点差异调整</span></a>
                     </li>
                     {% endif %}
                     <li class="nav-item">
