@@ -508,7 +508,7 @@ function previewExistingCoil(coilId) {
     });
 }
 
-/* ---- 标签预览（300px × 100px 缩放，JsBarcode Code128） ---- */
+/* ---- 标签预览（80×26mm 等比缩放为 320×104px，5mm margin≈20px，两行左右分栏） ---- */
 
 function updatePreview() {
     const row = coilState.rows.find(function (r) { return r.coil_id; });
@@ -533,21 +533,23 @@ function renderLabelPreview(coil) {
     const lengthText = (coil.length != null ? parseFloat(coil.length).toString() : '') +
                        (coil.unit ? ' ' + coil.unit : '');
     box.classList.remove('d-none');
-    box.style.width = '300px';
-    box.style.height = '100px';
+    box.style.width = '320px';
+    box.style.height = '104px';
     box.style.border = '1px dashed #999';
     box.style.position = 'relative';
     box.style.background = '#fff';
-    // 与 ZPL/TSPL 版式一致：顶部条码 → 条码下方卷号 → Part → Lenght，全部左对齐竖排
+    // 与 ZPL/TSPL/GDI 版式一致（两行左右分栏）：
+    //   行1 上半：左上 卷标ID 大字（最大） | 右上 Code128 条码（内容 = 卷标ID）
+    //   行2 下半：左下 Part : xxx          | 右下 Lenght :xxx
     box.innerHTML = `
-        <svg id="previewBarcodeCoil" style="position:absolute;left:6px;top:4px;height:30px;"></svg>
-        <div style="position:absolute;left:6px;top:38px;font-size:13px;font-weight:bold;">${escapeHtml(coilId)}</div>
-        <div style="position:absolute;left:6px;top:58px;font-size:11px;">Part : ${escapeHtml(part)}</div>
-        <div style="position:absolute;left:6px;top:76px;font-size:11px;">Lenght :${escapeHtml(lengthText)}</div>
+        <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:16px;height:34px;"></svg>
+        <div style="position:absolute;left:18px;top:14px;font-size:28px;font-weight:bold;">${escapeHtml(coilId)}</div>
+        <div style="position:absolute;left:18px;top:60px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
+        <div style="position:absolute;left:170px;top:60px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
     `;
     if (window.JsBarcode) {
         try {
-            JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1, height: 30, displayValue: false, margin: 0});
+            JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1.5, height: 34, displayValue: false, margin: 0});
         } catch (e) {
             console.warn('JsBarcode 渲染失败', e);
         }

@@ -15,11 +15,12 @@
   - GDI/RAW 打印用 threading.Lock 串行化，避免并发驱动错乱。
   - 单卷打印失败只记录该卷错误，不中断整批。
 
-标签版式（3 inch × 1 inch = 75mm × 25mm，迭代需求 C.7）：
+标签版式（80mm × 26mm，5mm margin，可用区 70×16mm，两行左右分栏）：
   ┌────────────────────────────────────────────┐
-  │ 卷号条码(Code128)           Part Number     │
-  │ ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆          LEN: 250.50 M    │
-  │ 260814001  ← 条码下方显示卷号ID               │
+  │ ······ 5mm margin ······                  │
+  │ 260814001(大字)   ▆▆▆▆▆▆ 条码Code128▆▆▆▆   │  行1：左=卷标ID(大字) | 右=卷标ID 条码
+  │ Part : A080507    Lenght : 10 FT          │  行2：左=Part        | 右=Lenght
+  │ ······ 5mm margin ······                  │
   └────────────────────────────────────────────┘
 """
 import io
@@ -68,8 +69,8 @@ except ImportError:
     _HAS_PIL = False
 
 # 标签物理尺寸（mm）
-LABEL_WIDTH_MM = 75
-LABEL_HEIGHT_MM = 25
+LABEL_WIDTH_MM = 80
+LABEL_HEIGHT_MM = 26
 
 # ZPL/TSPL 模板映射（按打印机型号扩展）
 LABEL_TEMPLATES = {
@@ -112,9 +113,11 @@ class LabelRenderer:
 
 def build_zpl(label: dict) -> bytes:
     """
-    构建 Zebra ZPL（203dpi，3" 宽 ≈ 609 dot，1" 高 ≈ 203 dot）。
+    构建 Zebra ZPL（203dpi：80mm ≈ 640dot，26mm ≈ 208dot，5mm margin ≈ 40dot）。
     条码由打印机固件生成，Code128。
-    版式（C.7）：顶部条码 → 条码下方显示卷号ID → Item → Length + 单位，全部左对齐竖排。
+    版式（两行左右分栏，可用区 x 40~600、y 40~168）：
+      行1（y 40~104）：左上 卷标ID 大字（A0N 48/24 加粗，高≈6mm）；右上 Code128 条码（高 60dot≈7.5mm）
+      行2（y 120~156）：左下 "Part : xxx"；右下 "Lenght :xxx"（A0N 36，高≈4.5mm）
     """
     coil_id = _clean_fd(label['barcode_coil'])
     part = _clean_fd(label['barcode_part'])
@@ -122,11 +125,15 @@ def build_zpl(label: dict) -> bytes:
 
     zpl = (
         "^XA\n"
-        "^PW609^LL203^LH0,0\n"
-        f"^FO20,15^BCN,45,Y,N,N^FD{coil_id}^FS\n"        # 顶部条码 Code128（紧凑）
-        f"^FO20,75^A0N,26,26^FD{coil_id}^FS\n"          # 条码正下方：卷号文字
-        f"^FO20,115^A0N,24,24^FDPart : {part}^FS\n"       # Part（按参考图：冒号前空格）
-        f"^FO20,150^A0N,24,24^FDLenght :{length_text}^FS\n"  # Lenght（按参考图）
+        "^PW640^LL208^LH0,0\n"
+        # 行1 右上：Code128 条码（内容 = 卷标ID，高 60dot）
+        f"^FO340,40^BCN,60,Y,N,N^FD{coil_id}^FS\n"
+        # 行1 左上：卷标ID 大字（字体最大、加粗）
+        f"^FO40,44^A0N,48,24^FD{coil_id}^FS\n"
+        # 行2 左下：Part
+        f"^FO40,120^A0N,36,18^FDPart : {part}^FS\n"
+        # 行2 右下：Lenght（"Lenght :" 与参考图一致）
+        f"^FO340,120^A0N,36,16^FDLenght :{length_text}^FS\n"
         "^XZ\n"
     )
     return zpl.encode('utf-8')
@@ -134,22 +141,29 @@ def build_zpl(label: dict) -> bytes:
 
 def build_tspl(label: dict) -> bytes:
     """
-    构建 TSC TSPL（75mm × 25mm）。
+    构建 TSC TSPL（80mm × 26mm，5mm margin = 40dot @203dpi，总幅面 640×208 dot）。
     条码由打印机固件生成，Code128。
-    版式（C.7）：顶部条码 → 条码下方显示卷号ID → Part → Lenght + 单位，全部左对齐竖排。
+    版式（两行左右分栏，与 ZPL 坐标一致）：
+      行1（y 40~100）：左上 卷标ID 大字（TSS24 放大 2×2，48dot 高）；右上 Code128 条码（高 56dot）
+      行2（y 120~168）：左下 "Part : xxx"；右下 "Lenght :xxx"（TSS24 放大 1×2）
+    注：TSPL 点阵字库 TSS24 缩放档位有限，卷标ID 用 2×2 为可支持的最大字号（48dot≈6mm）。
     """
     coil_id = _clean_fd(label['barcode_coil'])
     part = _clean_fd(label['barcode_part'])
     length_text = _clean_fd(label['length_text'])
 
     tsp = (
-        "SIZE 75 mm,25 mm\n"
+        "SIZE 80 mm,26 mm\n"
         "GAP 2 mm,0\n"
         "CLS\n"
-        f'BARCODE 20,15,"128",45,1,0,2,2,"{coil_id}"\n'   # 顶部条码 Code128（紧凑）
-        f'TEXT 20,70,"TSS24.BF2",0,2,2,"{coil_id}"\n'    # 条码正下方：卷号文字
-        f'TEXT 20,110,"TSS24.BF2",0,2,2,"Part : {part}"\n'  # Part
-        f'TEXT 20,150,"TSS24.BF2",0,2,2,"Lenght :{length_text}"\n'  # Lenght
+        # 行1 右上：Code128 条码（内容 = 卷标ID，高 56dot≈7mm，不显示可读字符）
+        f'BARCODE 340,40,"128",56,0,0,2,2,"{coil_id}"\n'
+        # 行1 左上：卷标ID 大字（字体最大、加粗）
+        f'TEXT 40,44,"TSS24.BF2",0,2,2,"{coil_id}"\n'
+        # 行2 左下：Part
+        f'TEXT 40,120,"TSS24.BF2",0,1,2,"Part : {part}"\n'
+        # 行2 右下：Lenght（"Lenght :" 与参考图一致）
+        f'TEXT 340,120,"TSS24.BF2",0,1,2,"Lenght :{length_text}"\n'
         "PRINT 1\n"
     )
     return tsp.encode('utf-8')
@@ -183,7 +197,7 @@ def _barcode_image(data: str):
 # ================= GDI 通道（win32ui 驱动绘制，通用） =================
 
 def _gdi_print(printer_name: str, label: dict) -> None:
-    """通过 Windows 打印驱动 GDI 绘制标签（75mm × 25mm）"""
+    """通过 Windows 打印驱动 GDI 绘制标签（80mm × 26mm，5mm margin）"""
     if not _HAS_WIN32UI:
         raise RuntimeError('当前环境缺少 pywin32（win32ui），无法 GDI 打印')
     if not _HAS_PIL:
@@ -192,7 +206,7 @@ def _gdi_print(printer_name: str, label: dict) -> None:
     dc = win32ui.CreateDC()
     dc.CreatePrinterDC(printer_name)
 
-    # 尝试设置自定义纸型 75mm×25mm（best-effort，失败则用驱动默认纸型）
+    # 尝试设置自定义纸型 80mm×26mm（best-effort，失败则用驱动默认纸型）
     _set_custom_paper(dc, printer_name, LABEL_WIDTH_MM, LABEL_HEIGHT_MM)
 
     dpi_x = dc.GetDeviceCaps(88)   # LOGPIXELSX
@@ -220,44 +234,48 @@ def _gdi_print(printer_name: str, label: dict) -> None:
         # 白底（FillRect 需要 PyCBrush 对象，不能传句柄）
         dc.FillRect((0, 0, width_px, height_px), white_brush)
 
-        # 字体（标题 = 卷号/Part、正文 = Lenght）
+        # 字体（80×26mm 两行分栏，字号相对 4 行旧版式放大）
+        #   title_font：行1 卷标ID 大字（最大、加粗，高 6mm）
+        #   text_font ：行2 Part/Lenght（高 3.8mm）
         title_font = win32ui.CreateFont({
-            'name': 'Arial', 'height': mm_y(3.2), 'weight': 700, 'charset': 1,
+            'name': 'Arial', 'height': mm_y(6.0), 'weight': 700, 'charset': 1,
         })
         text_font = win32ui.CreateFont({
-            'name': 'Arial', 'height': mm_y(2.6), 'weight': 400, 'charset': 1,
+            'name': 'Arial', 'height': mm_y(3.8), 'weight': 600, 'charset': 1,
         })
 
         coil_id = label['barcode_coil']
         part = label['barcode_part']
 
-        # 版式（左对齐竖排，与前端预览/ZPL 一致）：
-        #   顶部条码 → 条码下方卷号 → Part : xxx → Lenght : xxx
-        # 第1行：顶部 Code128 条码（紧凑，高度约 9mm，左对齐占 2~50mm 宽）
-        barcode_top = mm_y(2)
-        barcode_height = mm_y(9)
-        barcode_w = mm_x(48)
+        # 版式（5mm margin：x/y 均从 5mm 起，可用 x 5~75、y 5~21）：
+        #   行1（y 5~13）：左上 卷标ID 大字；右上 Code128 条码（高 8mm）
+        #   行2（y ~15）：左下 "Part : xxx"；右下 "Lenght :xxx"
+        # 行1 右上：Code128 条码位图（右栏 x 42~70mm）
+        barcode_top = mm_y(5)
+        barcode_height = mm_y(8)
+        barcode_left = mm_x(42)
+        barcode_w = mm_x(28)
         img1 = _barcode_image(coil_id)
 
         if img1:
             # draw(hdc, destRect, srcRect)：win32ui 的 Dib.draw 需 3 个参数（新版 pywin32 强制）
             ImageWin.Dib(img1).draw(dc.GetHandleOutput(),
-                                    (mm_x(2), barcode_top, mm_x(2) + barcode_w, barcode_top + barcode_height),
+                                    (barcode_left, barcode_top,
+                                     barcode_left + barcode_w, barcode_top + barcode_height),
                                     (0, 0, img1.size[0], img1.size[1]))
         else:
-            dc.FillRect((mm_x(2), barcode_top, mm_x(2) + barcode_w, barcode_top + barcode_height),
+            dc.FillRect((barcode_left, barcode_top,
+                         barcode_left + barcode_w, barcode_top + barcode_height),
                         black_brush)
 
-        # 第2行：条码正下方显示卷号ID（加粗）
+        # 行1 左上：卷标ID 大字（最大字号、加粗）
         dc.SelectObject(title_font)
-        dc.TextOut(mm_x(2), mm_y(12), f'{coil_id}')
+        dc.TextOut(mm_x(5), mm_y(5), f'{coil_id}')
 
-        # 第3行：Part
+        # 行2：左下 Part、右下 Lenght（与行1 大字不重叠）
         dc.SelectObject(text_font)
-        dc.TextOut(mm_x(2), mm_y(17), f'Part : {part}')
-
-        # 第4行：Lenght
-        dc.TextOut(mm_x(2), mm_y(21), f'Lenght :{label["length_text"]}')
+        dc.TextOut(mm_x(5), mm_y(15), f'Part : {part}')
+        dc.TextOut(mm_x(40), mm_y(15), f'Lenght :{label["length_text"]}')
 
         dc.EndPage()
         dc.EndDoc()
