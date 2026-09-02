@@ -18,14 +18,16 @@
 标签版式（80mm × 26mm，5mm margin，内容右缘 600dot / 75mm）：
   ┌────────────────────────────────────────────┐
   │ ······ 5mm margin ······                  │
-  │           始（期初半卷）                    │  右上角标：期初半卷「始」，放大（ZPL/TSPL y28、GDI y3.5mm）
-  │ 260814001(大字)                            │  行1：左上=卷标ID(大字)
-  │         ▆▆▆▆▆▆▆▆ 条码Code128 ▆▆▆▆▆▆▆▆▆    │  条码区：Code128 右对齐贴右 margin（x380→右缘 ~582/72.5mm）
-  │ Part : A080507      Lenght : 10 FT         │  行2：左下=Part | 右下=Lenght（左缘对齐条码 x380/47.5mm）
-  │ ······ 5mm margin ······                  │
+  │ Coil ID: 260828001   ▆▆▆▆▆▆▆▆ 条码 Code128│  行1带（顶 y40）：左=文字(带前缀) 右=Code128，文字/条码顶对齐同带
+  │                        （角标「始」位于条码正上方 y16~40）│
+  │ ············· 5mm 空白 ·············      │  行1带底(y84) → 行2文字顶(y124) = 5mm 空白
+  │ Part : A080507        Lenght : 10 FT      │  行2：左下=Part | 右下=Lenght（左缘对齐条码 x380/47.5mm）
+  │ ······ 底部边距 ≥3.75mm ······            │
   └────────────────────────────────────────────┘
-  期初半卷角标：仅 is_initial_half=1 时打印，置于右上角、条码上方（不覆盖条码、不出右 margin）；
-  扫码枪读条码不受影响。
+  字号：Coil ID 前缀 / Part / Lenght 同一字号 24dot(3mm)、全部加粗，
+        ZPL A0N 24/12 = TSPL TSS24.BF2 1×1 = GDI 3.0mm = 预览 12px，各通道比例一致。
+  条码：下方不印可读卷号（ZPL interpret line=N、TSPL readable=0、GDI 不绘制文字、预览 displayValue=false）。
+  期初半卷角标：仅 is_initial_half=1 时打印，位于条码正上方右上（不覆盖条码、不出纸边）。
 """
 import io
 import logging
@@ -122,12 +124,13 @@ def build_zpl(label: dict) -> bytes:
     构建 Zebra ZPL（203dpi：80mm ≈ 640dot，26mm ≈ 208dot，5mm margin ≈ 40dot）。
     条码由打印机固件生成，Code128（9 位卷号实测约 202dot 宽）。
     版式（可用区右缘 x600 = 5mm 右 margin）：
-      行1（y 40~80）：左上 卷标ID 大字（A0N 32/16，高≈4mm）
-      右上角标（y 28~76）：期初半卷「始」（A@N 48/48，放大，右缘贴 x600）
-      条码区（y 84~128）：Code128 右对齐贴右缘（^FO380 + 约 202dot → 右缘 ~582 ≤ 600）
-      行2（y 136~172）：左下 "Part : xxx"；右下 "Lenght :xxx"（左缘对齐条码 ^FO380）
-    期初半卷：角标位于条码上方右上角，不与条码重叠（角标底 y76 < 条码顶 y84）；
-             若 Zebra 未内置 E:ARIALUNI.TTF 中文字体，请改用 GDI/gateway 通道打印含角标的标签。
+      行1带（y40 顶对齐，带底=条码底 y84）：
+        左： "Coil ID: <卷号>"（前缀+9位≈18字符 × A0N 24/12 ≈216dot，右缘 ~256 < 条码 x380）
+        右： Code128 条码 ^FO380,40 高 44dot（interpret line=N，条码下方不印卷号；右缘 ~582 ≤ 600）
+      5mm 空白（40dot）：行1带底 y84 → 行2文字顶 y124
+      行2（y124）：左下 "Part : xxx" | 右下 "Lenght :xxx"（左缘对齐条码 x380；同字号 A0N 24/12）
+    所有文字（前缀 / Part / Lenght）同字号同比例；期初半卷角标（y16~40，右缘贴 x600）在条码正上方，
+    不与条码重叠、不出纸边。
     """
     coil_id = _clean_fd(label['barcode_coil'])
     part = _clean_fd(label['barcode_part'])
@@ -135,17 +138,17 @@ def build_zpl(label: dict) -> bytes:
 
     zpl = "^XA\n^PW640^LL208^LH0,0\n"
     if label.get('is_initial_half'):
-        # 行1 右上：期初半卷「始」角标（放大 48×48，右缘 552+48=600 贴右 margin，位于条码上方 y 28~76）
-        zpl += "^FO552,28^A@N,48,48,E:ARIALUNI.TTF^CI28^FD始^FS\n"
+        # 期初半卷「始」角标：行1 右上、条码正上方 y16~40，右缘 x576+24=600 贴内容右缘（不覆盖 y40 起的条码）
+        zpl += "^FO576,16^A@N,24,24,E:ARIALUNI.TTF^CI28^FD始^FS\n"
     zpl += (
-        # 条码区：Code128 右对齐贴右缘（内容 = 卷标ID，高 44dot≈5.5mm，y 84~128；右缘 ~582 ≤ 600）
-        f"^FO380,84^BCN,44,Y,N,N^FD{coil_id}^FS\n"
-        # 行1 左上：卷标ID 大字（9 位 A0N 32/16 高≈4mm，右缘 ~184dot，与条码 x380 留足间距）
-        f"^FO40,44^A0N,32,16^FD{coil_id}^FS\n"
-        # 行2 左下：Part（y132，底缘 ~168 = 21mm，保留 5mm 底 margin）
-        f"^FO40,132^A0N,36,18^FDPart : {part}^FS\n"
+        # 行1 右：Code128 条码（内容 = 卷标ID；与行1文字同排，顶 y40，高 44dot → 带底 y84；interpret=N 不印可读行）
+        f"^FO380,40^BCN,44,N,N,N^FD{coil_id}^FS\n"
+        # 行1 左：Coil ID 前缀文字（A0N 24/12，顶部与条码 y40 对齐同一水平带）
+        f"^FO40,40^A0N,24,12^FDCoil ID: {coil_id}^FS\n"
+        # 行2 左下：Part（y124 = 行1带底 y84 + 5mm 空白 40dot；与行1文字同字号）
+        f"^FO40,124^A0N,24,12^FDPart : {part}^FS\n"
         # 行2 右下：Lenght（"Lenght :" 与参考图一致；左缘对齐条码左缘 x380）
-        f"^FO380,132^A0N,36,16^FDLenght :{length_text}^FS\n"
+        f"^FO380,124^A0N,24,12^FDLenght :{length_text}^FS\n"
         "^XZ\n"
     )
     return zpl.encode('utf-8')
@@ -156,11 +159,13 @@ def build_tspl(label: dict) -> bytes:
     构建 TSC TSPL（80mm × 26mm，5mm margin = 40dot @203dpi，总幅面 640×208 dot）。
     条码由打印机固件生成，Code128（9 位卷号实测约 202dot 宽）。
     版式（与 ZPL 坐标一致，可用区右缘 x600 = 5mm 右 margin）：
-      行1（y 40~80）：左上 卷标ID（TSS24 原尺寸 1×1，24dot 高）
-      右上角标（y 28~76）：期初半卷「始」（TSS24.BF2 简体中文字库，0,2,2 放大至约 48dot）
-      条码区（y 84~128）：Code128 右对齐贴右缘（x380 + 约 202dot → 右缘 ~582 ≤ 600）
-      行2（y 132~180）：左下 "Part : xxx"；右下 "Lenght :xxx"（TSS24 1×2，左缘对齐条码 x380）
-    期初半卷：角标位于条码上方右上角，不与条码重叠（角标底 y76 < 条码顶 y84）。
+      行1带（y40 顶对齐，带底=条码底 y84）：
+        左： "Coil ID: <卷号>"（TSS24.BF2 1×1 = 24dot 高，右缘 ~256 < 条码 x380）
+        右： Code128 条码 BARCODE 380,40 高 44dot（readable=0，条码下方不印卷号；右缘 ~582 ≤ 600）
+      5mm 空白（40dot）：行1带底 y84 → 行2文字顶 y124
+      行2（y124）：左下 "Part : xxx" | 右下 "Lenght :xxx"（左缘对齐条码 x380；同字号 TSS24.BF2 1×1）
+    所有文字（前缀 / Part / Lenght）同字号（24dot = TSS24 原尺寸）同视觉；
+    期初半卷角标（y16~40，右缘贴 x600）在条码正上方，不与条码重叠、不出纸边。
     """
     coil_id = _clean_fd(label['barcode_coil'])
     part = _clean_fd(label['barcode_part'])
@@ -172,17 +177,17 @@ def build_tspl(label: dict) -> bytes:
         "CLS\n"
     )
     if label.get('is_initial_half'):
-        # 行1 右上：期初半卷「始」角标（0,2,2 横纵均放大约 48dot，右缘 552+48=600，位于条码上方 y 28~76）
-        tsp += f'TEXT 552,28,"TSS24.BF2",0,2,2,"始"\n'
+        # 期初半卷「始」角标：行1 右上、条码正上方 y16~40，x576 起 24×24（右缘 600，不覆盖 y40 起的条码）
+        tsp += f'TEXT 576,16,"TSS24.BF2",0,1,1,"始"\n'
     tsp += (
-        # 条码区：Code128 右对齐贴右缘（内容 = 卷标ID，高 44dot≈5.5mm，y 84~128）
-        f'BARCODE 380,84,"128",44,0,0,2,2,"{coil_id}"\n'
-        # 行1 左上：卷标ID 文字（1×1 不放大，控制占宽，避免与条码重叠）
-        f'TEXT 40,44,"TSS24.BF2",0,1,1,"{coil_id}"\n'
-        # 行2 左下：Part
-        f'TEXT 40,132,"TSS24.BF2",0,1,2,"Part : {part}"\n'
+        # 行1 右：Code128 条码（内容 = 卷标ID；与行1文字同排，顶 y40，高 44dot → 带底 y84；readable=0 不印可读行）
+        f'BARCODE 380,40,"128",44,0,0,2,2,"{coil_id}"\n'
+        # 行1 左：Coil ID 前缀文字（TSS24.BF2 1×1=24dot，顶部与条码 y40 对齐同一水平带）
+        f'TEXT 40,40,"TSS24.BF2",0,1,1,"Coil ID: {coil_id}"\n'
+        # 行2 左下：Part（y124 = 行1带底 y84 + 5mm 空白 40dot；与行1文字同字号）
+        f'TEXT 40,124,"TSS24.BF2",0,1,1,"Part : {part}"\n'
         # 行2 右下：Lenght（"Lenght :" 与参考图一致；左缘对齐条码左缘 x380）
-        f'TEXT 380,132,"TSS24.BF2",0,1,2,"Lenght :{length_text}"\n'
+        f'TEXT 380,124,"TSS24.BF2",0,1,1,"Lenght :{length_text}"\n'
         "PRINT 1\n"
     )
     return tsp.encode('utf-8')
@@ -253,30 +258,23 @@ def _gdi_print(printer_name: str, label: dict) -> None:
         # 白底（FillRect 需要 PyCBrush 对象，不能传句柄）
         dc.FillRect((0, 0, width_px, height_px), white_brush)
 
-        # 字体（80×26mm，与 ZPL/TSPL 版式一致）
-        #   title_font ：行1 卷标ID（高 4mm、加粗；9 位不右溢到条码）
-        #   badge_font ：期初半卷「始」角标（高 6mm、加粗，放大）
-        #   text_font  ：行2 Part/Lenght（高 3.8mm）
-        title_font = win32ui.CreateFont({
-            'name': 'Arial', 'height': mm_y(4.0), 'weight': 700, 'charset': 1,
-        })
-        badge_font = win32ui.CreateFont({
-            'name': 'Arial', 'height': mm_y(6.0), 'weight': 700, 'charset': 1,
-        })
-        text_font = win32ui.CreateFont({
-            'name': 'Arial', 'height': mm_y(3.8), 'weight': 600, 'charset': 1,
+        # 字体（80×26mm，与 ZPL/TSPL 版式一致：Coil ID 前缀 / Part / Lenght 同一字号 3.0mm=24dot、全部加粗）
+        #   行1 文字与行2 文字同一 label_font；角标「始」同字号，置于条码正上方
+        label_font = win32ui.CreateFont({
+            'name': 'Arial', 'height': mm_y(3.0), 'weight': 700, 'charset': 1,
         })
 
         coil_id = label['barcode_coil']
         part = label['barcode_part']
 
         # 版式（右缘 5mm margin = 75mm，与 ZPL/TSPL 坐标一致）：
-        #   行1 左上：卷标ID 大字（x5mm y5.5mm）
-        #   右上角标：期初半卷「始」（放大 6mm 高，x69mm y3.5mm，位于条码上方，右缘 ~75mm）
-        #   条码区  ：Code128 位图右对齐贴右缘（x47.5~72.5mm，y10.5~16mm）
-        #   行2     ：左下 "Part : xxx"（x5mm y16.5mm）；右下 "Lenght :xxx"（x47.5mm，对齐条码左缘）
-        # 期初半卷角标：位于条码上方右上角，不与条码重叠（角标底 ~9.5mm < 条码顶 10.5mm）。
-        barcode_top = mm_y(10.5)
+        #   行1 带（y5mm 顶对齐，带底=条码底 10.5mm）：
+        #     左： "Coil ID: <卷号>"（x5mm y5mm，顶部与条码同带）
+        #     右： Code128 位图（x47.5~72.5mm，y5~10.5mm；位图不含可读文字）
+        #     角标：期初半卷「始」（x72mm y2mm，条码正上方，右缘 ~75mm）
+        #   5mm 空白（40dot）：条码底 10.5mm → 行2 文字顶 15.5mm（=124dot）
+        #   行2 ：左下 "Part : xxx"（x5mm y15.5mm）；右下 "Lenght :xxx"（x47.5mm，左缘对齐条码左缘）
+        barcode_top = mm_y(5.0)
         barcode_height = mm_y(5.5)
         barcode_left = mm_x(47.5)
         barcode_w = mm_x(25)  # 右缘 = 47.5 + 25 = 72.5mm ≤ 75mm
@@ -293,19 +291,18 @@ def _gdi_print(printer_name: str, label: dict) -> None:
                          barcode_left + barcode_w, barcode_top + barcode_height),
                         black_brush)
 
-        # 期初半卷「始」角标：右上（放大 6mm 高；先画在条码上方，随后画 ID，避免被覆盖）
+        dc.SelectObject(label_font)
+
+        # 期初半卷「始」角标：条码正上方（y2mm，高 3mm → 底 5mm = 条码顶），贴右缘 x72mm
         if label.get('is_initial_half'):
-            dc.SelectObject(badge_font)
-            dc.TextOut(mm_x(69), mm_y(3.5), '始')
+            dc.TextOut(mm_x(72), mm_y(2.0), '始')
 
-        # 行1 左上：卷标ID 大字（最大字号、加粗）
-        dc.SelectObject(title_font)
-        dc.TextOut(mm_x(5), mm_y(5.5), f'{coil_id}')
+        # 行1 左：Coil ID 前缀文字（顶部 y5mm 与条码同带）
+        dc.TextOut(mm_x(5), mm_y(5.0), f'Coil ID: {coil_id}')
 
-        # 行2：左下 Part、右下 Lenght（Lenght 左缘对齐条码左缘 x47.5mm）
-        dc.SelectObject(text_font)
-        dc.TextOut(mm_x(5), mm_y(16.5), f'Part : {part}')
-        dc.TextOut(mm_x(47.5), mm_y(16.5), f'Lenght :{label["length_text"]}')
+        # 行2：左下 Part、右下 Lenght（y15.5mm = 行1 带底 10.5mm + 5mm 空白；Lenght 左缘对齐条码左缘 x47.5mm）
+        dc.TextOut(mm_x(5), mm_y(15.5), f'Part : {part}')
+        dc.TextOut(mm_x(47.5), mm_y(15.5), f'Lenght :{label["length_text"]}')
 
         dc.EndPage()
         dc.EndDoc()

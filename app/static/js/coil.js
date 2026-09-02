@@ -546,20 +546,20 @@ function renderLabelPreview(coil) {
     box.style.border = '1px dashed #999';
     box.style.position = 'relative';
     box.style.background = '#fff';
-    // 与 ZPL/TSPL/GDI 版式一致（80×26mm → 320×104px，右 margin 5mm=20px → 内容右缘 300px）：
-    //   行1 左上：卷标ID 大字（x20 y22，9 位约占 20~115px）
-    //   右上角标：期初半卷「始」（放大 18px bold，right:20 贴 300px 右缘，位于条码上方 y14）
-    //   条码区  ：Code128 右对齐贴 300px（渲染后动态算 left = 300 − 条码宽），y42 高 22
-    //   行2     ：左下 Part : xxx（y66）| 右下 Lenght :xxx（left 与条码左缘对齐）
+    // 与 ZPL/TSPL/GDI 版式一致（80×26mm → 320×104px，4px/mm，右 margin 5mm=20px → 内容右缘 300px）：
+    //   行1带顶（y40dot→20px）：左="Coil ID: <id>"（12px bold，顶部与条码对齐）；右=Code128（高 44dot→22px，条码底 42px）
+    //   5mm 空白（40dot→20px）：条码底 42px → 行2 文字顶 62px
+    //   行2：左=Part（62px）| 右=Lenght（左缘与条码左缘对齐），文字同 12px bold
+    //   角标「始」：期初半卷时在条码正上方（y16dot→8px，右缘贴 300px，底=条码顶 20px）
     const initialBadge = coil.is_initial_half
-        ? '<div style="position:absolute;right:20px;top:14px;font-size:18px;font-weight:bold;">始</div>'
+        ? '<div style="position:absolute;right:20px;top:8px;font-size:12px;font-weight:bold;">始</div>'
         : '';
     box.innerHTML = `
-        <div style="position:absolute;left:20px;top:22px;font-size:18px;font-weight:bold;white-space:nowrap;">${escapeHtml(coilId)}</div>
+        <div style="position:absolute;left:20px;top:20px;font-size:12px;font-weight:bold;white-space:nowrap;">Coil ID: ${escapeHtml(coilId)}</div>
         ${initialBadge}
-        <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:42px;height:22px;"></svg>
-        <div style="position:absolute;left:20px;top:66px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
-        <div id="previewLenghtText" style="position:absolute;left:170px;top:66px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
+        <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:20px;height:22px;"></svg>
+        <div style="position:absolute;left:20px;top:62px;font-size:12px;font-weight:bold;white-space:nowrap;">Part : ${escapeHtml(part)}</div>
+        <div id="previewLenghtText" style="position:absolute;left:170px;top:62px;font-size:12px;font-weight:bold;white-space:nowrap;">Lenght :${escapeHtml(lengthText)}</div>
     `;
     if (window.JsBarcode) {
         try {
