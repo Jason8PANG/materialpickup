@@ -36,7 +36,7 @@
                         </ul>
                     </li>
                     {% endif %}
-                    {% if session.user.role in ['requester', 'admin', 'me_engineer'] %}
+                    {% if session.user.role in ['requester', 'admin', 'me_engineer', 'warehouse'] %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="fas fa-tasks me-1"></i><span data-i18n="nav.wire">线材管理</span>
@@ -45,6 +45,11 @@
                             <li><a class="dropdown-item" href="/wire/coils"><i class="fas fa-tags me-2"></i><span data-i18n="nav.wire_coils">卷标查询</span></a></li>
                             <li><a class="dropdown-item" href="/wire/consumption"><i class="fas fa-chart-line me-2"></i><span data-i18n="nav.wire_consumption">线材消耗查询</span></a></li>
                             <li><a class="dropdown-item" href="/wire/count"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.wire_count">线材库存盘点</span></a></li>
+                            {% if session.user.role in ['warehouse', 'admin'] %}
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="/return/review"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.return_review">退料复核</span></a></li>
+                            <li><a class="dropdown-item" href="/wire/adjust"><i class="fas fa-exchange-alt me-2"></i><span data-i18n="nav.wire_adjust">盘点差异调整</span></a></li>
+                            {% endif %}
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="/cutting/specs"><i class="fas fa-cut me-2"></i><span data-i18n="nav.cutting_specs">裁线规格管理</span></a></li>
                         </ul>
@@ -53,16 +58,6 @@
                     {% if session.user.role in ['warehouse', 'admin'] %}
                     <li class="nav-item">
                         <a class="nav-link" href="/pending"><i class="fas fa-list me-1"></i><span data-i18n="nav.pending">待处理</span></a>
-                    </li>
-                    {% endif %}
-                    {% if session.user.role in ['warehouse', 'admin'] %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="/return/review"><i class="fas fa-clipboard-check me-1"></i><span data-i18n="nav.return_review">退料复核</span></a>
-                    </li>
-                    {% endif %}
-                    {% if session.user.role in ['warehouse', 'admin'] %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="/wire/adjust"><i class="fas fa-exchange-alt me-1"></i><span data-i18n="nav.wire_adjust">盘点差异调整</span></a>
                     </li>
                     {% endif %}
                     <li class="nav-item">
