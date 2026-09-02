@@ -575,3 +575,127 @@ def review_coil_reject(coil_id):
         cur.close()
 
     return jsonify({'success': True, 'message': '已记录不予退料，卷标状态保持不变'})
+
+
+# ================= 6. 退料明细维护原因 + 申请人签字确认（详情页） =================
+
+@return_bp.route('/api/returns/<int:return_id>/note', methods=['PUT'])
+def update_return_note(return_id):
+    """维护退料明细异常原因（仅非已复核行可维护，note 允许空串清空）"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    if user['role'] not in ('requester', 'warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    data = request.get_json() or {}
+    coil_id = str(data.get('coil_id') or '').strip()
+    note = data.get('note')
+    note = str(note).strip() if note is not None else ''
+
+    if not coil_id:
+        return jsonify({'success': False, 'message': '缺少卷标ID'}), 400
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT * FROM kr_material_request WHERE id = %s AND is_deleted = 0",
+            (return_id,)
+        )
+        req = cur.fetchone()
+        if not req:
+            cur.close()
+            return jsonify({'success': False, 'message': '退料单不存在'}), 404
+        if req['request_type'] != 'return':
+            cur.close()
+            return jsonify({'success': False, 'message': '该单据不是退料单'}), 400
+        site_filter, site_params = get_site_filter(user)
+        if site_filter and req['siteref'] != site_params[0]:
+            cur.close()
+            return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
+
+        cur.execute(
+            "SELECT review_status FROM kr_return_item WHERE request_id = %s AND coil_id = %s",
+            (return_id, coil_id)
+        )
+        item = cur.fetchone()
+        if not item:
+            cur.close()
+            return jsonify({'success': False, 'message': '该卷标不在退料清单中'}), 400
+        if item['review_status'] == 'confirmed':
+            cur.close()
+            return jsonify({'success': False, 'message': '已复核的卷标不可维护异常原因'}), 400
+
+        now = datetime.now()
+        cur.execute(
+            "UPDATE kr_return_item SET review_note = %s WHERE request_id = %s AND coil_id = %s",
+            (note, return_id, coil_id)
+        )
+        cur.execute(
+            "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
+            "VALUES (%s, %s, 'RETURN_NOTE_UPDATE', %s, %s, %s)",
+            (return_id, user['username'], f"维护退料明细 {coil_id} 异常原因: {note or '(清空)'}",
+             request.remote_addr, now)
+        )
+        db.commit()
+        cur.close()
+
+    return jsonify({'success': True, 'message': '维护原因已保存'})
+
+
+@return_bp.route('/api/returns/<int:return_id>/sign', methods=['POST'])
+def sign_return(return_id):
+    """申请人签字确认退料交接：confirmed → completed"""
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    if user['role'] not in ('requester', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    data = request.get_json() or {}
+    signature_data = data.get('signature_data') or ''
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT * FROM kr_material_request WHERE id = %s AND is_deleted = 0",
+            (return_id,)
+        )
+        req = cur.fetchone()
+        if not req:
+            cur.close()
+            return jsonify({'success': False, 'message': '退料单不存在'}), 404
+        if req['request_type'] != 'return':
+            cur.close()
+            return jsonify({'success': False, 'message': '该单据不是退料单'}), 400
+        if req['status'] != 'confirmed':
+            cur.close()
+            return jsonify({'success': False, 'message': '当前状态不允许签字确认'}), 400
+        site_filter, site_params = get_site_filter(user)
+        if site_filter and req['siteref'] != site_params[0]:
+            cur.close()
+            return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
+
+        # 前置：所有明细均已复核（无 review_status IS NULL）
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s AND review_status IS NULL",
+            (return_id,)
+        )
+        if cur.fetchone()['n'] > 0:
+            cur.close()
+            return jsonify({'success': False, 'message': '退料清单尚有未复核卷标，暂不能签字确认'}), 400
+
+        now = datetime.now()
+        cur.execute(
+            "UPDATE kr_material_request SET status = 'completed', signer = %s, sign_time = %s, signature_data = %s WHERE id = %s",
+            (user['username'], now, signature_data, return_id)
+        )
+        cur.execute(
+            "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
+            "VALUES (%s, %s, 'RETURN_SIGN', %s, %s, %s)",
+            (return_id, user['username'], '申请人签字确认退料交接', request.remote_addr, now)
+        )
+        db.commit()
+        cur.close()
+
+    return jsonify({'success': True, 'message': '退料交接已签字确认'})

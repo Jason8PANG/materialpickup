@@ -362,13 +362,14 @@ def check_print_environment() -> dict:
 
 # ================= 对外统一接口 =================
 
-def print_labels(coils: list[dict], printer_name: str = None) -> dict:
+def print_labels(coils: list[dict], printer_name: str = None, channel: str = None) -> dict:
     """
     打印一批线卷标签。
 
     Args:
         coils: 线卷记录 dict 列表，每项含 coil_id / part_number / coil_length / unit
         printer_name: 目标打印机；为空则取 Config.LABEL_PRINTER_NAME 或系统默认打印机
+        channel: 打印通道；为空则取 Config.LABEL_PRINT_CHANNEL 或 'gdi'
 
     Returns:
         {
@@ -388,7 +389,7 @@ def print_labels(coils: list[dict], printer_name: str = None) -> dict:
         return {'printed': 0, 'errors': ['没有需要打印的标签'], 'success': False}
 
     gateway = (Config.LABEL_PRINT_GATEWAY_URL or '').strip()
-    channel = (Config.LABEL_PRINT_CHANNEL or 'gdi').lower()
+    channel = (channel or Config.LABEL_PRINT_CHANNEL or 'gdi').lower()
 
     # 网关通道：一次性批量转发
     if gateway:

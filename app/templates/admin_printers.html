@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}打印机配置 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-print me-2 text-primary"></i><span data-i18n="nav.site_printers">打印机配置</span></h5>
+        <button class="btn btn-primary btn-sm" onclick="showAddModal()">
+            <i class="fas fa-plus me-1"></i><span data-i18n="printers.add">新增</span>
+        </button>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover table-bordered">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:60px">ID</th>
+                        <th data-i18n="printers.site">站点</th>
+                        <th data-i18n="printers.printer_name">打印机名</th>
+                        <th data-i18n="printers.channel">通道</th>
+                        <th data-i18n="printers.remark">备注</th>
+                        <th style="width:140px" data-i18n="admin.col_actions">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="printerTableBody">
+                    <tr><td colspan="6" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 新增/编辑弹窗 -->
+<div class="modal fade" id="printerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="printerModalTitle" data-i18n="printers.add">新增打印机</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId" value="">
+                <div class="mb-3">
+                    <label class="form-label" data-i18n="printers.site">站点 <span class="text-danger">*</span></label>
+                    <select class="form-select" id="fSiteref">
+                        {% for ref, name in sites.items() %}
+                        <option value="{{ ref }}">{{ name }} ({{ ref }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" data-i18n="printers.printer_name">打印机名 <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="fPrinterName" placeholder="Windows 打印机名/共享路径">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" data-i18n="printers.channel">打印通道</label>
+                    <select class="form-select" id="fChannel">
+                        <option value="gdi" data-i18n="printers.channel_gdi">GDI 驱动打印</option>
+                        <option value="raw_zpl" data-i18n="printers.channel_zpl">RAW 直发 ZPL（Zebra）</option>
+                        <option value="raw_tspl" data-i18n="printers.channel_tspl">RAW 直发 TSPL（TSC）</option>
+                        <option value="gateway" data-i18n="printers.channel_gateway">打印网关（gateway）</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" data-i18n="printers.remark">备注</label>
+                    <input type="text" class="form-control" id="fRemark">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="savePrinterBtn" data-i18n="common.save">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const CHANNELS = ['gdi', 'raw_zpl', 'raw_tspl', 'gateway'];
+
+function channelLabel(ch) {
+    return __('printers.channel_' + (ch === 'raw_zpl' ? 'zpl' : (ch === 'raw_tspl' ? 'tspl' : (ch === 'gateway' ? 'gateway' : 'gdi'))));
+}
+
+function loadPrinters() {
+    apiGet('/api/site-printers', function (resp) {
+        const tbody = document.getElementById('printerTableBody');
+        const rows = resp.data || [];
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted" data-i18n="common.no_data">暂无数据</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(function (p) {
+            return '<tr>' +
+                '<td>' + p.id + '</td>' +
+                '<td>' + escapeHtml(p.siteref) + '</td>' +
+                '<td>' + escapeHtml(p.printer_name) + '</td>' +
+                '<td><span class="badge bg-info">' + escapeHtml(channelLabel(p.channel)) + '</span></td>' +
+                '<td>' + escapeHtml(p.remark || '-') + '</td>' +
+                '<td class="text-center">' +
+                    '<button class="btn btn-sm btn-outline-primary me-1" onclick="showEditModal(' + p.id + ', \'' + escapeHtml(p.siteref) + '\', \'' + escapeHtml(p.printer_name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(p.channel) + '\', \'' + escapeHtml(p.remark || '').replace(/'/g, "\\'") + '\')" title="' + __('printers.edit') + '"><i class="fas fa-edit"></i></button>' +
+                    '<button class="btn btn-sm btn-outline-danger" onclick="deletePrinter(' + p.id + ')" title="' + __('printers.delete') + '"><i class="fas fa-trash"></i></button>' +
+                '</td>' +
+                '</tr>';
+        }).join('');
+    }, function (err) {
+        document.getElementById('printerTableBody').innerHTML =
+            '<tr><td colspan="6" class="text-center text-danger">' + (err.message || '加载失败') + '</td></tr>';
+    });
+}
+
+function showAddModal() {
+    document.getElementById('editId').value = '';
+    document.getElementById('printerModalTitle').textContent = __('printers.add');
+    document.getElementById('fSiteref').value = '';
+    document.getElementById('fPrinterName').value = '';
+    document.getElementById('fChannel').value = 'gdi';
+    document.getElementById('fRemark').value = '';
+    new bootstrap.Modal(document.getElementById('printerModal')).show();
+}
+
+function showEditModal(id, siteref, printerName, channel, remark) {
+    document.getElementById('editId').value = id;
+    document.getElementById('printerModalTitle').textContent = __('printers.edit');
+    document.getElementById('fSiteref').value = siteref;
+    document.getElementById('fPrinterName').value = printerName;
+    document.getElementById('fChannel').value = channel;
+    document.getElementById('fRemark').value = remark;
+    new bootstrap.Modal(document.getElementById('printerModal')).show();
+}
+
+function savePrinter() {
+    const id = document.getElementById('editId').value;
+    const siteref = document.getElementById('fSiteref').value;
+    const printerName = document.getElementById('fPrinterName').value.trim();
+    const channel = document.getElementById('fChannel').value;
+    const remark = document.getElementById('fRemark').value.trim();
+    if (!printerName) {
+        showToast('error', __('printers.printer_name') + ' ' + __('common.required_fields') || '请填写打印机名');
+        return;
+    }
+    const data = {siteref: siteref, printer_name: printerName, channel: channel, remark: remark};
+    const onOk = function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        bootstrap.Modal.getInstance(document.getElementById('printerModal')).hide();
+        loadPrinters();
+    };
+    if (id) {
+        apiPut('/api/site-printers/' + id, {printer_name: printerName, channel: channel, remark: remark}, onOk,
+            function (err) { showToast('error', err.message || __('common.error')); });
+    } else {
+        apiPost('/api/site-printers', data, onOk,
+            function (err) { showToast('error', err.message || __('common.error')); });
+    }
+}
+
+function deletePrinter(id) {
+    if (!confirm(__('common.confirm') + '?')) return;
+    apiDelete('/api/site-printers/' + id, function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        loadPrinters();
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadPrinters();
+    document.getElementById('savePrinterBtn').addEventListener('click', savePrinter);
+});
+</script>
+{% endblock %}

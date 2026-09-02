@@ -453,6 +453,28 @@ def _ensure_return_item_review(conn, cursor):
         print('[OK] kr_return_item 已补充退料复核列（location/review_status/review_note/reviewed_by/reviewed_at）')
 
 
+CREATE_SITE_PRINTER = """
+CREATE TABLE IF NOT EXISTS kr_site_printer (
+  id            INT           NOT NULL AUTO_INCREMENT COMMENT '主键',
+  siteref       VARCHAR(16)   NOT NULL COMMENT '站点：310-苏州/410-槟城',
+  printer_name  VARCHAR(128)  NOT NULL COMMENT '打印机名（Windows 打印机名/共享路径）',
+  channel       VARCHAR(20)   NOT NULL DEFAULT 'gdi' COMMENT '打印通道：gdi/raw_zpl/raw_tspl/gateway',
+  remark        VARCHAR(256)  DEFAULT NULL COMMENT '备注',
+  created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_siteref (siteref)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='站点打印机配置（按站点指定打印机名与打印通道）'
+"""
+
+
+def _ensure_site_printer_table(conn, cursor):
+    """站点打印机配置表（幂等，可重复执行）"""
+    cursor.execute(CREATE_SITE_PRINTER)
+    conn.commit()
+    print('[OK] kr_site_printer 表已创建/已存在')
+
+
 def migrate():
     conn = get_connection()
     try:
@@ -492,6 +514,9 @@ def migrate():
 
         # 退料复核列（逐卷库位/复核状态/不匹配原因等）
         _ensure_return_item_review(conn, cursor)
+
+        # 站点打印机配置表（按站点指定打印机名与打印通道）
+        _ensure_site_printer_table(conn, cursor)
 
         # 校验表结构是否存在
         cursor.execute("SHOW TABLES LIKE 'kr_wire_coil'")

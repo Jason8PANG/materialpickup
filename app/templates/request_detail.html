@@ -117,11 +117,16 @@
                                     <th data-i18n="returndetail.part">物料号</th>
                                     <th data-i18n="returndetail.unit">单位</th>
                                     <th data-i18n="returndetail.remain">剩余长度</th>
+                                    <th data-i18n="returndetail.review_status">复核结果</th>
+                                    <th data-i18n="returndetail.review_note">维护原因</th>
                                 </tr>
                             </thead>
                             <tbody id="returnItemsBody">
                             </tbody>
                         </table>
+                        <!-- 申请人签字确认区 -->
+                        <div id="returnSignArea" class="p-3 border-top bg-light">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -414,17 +419,81 @@ function renderReturnItems(request) {
     const tbody = document.getElementById('returnItemsBody');
     const items = request.return_items || [];
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">' + __('returndetail.no_items') + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">' + __('returndetail.no_items') + '</td></tr>';
+    } else {
+        tbody.innerHTML = items.map(function (it) {
+            const st = it.review_status;
+            let badge = '';
+            if (st === 'confirmed') {
+                badge = '<span class="badge bg-success">' + __('returndetail.review_confirmed') + '</span>';
+            } else if (st === 'rejected') {
+                badge = '<span class="badge bg-danger">' + __('returndetail.review_rejected') + '</span>';
+            } else {
+                badge = '<span class="badge bg-secondary">' + __('returndetail.review_pending') + '</span>';
+            }
+            let noteCell = '';
+            if (st === 'confirmed') {
+                noteCell = '<td class="text-muted">-</td>';
+            } else {
+                const note = it.review_note || '';
+                noteCell = '<td>' +
+                    '<div class="d-flex gap-1 align-items-center">' +
+                    '<span id="return_note_' + escapeHtml(it.coil_id) + '" style="flex:1">' + (note ? escapeHtml(note) : '-') + '</span>' +
+                    '<button class="btn btn-sm btn-outline-primary" onclick="editReturnNote(\'' + escapeHtml(it.coil_id) + '\')" title="' + __('returndetail.edit_note') + '"><i class="fas fa-edit"></i></button>' +
+                    '</div></td>';
+            }
+            return '<tr>' +
+                '<td>' + escapeHtml(it.coil_id) + '</td>' +
+                '<td>' + escapeHtml(it.part_number || '-') + '</td>' +
+                '<td>' + escapeHtml(it.unit || '') + '</td>' +
+                '<td>' + (it.remain_length != null ? it.remain_length : '-') + '</td>' +
+                '<td>' + badge + '</td>' +
+                noteCell +
+                '</tr>';
+        }).join('');
+    }
+    renderReturnSignArea(request);
+}
+
+function renderReturnSignArea(request) {
+    const area = document.getElementById('returnSignArea');
+    if (!area) return;
+    if (request.status === 'completed') {
+        const signer = request.signer || '-';
+        const signTime = request.sign_time || '-';
+        area.innerHTML =
+            '<div class="d-flex align-items-center gap-3">' +
+            '<i class="fas fa-check-circle text-success fs-4"></i>' +
+            '<div><strong>' + __('returndetail.sign_done') + '</strong><br>' +
+            '<small class="text-muted">' + escapeHtml(signer) + ' / ' + escapeHtml(signTime) + '</small></div>' +
+            (request.signature_data ? '<img src="' + request.signature_data + '" alt="签字" style="max-height:60px;border:1px solid #ddd;border-radius:4px;padding:2px">' : '') +
+            '</div>';
         return;
     }
-    tbody.innerHTML = items.map(function (it) {
-        return '<tr>' +
-            '<td>' + escapeHtml(it.coil_id) + '</td>' +
-            '<td>' + escapeHtml(it.part_number || '-') + '</td>' +
-            '<td>' + escapeHtml(it.unit || '') + '</td>' +
-            '<td>' + (it.remain_length != null ? it.remain_length : '-') + '</td>' +
-            '</tr>';
-    }).join('');
+    const hasPending = (request.return_items || []).some(function (it) { return it.review_status == null || it.review_status === ''; });
+    if (request.status === 'confirmed' && !hasPending && (userRole === 'requester' || userRole === 'admin')) {
+        area.innerHTML =
+            '<button class="btn btn-primary" onclick="openSignaturePad(' + REQUEST_ID + ', \'return\')">' +
+            '<i class="fas fa-pen me-1"></i>' + __('returndetail.sign_confirm') + '</button>';
+        return;
+    }
+    area.innerHTML = '';
+}
+
+function editReturnNote(coilId) {
+    const span = document.getElementById('return_note_' + coilId);
+    const current = span && span.textContent !== '-' ? span.textContent : '';
+    const note = prompt(__('returndetail.edit_note') + ' (' + coilId + ')', current);
+    if (note === null) return; // 取消
+    apiPut('/api/returns/' + REQUEST_ID + '/note', {coil_id: coilId, note: note},
+        function (resp) {
+            showToast('success', resp.message || '已保存');
+            setTimeout(function () { window.location.reload(); }, 800);
+        },
+        function (err) {
+            showToast('error', err.message || '保存失败');
+        }
+    );
 }
 
 function renderItems(items) {
@@ -725,6 +794,7 @@ function showAssignWorker(requestId) {
 
 /* ========== 签字板 ========== */
 let _signatureRequestId = null;
+let _signatureApiType = 'request'; // 'request' 领料单 / 'return' 退料单
 let _sigCanvas = null;
 let _sigCtx = null;
 let _isDrawing = false;
@@ -750,8 +820,9 @@ function initSignatureCanvas() {
     _sigCanvas.ontouchend = function (e) { e.preventDefault(); _isDrawing = false; };
 }
 
-function openSignaturePad(requestId) {
+function openSignaturePad(requestId, type) {
     _signatureRequestId = requestId;
+    _signatureApiType = type || 'request';
     initSignatureCanvas();
     clearSignature();
     var modal = new bootstrap.Modal(document.getElementById('signatureModal'));
@@ -789,10 +860,13 @@ function saveSignature() {
     var sigModal = bootstrap.Modal.getInstance(document.getElementById('signatureModal'));
     if (sigModal) sigModal.hide();
 
-    // 调用 sign API 保存
-    apiPost('/api/requests/' + _signatureRequestId + '/sign', {signature_data: dataUrl},
+    // 调用 sign API 保存（领料单 / 退料单 按类型区分）
+    var signUrl = _signatureApiType === 'return'
+        ? '/api/returns/' + _signatureRequestId + '/sign'
+        : '/api/requests/' + _signatureRequestId + '/sign';
+    apiPost(signUrl, {signature_data: dataUrl},
         function (resp) {
-            showToast('success', '签字确认成功');
+            showToast('success', resp.message || '签字确认成功');
             setTimeout(function () { window.location.reload(); }, 1000);
         },
         function (err) {

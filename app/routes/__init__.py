@@ -1,5 +1,7 @@
 from flask import Blueprint, render_template, session, redirect, url_for
 
+from app.config import Config
+
 pages = Blueprint('pages', __name__)
 
 
@@ -87,8 +89,25 @@ def admin_mappings_page():
     return render_template('admin_mappings.html')
 
 
+@pages.route('/admin/printers')
+def admin_printers_page():
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    user = session['user']
+    if user['role'] != 'admin':
+        return '权限不足', 403
+    return render_template('admin_printers.html', sites=Config.SITE_CONFIG)
+
+
 @pages.route('/records')
 def records_page():
     if not session.get('user'):
         return redirect(url_for('pages.login_page'))
     return render_template('records.html')
+
+
+@pages.route('/cutting/specs')
+def cutting_specs_page():
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    return render_template('cutting_specs.html')

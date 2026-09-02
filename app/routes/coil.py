@@ -1131,6 +1131,32 @@ def _fetch_coils_for_print(coil_ids):
     return rows
 
 
+def _resolve_site_printer(cursor, coils, explicit_printer):
+    """按站点解析打印目标：(printer_name, channel)。
+
+    优先级：
+      1. 请求体显式指定的 printer（最高优先级）
+      2. 站点表 kr_site_printer（按第一条卷标的 siteref 查询）
+      3. 站点表未配 → printer 留空、channel 留空（print_labels 内回退 Config 默认）
+
+    一批卷标应为同站点，取第一条卷标的 siteref。
+    """
+    printer = (explicit_printer or '').strip()
+    channel = None
+    if not printer and coils:
+        siteref = (coils[0].get('siteref') or '').strip()
+        if siteref:
+            cursor.execute(
+                "SELECT printer_name, channel FROM kr_site_printer WHERE siteref = %s",
+                (siteref,)
+            )
+            row = cursor.fetchone()
+            if row:
+                printer = (row.get('printer_name') or '').strip()
+                channel = (row.get('channel') or '').strip()
+    return printer, channel
+
+
 @coil_bp.route('/api/coils/print', methods=['POST'])
 def print_coils():
     user, err_resp, err_code = _check_warehouse_or_admin()
@@ -1139,7 +1165,7 @@ def print_coils():
 
     data = request.get_json() or {}
     coil_ids = data.get('coil_ids') or []
-    printer = (data.get('printer') or '').strip()
+    explicit_printer = (data.get('printer') or '').strip()
     if not coil_ids:
         return jsonify({'success': False, 'message': '请选择需要打印的卷标'}), 400
     if len(coil_ids) > MAX_BATCH:
@@ -1162,6 +1188,8 @@ def print_coils():
                 coil_ids
             )
         coils = cursor.fetchall()
+        # 按站点解析打印机与通道（显式 printer 优先）
+        printer, channel = _resolve_site_printer(cursor, coils, explicit_printer)
         # 操作日志
         _add_log(cursor, None, user['username'], 'COIL_PRINT',
                  f"标签打印: {len(coils)} 卷（{','.join(coil_ids[:10])}{'...' if len(coil_ids) > 10 else ''}）",
@@ -1173,7 +1201,7 @@ def print_coils():
         return jsonify({'success': False, 'message': '未找到可打印的卷标（可能不属于当前站点）'}), 404
 
     # 打印失败不影响其他操作，返回可读错误
-    result = label_print_service.print_labels([dict(c) for c in coils], printer)
+    result = label_print_service.print_labels([dict(c) for c in coils], printer, channel)
     if result['success']:
         return jsonify({'success': True, 'message': f"已提交 {result['printed']} 张标签打印",
                         'printed': result['printed'], 'errors': []})
@@ -1227,7 +1255,7 @@ def request_coils_print(request_id):
     return print_coils_inner(coil_ids, (data.get('printer') or '').strip(), user, request_id)
 
 
-def print_coils_inner(coil_ids, printer, user, request_id=None):
+def print_coils_inner(coil_ids, explicit_printer, user, request_id=None):
     """打印逻辑（内部复用），供 print_coils / request_coils_print 调用"""
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -1244,6 +1272,8 @@ def print_coils_inner(coil_ids, printer, user, request_id=None):
                 coil_ids
             )
         coils = cursor.fetchall()
+        # 按站点解析打印机与通道（显式 printer 优先）
+        printer, channel = _resolve_site_printer(cursor, coils, explicit_printer)
         _add_log(cursor, request_id, user['username'], 'COIL_PRINT',
                  f"标签打印: {len(coils)} 卷", request.remote_addr)
         db.commit()
@@ -1252,7 +1282,7 @@ def print_coils_inner(coil_ids, printer, user, request_id=None):
     if not coils:
         return jsonify({'success': False, 'message': '未找到可打印的卷标'}), 404
 
-    result = label_print_service.print_labels([dict(c) for c in coils], printer)
+    result = label_print_service.print_labels([dict(c) for c in coils], printer, channel)
     if result['success']:
         return jsonify({'success': True, 'message': f"已提交 {result['printed']} 张标签打印",
                         'printed': result['printed'], 'errors': []})

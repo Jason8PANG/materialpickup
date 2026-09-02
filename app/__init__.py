@@ -22,6 +22,7 @@ def create_app(config_class=Config):
     from app.routes.return_bp import return_bp
     from app.routes.wire import wire_bp
     from app.routes.external import external_bp
+    from app.routes.cutting import cutting_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(kanban_bp)
@@ -34,6 +35,7 @@ def create_app(config_class=Config):
     app.register_blueprint(return_bp)
     app.register_blueprint(wire_bp)
     app.register_blueprint(external_bp)
+    app.register_blueprint(cutting_bp)
 
     # 页面路由
     from app.routes import pages

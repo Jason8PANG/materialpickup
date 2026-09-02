@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+{% block title %}裁线规格管理 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h5 class="mb-0"><i class="fas fa-cut me-2 text-primary"></i><span data-i18n="cutting.title">裁线规格管理</span></h5>
+        {% if session.user.role in ['me_engineer', 'admin'] %}
+        <div>
+            <button class="btn btn-outline-primary btn-sm me-2" onclick="showImportModal()">
+                <i class="fas fa-upload me-1"></i><span data-i18n="cutting.import">批量导入</span>
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="showAddModal()">
+                <i class="fas fa-plus me-1"></i><span data-i18n="cutting.add">新增</span>
+            </button>
+        </div>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        <!-- 搜索栏 -->
+        <div class="row g-2 mb-3">
+            <div class="col-auto flex-grow-1">
+                <input type="text" class="form-control form-control-sm" id="searchKeyword"
+                       data-i18n-placeholder="cutting.search_placeholder"
+                       placeholder="搜索成品料号 / 线材料号 / 端子 / 颜色...">
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-primary btn-sm" onclick="loadRefs(1)">
+                    <i class="fas fa-search me-1"></i><span data-i18n="common.search">搜索</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover table-bordered table-sm" style="font-size:0.85rem;">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:56px">ID</th>
+                        <th data-i18n="cutting.finished_part">成品料号</th>
+                        <th data-i18n="cutting.wire_part">线材（套管）料号</th>
+                        <th data-i18n="cutting.wire_awg">线材AWG</th>
+                        <th data-i18n="cutting.color">颜色</th>
+                        <th data-i18n="cutting.qty_per_group">单组剪切数量</th>
+                        <th data-i18n="cutting.cut_length_mm">剪切长度(mm)</th>
+                        <th data-i18n="cutting.length_tol">长度公差</th>
+                        <th data-i18n="cutting.cut_device">剪切设备</th>
+                        <th data-i18n="cutting.device_no">设备序号</th>
+                        <th data-i18n="cutting.strip_len_a">去皮尺寸A端(mm)</th>
+                        <th data-i18n="cutting.strip_tol_a">去皮尺寸公差A端</th>
+                        <th data-i18n="cutting.strip_len_b">去皮尺寸B端(mm)</th>
+                        <th data-i18n="cutting.strip_tol_b">去皮尺寸公差B端</th>
+                        <th data-i18n="cutting.term_a">A端端子料号</th>
+                        <th data-i18n="cutting.term_b">B端端子料号</th>
+                        <th data-i18n="cutting.raw_data">原始数据</th>
+                        {% if session.user.role in ['me_engineer', 'admin'] %}
+                        <th data-i18n="admin.col_actions">操作</th>
+                        {% endif %}
+                    </tr>
+                </thead>
+                <tbody id="refTableBody">
+                    <tr><td colspan="18" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 分页 -->
+        <div class="d-flex justify-content-between align-items-center mt-2">
+            <span class="text-muted small" id="pageInfo"></span>
+            <div>
+                <button class="btn btn-outline-secondary btn-sm" id="prevBtn" onclick="prevPage()" data-i18n="common.prev_page">上一页</button>
+                <button class="btn btn-outline-secondary btn-sm" id="nextBtn" onclick="nextPage()" data-i18n="common.next_page">下一页</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if session.user.role in ['me_engineer', 'admin'] %}
+<!-- 新增/编辑弹窗 -->
+<div class="modal fade" id="refModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="refModalTitle" data-i18n="cutting.add">新增</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId" value="">
+                <div class="row g-2" id="formFields"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="saveRefBtn" data-i18n="common.save">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 批量导入弹窗 -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" data-i18n="cutting.import_title">批量导入（覆盖式）</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small" data-i18n="cutting.import_hint">按 BOM 表格式上传 .xlsx，将清空现有数据后重新导入</p>
+                <input type="file" class="form-control" id="importFileInput" accept=".xlsx,.xlsm">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="doImportBtn" data-i18n="cutting.import">批量导入</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAN_EDIT = {{ 'true' if session.user.role in ['me_engineer', 'admin'] else 'false' }};
+const FIELDS = [
+    {key: 'finished_part', num: false},
+    {key: 'wire_part', num: false},
+    {key: 'wire_awg', num: false},
+    {key: 'color', num: false},
+    {key: 'qty_per_group', num: true},
+    {key: 'cut_length_mm', num: true},
+    {key: 'length_tol', num: false},
+    {key: 'cut_device', num: false},
+    {key: 'device_no', num: false},
+    {key: 'strip_len_a', num: true},
+    {key: 'strip_tol_a', num: false},
+    {key: 'strip_len_b', num: true},
+    {key: 'strip_tol_b', num: false},
+    {key: 'term_a', num: false},
+    {key: 'term_b', num: false}
+];
+let currentPage = 1;
+let totalPages = 1;
+
+function cell(v) {
+    if (v === null || v === undefined || v === '') return '-';
+    return escapeHtml(String(v));
+}
+
+function buildFormFields() {
+    document.getElementById('formFields').innerHTML = FIELDS.map(function (f) {
+        return '<div class="col-md-6">' +
+            '<label class="form-label small mb-1" data-i18n="cutting.' + f.key + '">' + __('cutting.' + f.key) + '</label>' +
+            '<input type="text" class="form-control form-control-sm" id="f_' + f.key + '">' +
+            '</div>';
+    }).join('');
+}
+
+function loadRefs(page) {
+    const keyword = document.getElementById('searchKeyword').value.trim();
+    const url = '/api/cutting-ref?keyword=' + encodeURIComponent(keyword) + '&page=' + page + '&size=50';
+    apiGet(url, function (resp) {
+        currentPage = resp.page || 1;
+        totalPages = resp.total_pages || 1;
+        document.getElementById('pageInfo').textContent =
+            __('kanban.total') + ' ' + resp.total + ' ' + __('kanban.items') +
+            ' · ' + __('cutting.title') + ' ' + currentPage + '/' + totalPages;
+        document.getElementById('prevBtn').disabled = currentPage <= 1;
+        document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+        renderTable(resp.data || []);
+    }, function (err) {
+        document.getElementById('refTableBody').innerHTML =
+            '<tr><td colspan="18" class="text-center text-danger">' + (err.message || '加载失败') + '</td></tr>';
+    });
+}
+
+function renderTable(rows) {
+    const tbody = document.getElementById('refTableBody');
+    const hasAction = CAN_EDIT;
+    const colSpan = hasAction ? 18 : 17;
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="' + colSpan + '" class="text-center text-muted" data-i18n="common.no_data">暂无数据</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(function (r) {
+        let raw = r.raw_data || '-';
+        if (raw !== '-' && raw.length > 60) raw = raw.slice(0, 60) + '…';
+        let html = '<tr>' +
+            '<td>' + r.id + '</td>' +
+            '<td>' + cell(r.finished_part) + '</td>' +
+            '<td>' + cell(r.wire_part) + '</td>' +
+            '<td>' + cell(r.wire_awg) + '</td>' +
+            '<td>' + cell(r.color) + '</td>' +
+            '<td>' + cell(r.qty_per_group) + '</td>' +
+            '<td>' + cell(r.cut_length_mm) + '</td>' +
+            '<td>' + cell(r.length_tol) + '</td>' +
+            '<td>' + cell(r.cut_device) + '</td>' +
+            '<td>' + cell(r.device_no) + '</td>' +
+            '<td>' + cell(r.strip_len_a) + '</td>' +
+            '<td>' + cell(r.strip_tol_a) + '</td>' +
+            '<td>' + cell(r.strip_len_b) + '</td>' +
+            '<td>' + cell(r.strip_tol_b) + '</td>' +
+            '<td>' + cell(r.term_a) + '</td>' +
+            '<td>' + cell(r.term_b) + '</td>' +
+            '<td title="' + escapeHtml(r.raw_data || '') + '">' + escapeHtml(raw) + '</td>';
+        if (hasAction) {
+            html += '<td class="text-nowrap text-center">' +
+                '<button class="btn btn-sm btn-outline-primary me-1" onclick="showEditModal(' + r.id + ')"><i class="fas fa-edit"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="deleteRef(' + r.id + ')"><i class="fas fa-trash"></i></button>' +
+                '</td>';
+        }
+        html += '</tr>';
+        return html;
+    }).join('');
+}
+
+function prevPage() { if (currentPage > 1) loadRefs(currentPage - 1); }
+function nextPage() { if (currentPage < totalPages) loadRefs(currentPage + 1); }
+
+function showAddModal() {
+    document.getElementById('editId').value = '';
+    document.getElementById('refModalTitle').textContent = __('cutting.add');
+    FIELDS.forEach(function (f) { document.getElementById('f_' + f.key).value = ''; });
+    new bootstrap.Modal(document.getElementById('refModal')).show();
+}
+
+function showEditModal(id) {
+    // 列表接口已含全部字段，按 id 从返回数据中取当前行
+    fetch('/api/cutting-ref?page=1&size=200', {headers: {'X-Lang': getLang()}})
+        .then(r => r.json())
+        .then(resp => {
+            const row = (resp.data || []).find(function (x) { return String(x.id) === String(id); });
+            if (!row) { showToast('error', '记录不存在'); return; }
+            document.getElementById('editId').value = id;
+            document.getElementById('refModalTitle').textContent = __('cutting.edit');
+            FIELDS.forEach(function (f) {
+                document.getElementById('f_' + f.key).value = row[f.key] === null || row[f.key] === undefined ? '' : row[f.key];
+            });
+            new bootstrap.Modal(document.getElementById('refModal')).show();
+        })
+        .catch(err => showToast('error', err.message));
+}
+
+function saveRef() {
+    const id = document.getElementById('editId').value;
+    const data = {};
+    FIELDS.forEach(function (f) {
+        const v = document.getElementById('f_' + f.key).value.trim();
+        data[f.key] = v === '' ? null : (f.num ? parseFloat(v) : v);
+    });
+    if (!data.finished_part && !data.wire_part) {
+        showToast('error', __('cutting.finished_part') + '/' + __('cutting.wire_part') + ' ' + __('common.at_least_one'));
+        return;
+    }
+    const onOk = function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        bootstrap.Modal.getInstance(document.getElementById('refModal')).hide();
+        loadRefs(currentPage);
+    };
+    if (id) {
+        apiPut('/api/cutting-ref/' + id, data, onOk, function (err) { showToast('error', err.message || __('common.error')); });
+    } else {
+        apiPost('/api/cutting-ref', data, onOk, function (err) { showToast('error', err.message || __('common.error')); });
+    }
+}
+
+function deleteRef(id) {
+    if (!confirm(__('common.confirm') + '?')) return;
+    apiDelete('/api/cutting-ref/' + id, function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        loadRefs(currentPage);
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+function showImportModal() {
+    document.getElementById('importFileInput').value = '';
+    new bootstrap.Modal(document.getElementById('importModal')).show();
+}
+
+function doImport() {
+    const input = document.getElementById('importFileInput');
+    if (!input.files || !input.files.length) {
+        showToast('error', __('cutting.select_file'));
+        return;
+    }
+    if (!confirm(__('cutting.import_confirm'))) return;
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    const btn = document.getElementById('doImportBtn');
+    btn.disabled = true;
+    showToast('success', __('cutting.importing'));
+    fetch('/api/cutting-ref/import', {
+        method: 'POST',
+        headers: {'X-Lang': getLang()},
+        body: fd
+    })
+        .then(r => r.json())
+        .then(resp => {
+            btn.disabled = false;
+            if (resp.success) {
+                showToast('success', resp.message || __('common.success'));
+                bootstrap.Modal.getInstance(document.getElementById('importModal')).hide();
+                loadRefs(1);
+            } else {
+                showToast('error', resp.message || __('common.error'));
+            }
+        })
+        .catch(err => { btn.disabled = false; showToast('error', err.message); });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    if (CAN_EDIT) {
+        buildFormFields();
+        document.getElementById('saveRefBtn').addEventListener('click', saveRef);
+        document.getElementById('doImportBtn').addEventListener('click', doImport);
+    }
+    document.getElementById('searchKeyword').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') loadRefs(1);
+    });
+    loadRefs(1);
+});
+</script>
+{% endblock %}

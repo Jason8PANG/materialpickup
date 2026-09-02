@@ -767,7 +767,8 @@ function renderMappingTable(data) {
         'admin': '管理员',
         'requester': '领料员',
         'supervisor': '主管',
-        'warehouse': '仓库'
+        'warehouse': '仓库',
+        'me_engineer': 'ME工程师'
     };
     const siteLabels = {
         '310': '苏州工厂',
@@ -807,7 +808,7 @@ function toggleSiteField() {
     const siteRequired = document.getElementById('siteRequired');
     const siteHint = document.getElementById('siteAdminHint');
 
-    if (role === 'admin') {
+    if (role === 'admin' || role === 'me_engineer') {
         siteRequired.classList.add('d-none');
         if (siteHint) siteHint.classList.remove('d-none');
     } else {
@@ -848,8 +849,8 @@ function createMapping() {
         return;
     }
 
-    if (data.role !== 'admin' && !data.siteref) {
-        showToast('error', '非管理员角色必须选择所属站点');
+    if (data.role !== 'admin' && data.role !== 'me_engineer' && !data.siteref) {
+        showToast('error', '非管理员/ME工程师角色必须选择所属站点');
         return;
     }
 
@@ -875,7 +876,7 @@ function editMapping(id) {
             document.getElementById('fDisplayName').value = cells[2].textContent.trim() === '-' ? '' : cells[2].textContent.trim();
 
             const roleText = cells[3].textContent.trim();
-            const roleMap = {'管理员': 'admin', '领料员': 'requester', '主管': 'supervisor', '仓库': 'warehouse'};
+            const roleMap = {'管理员': 'admin', '领料员': 'requester', '主管': 'supervisor', '仓库': 'warehouse', 'ME工程师': 'me_engineer'};
             document.getElementById('fRole').value = roleMap[roleText] || 'requester';
 
             // 站点字段

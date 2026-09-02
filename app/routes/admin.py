@@ -1,8 +1,11 @@
 from flask import Blueprint, request, jsonify, session
 from datetime import datetime
+from pymysql.err import IntegrityError
 from app.models import get_db_connection
 from app.utils import WhereBuilder
 from app.config import Config
+
+VALID_PRINT_CHANNELS = ('gdi', 'raw_zpl', 'raw_tspl', 'gateway')
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -55,16 +58,16 @@ def create_mapping():
         if not data.get(field):
             return jsonify({'success': False, 'message': f'缺少必填字段: {field}'}), 400
 
-    valid_roles = ('admin', 'requester', 'supervisor', 'warehouse')
+    valid_roles = ('admin', 'requester', 'supervisor', 'warehouse', 'me_engineer')
     if data['role'] not in valid_roles:
         return jsonify({'success': False, 'message': f'无效角色，可选: {", ".join(valid_roles)}'}), 400
 
-    # 站点验证：非 admin 角色必须填 siteref
+    # 站点验证：非 admin / me_engineer 角色必须填 siteref（ME工程师可跨站，siteref 允许空）
     siteref = data.get('siteref')
     if siteref is not None:
         siteref = str(siteref).strip() or None
-    if data['role'] != 'admin' and not siteref:
-        return jsonify({'success': False, 'message': '非管理员角色必须指定所属站点'}), 400
+    if data['role'] not in ('admin', 'me_engineer') and not siteref:
+        return jsonify({'success': False, 'message': '非管理员/ME工程师角色必须指定所属站点'}), 400
     if siteref and siteref not in Config.SITE_CONFIG:
         return jsonify({'success': False, 'message': f'无效站点，可选: {", ".join(Config.SITE_CONFIG.keys())}'}), 400
 
@@ -220,3 +223,131 @@ def get_log_detail(log_id):
         return jsonify({'success': False, 'message': '日志不存在'}), 404
 
     return jsonify({'success': True, 'data': row})
+
+
+# ================= 站点打印机配置 =================
+
+@admin_bp.route('/api/site-printers', methods=['GET'])
+def list_site_printers():
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM kr_site_printer ORDER BY siteref")
+        rows = cursor.fetchall()
+        cursor.close()
+
+    return jsonify({'success': True, 'data': rows})
+
+
+@admin_bp.route('/api/site-printers', methods=['POST'])
+def create_site_printer():
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json() or {}
+    siteref = str(data.get('siteref') or '').strip()
+    printer_name = str(data.get('printer_name') or '').strip()
+    channel = str(data.get('channel') or 'gdi').strip().lower()
+    remark = str(data.get('remark') or '').strip() or None
+
+    if siteref not in Config.SITE_CONFIG:
+        return jsonify({'success': False, 'message': f'无效站点，可选: {", ".join(Config.SITE_CONFIG.keys())}'}), 400
+    if not printer_name:
+        return jsonify({'success': False, 'message': '缺少必填字段: printer_name'}), 400
+    if channel not in VALID_PRINT_CHANNELS:
+        return jsonify({'success': False, 'message': f'无效通道，可选: {", ".join(VALID_PRINT_CHANNELS)}'}), 400
+
+    try:
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute(
+                "INSERT INTO kr_site_printer (siteref, printer_name, channel, remark) "
+                "VALUES (%s, %s, %s, %s)",
+                (siteref, printer_name, channel, remark)
+            )
+            db.commit()
+            new_id = cursor.lastrowid
+            cursor.close()
+        return jsonify({'success': True, 'id': new_id, 'message': '创建成功'}), 201
+    except IntegrityError:
+        return jsonify({'success': False, 'message': '该站点已配置'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'创建失败: {str(e)}'}), 400
+
+
+@admin_bp.route('/api/site-printers/<int:printer_id>', methods=['PUT'])
+def update_site_printer(printer_id):
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json() or {}
+    try:
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("SELECT * FROM kr_site_printer WHERE id = %s", (printer_id,))
+            if not cursor.fetchone():
+                cursor.close()
+                return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+            update_fields = []
+            update_params = []
+
+            if 'printer_name' in data:
+                val = str(data.get('printer_name') or '').strip()
+                if not val:
+                    cursor.close()
+                    return jsonify({'success': False, 'message': 'printer_name 不能为空'}), 400
+                update_fields.append("printer_name = %s")
+                update_params.append(val)
+
+            if 'channel' in data:
+                val = str(data.get('channel') or '').strip().lower()
+                if val not in VALID_PRINT_CHANNELS:
+                    cursor.close()
+                    return jsonify({'success': False, 'message': f'无效通道，可选: {", ".join(VALID_PRINT_CHANNELS)}'}), 400
+                update_fields.append("channel = %s")
+                update_params.append(val)
+
+            if 'remark' in data:
+                update_fields.append("remark = %s")
+                update_params.append(str(data.get('remark') or '').strip() or None)
+
+            if not update_fields:
+                cursor.close()
+                return jsonify({'success': False, 'message': '没有需要更新的字段'}), 400
+
+            update_params.append(printer_id)
+            cursor.execute(
+                f"UPDATE kr_site_printer SET {', '.join(update_fields)} WHERE id = %s",
+                update_params
+            )
+            db.commit()
+            cursor.close()
+        return jsonify({'success': True, 'message': '更新成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'更新失败: {str(e)}'}), 400
+
+
+@admin_bp.route('/api/site-printers/<int:printer_id>', methods=['DELETE'])
+def delete_site_printer(printer_id):
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM kr_site_printer WHERE id = %s", (printer_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+        cursor.execute("DELETE FROM kr_site_printer WHERE id = %s", (printer_id,))
+        db.commit()
+        cursor.close()
+
+    return jsonify({'success': True, 'message': '删除成功'})

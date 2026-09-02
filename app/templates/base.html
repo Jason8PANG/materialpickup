@@ -35,6 +35,8 @@
                             <li><a class="dropdown-item" href="/return/new"><i class="fas fa-undo-alt me-2"></i><span data-i18n="nav.new_return">新建物料退料申请</span></a></li>
                         </ul>
                     </li>
+                    {% endif %}
+                    {% if session.user.role in ['requester', 'admin', 'me_engineer'] %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="fas fa-tasks me-1"></i><span data-i18n="nav.wire">线材管理</span>
@@ -45,6 +47,8 @@
                             <li><a class="dropdown-item" href="/wire/count"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.wire_count">线材库存盘点</span></a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="/wire/adjust"><i class="fas fa-exchange-alt me-2"></i><span data-i18n="nav.wire_adjust">盘点差异调整</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="/cutting/specs"><i class="fas fa-cut me-2"></i><span data-i18n="nav.cutting_specs">裁线规格管理</span></a></li>
                         </ul>
                     </li>
                     {% endif %}
@@ -67,6 +71,9 @@
                     {% if session.user.role == 'admin' %}
                     <li class="nav-item">
                         <a class="nav-link" href="/admin/mappings"><i class="fas fa-users-cog me-1"></i><span data-i18n="nav.admin">账号管理</span></a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/printers"><i class="fas fa-print me-1"></i><span data-i18n="nav.site_printers">打印机配置</span></a>
                     </li>
                     {% endif %}
                 </ul>
@@ -109,6 +116,7 @@
                             {% elif session.user.role == 'requester' %}领料员
                             {% elif session.user.role == 'supervisor' %}主管
                             {% elif session.user.role == 'warehouse' %}仓库
+                            {% elif session.user.role == 'me_engineer' %}ME工程师
                             {% endif %}
                         </span>
                     </span>
@@ -156,8 +164,8 @@
         if (roleBadge) {
             var role = '{{ session.user.role }}';
             var roleMap = {
-                zh: {'admin': '管理员', 'requester': '领料员', 'supervisor': '主管', 'warehouse': '仓库'},
-                en: {'admin': 'Admin', 'requester': 'Requester', 'supervisor': 'Supervisor', 'warehouse': 'Warehouse'}
+                zh: {'admin': '管理员', 'requester': '领料员', 'supervisor': '主管', 'warehouse': '仓库', 'me_engineer': 'ME工程师'},
+                en: {'admin': 'Admin', 'requester': 'Requester', 'supervisor': 'Supervisor', 'warehouse': 'Warehouse', 'me_engineer': 'ME Engineer'}
             };
             roleBadge.textContent = roleMap[lang] && roleMap[lang][role] ? roleMap[lang][role] : role;
         }
