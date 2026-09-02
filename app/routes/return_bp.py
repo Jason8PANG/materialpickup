@@ -676,7 +676,7 @@ def sign_return(return_id):
             cur.close()
             return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
 
-        # 前置：所有明细均已复核（无 review_status IS NULL）
+        # 前置：每行卷标须为 confirmed，或 rejected 且已填写异常原因，否则不允许签字
         cur.execute(
             "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s AND review_status IS NULL",
             (return_id,)
@@ -684,6 +684,14 @@ def sign_return(return_id):
         if cur.fetchone()['n'] > 0:
             cur.close()
             return jsonify({'success': False, 'message': '退料清单尚有未复核卷标，暂不能签字确认'}), 400
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s "
+            "AND review_status = 'rejected' AND (review_note IS NULL OR TRIM(review_note) = '')",
+            (return_id,)
+        )
+        if cur.fetchone()['n'] > 0:
+            cur.close()
+            return jsonify({'success': False, 'message': '存在已登记不予退料但未填写异常原因的卷标，请先维护原因'}), 400
 
         now = datetime.now()
         cur.execute(

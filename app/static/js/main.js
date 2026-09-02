@@ -485,12 +485,14 @@ function renderActions(req) {
         actions.push({label: __('action.sign'), class: 'btn-primary', action: 'sign'});
     }
 
-    // 退料签字：退料单 confirmed + 全部卷标已复核 + requester/admin
+    // 退料签字：退料单 confirmed + 每行 confirmed 或 rejected 且已填原因 + requester/admin
     if ((role === 'requester' || role === 'admin') &&
         req.request_type === 'return' &&
         status === 'confirmed' &&
         (req.return_items || []).every(function (it) {
-            return it.review_status != null && it.review_status !== '';
+            if (it.review_status === 'confirmed') return true;
+            if (it.review_status === 'rejected') return !!(it.review_note && String(it.review_note).trim());
+            return false;
         })) {
         actions.push({label: __('returndetail.sign_confirm'), class: 'btn-primary', action: 'sign_return'});
     }

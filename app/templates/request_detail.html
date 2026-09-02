@@ -446,9 +446,13 @@ function renderReturnItems(request) {
                 noteCell = '<td class="text-muted">-</td>';
             } else {
                 const note = it.review_note || '';
+                const noteMissing = st === 'rejected' && !note;
+                const noteHtml = noteMissing
+                    ? '<span id="return_note_' + escapeHtml(it.coil_id) + '" style="flex:1" class="text-danger small" data-empty="1">' + __('returndetail.note_required') + '</span>'
+                    : '<span id="return_note_' + escapeHtml(it.coil_id) + '" style="flex:1">' + (note ? escapeHtml(note) : '-') + '</span>';
                 noteCell = '<td>' +
                     '<div class="d-flex gap-1 align-items-center">' +
-                    '<span id="return_note_' + escapeHtml(it.coil_id) + '" style="flex:1">' + (note ? escapeHtml(note) : '-') + '</span>' +
+                    noteHtml +
                     '<button class="btn btn-sm btn-outline-primary" onclick="editReturnNote(\'' + escapeHtml(it.coil_id) + '\')" title="' + __('returndetail.edit_note') + '"><i class="fas fa-edit"></i></button>' +
                     '</div></td>';
             }
@@ -486,7 +490,7 @@ function renderReturnSignArea(request) {
 
 function editReturnNote(coilId) {
     const span = document.getElementById('return_note_' + coilId);
-    const current = span && span.textContent !== '-' ? span.textContent : '';
+    const current = span && !span.dataset.empty && span.textContent !== '-' ? span.textContent : '';
     const note = prompt(__('returndetail.edit_note') + ' (' + coilId + ')', current);
     if (note === null) return; // 取消
     apiPut('/api/returns/' + REQUEST_ID + '/note', {coil_id: coilId, note: note},
