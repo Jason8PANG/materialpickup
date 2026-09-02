@@ -539,13 +539,14 @@ function renderLabelPreview(coil) {
     box.style.position = 'relative';
     box.style.background = '#fff';
     // 与 ZPL/TSPL/GDI 版式一致（两行左右分栏）：
-    //   行1 上半：左上 卷标ID 大字（最大） | 右上 Code128 条码（内容 = 卷标ID）
-    //   行2 下半：左下 Part : xxx          | 右下 Lenght :xxx
+    //   行1 上半：左上 卷标ID 大字 | 右上 Code128 条码（内容 = 卷标ID）
+    //   行2 下半：左下 Part : xxx  | 右下 Lenght :xxx
+    // 卷标ID 22px bold：9 位约 0~150px，与条码 left:170 留 ≥20px 间距，避免重叠
     box.innerHTML = `
         <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:16px;height:34px;"></svg>
-        <div style="position:absolute;left:18px;top:14px;font-size:28px;font-weight:bold;">${escapeHtml(coilId)}</div>
-        <div style="position:absolute;left:18px;top:60px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
-        <div style="position:absolute;left:170px;top:60px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
+        <div style="position:absolute;left:20px;top:18px;font-size:22px;font-weight:bold;">${escapeHtml(coilId)}</div>
+        <div style="position:absolute;left:20px;top:64px;font-size:16px;font-weight:600;">Part : ${escapeHtml(part)}</div>
+        <div style="position:absolute;left:170px;top:64px;font-size:16px;">Lenght :${escapeHtml(lengthText)}</div>
     `;
     if (window.JsBarcode) {
         try {

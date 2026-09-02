@@ -116,7 +116,7 @@ def build_zpl(label: dict) -> bytes:
     构建 Zebra ZPL（203dpi：80mm ≈ 640dot，26mm ≈ 208dot，5mm margin ≈ 40dot）。
     条码由打印机固件生成，Code128。
     版式（两行左右分栏，可用区 x 40~600、y 40~168）：
-      行1（y 40~104）：左上 卷标ID 大字（A0N 48/24 加粗，高≈6mm）；右上 Code128 条码（高 60dot≈7.5mm）
+      行1（y 40~104）：左上 卷标ID 大字（A0N 40/20 加粗，高≈5mm）；右上 Code128 条码（高 60dot≈7.5mm）
       行2（y 120~156）：左下 "Part : xxx"；右下 "Lenght :xxx"（A0N 36，高≈4.5mm）
     """
     coil_id = _clean_fd(label['barcode_coil'])
@@ -128,8 +128,8 @@ def build_zpl(label: dict) -> bytes:
         "^PW640^LL208^LH0,0\n"
         # 行1 右上：Code128 条码（内容 = 卷标ID，高 60dot）
         f"^FO340,40^BCN,60,Y,N,N^FD{coil_id}^FS\n"
-        # 行1 左上：卷标ID 大字（字体最大、加粗）
-        f"^FO40,44^A0N,48,24^FD{coil_id}^FS\n"
+        # 行1 左上：卷标ID 大字（9 位 40/20 高≈5mm，右缘 ~220dot，与条码 x340 留足间距）
+        f"^FO40,44^A0N,40,20^FD{coil_id}^FS\n"
         # 行2 左下：Part
         f"^FO40,120^A0N,36,18^FDPart : {part}^FS\n"
         # 行2 右下：Lenght（"Lenght :" 与参考图一致）
@@ -144,9 +144,9 @@ def build_tspl(label: dict) -> bytes:
     构建 TSC TSPL（80mm × 26mm，5mm margin = 40dot @203dpi，总幅面 640×208 dot）。
     条码由打印机固件生成，Code128。
     版式（两行左右分栏，与 ZPL 坐标一致）：
-      行1（y 40~100）：左上 卷标ID 大字（TSS24 放大 2×2，48dot 高）；右上 Code128 条码（高 56dot）
+      行1（y 40~100）：左上 卷标ID（TSS24 放大 1×2，24dot 高）；右上 Code128 条码（高 56dot）
       行2（y 120~168）：左下 "Part : xxx"；右下 "Lenght :xxx"（TSS24 放大 1×2）
-    注：TSPL 点阵字库 TSS24 缩放档位有限，卷标ID 用 2×2 为可支持的最大字号（48dot≈6mm）。
+    注：卷标ID 用 1×2 而非 2×2，避免 9 位大字占宽挤压到右上条码；正文同为 1×2。
     """
     coil_id = _clean_fd(label['barcode_coil'])
     part = _clean_fd(label['barcode_part'])
@@ -158,8 +158,8 @@ def build_tspl(label: dict) -> bytes:
         "CLS\n"
         # 行1 右上：Code128 条码（内容 = 卷标ID，高 56dot≈7mm，不显示可读字符）
         f'BARCODE 340,40,"128",56,0,0,2,2,"{coil_id}"\n'
-        # 行1 左上：卷标ID 大字（字体最大、加粗）
-        f'TEXT 40,44,"TSS24.BF2",0,2,2,"{coil_id}"\n'
+        # 行1 左上：卷标ID 文字（1×2 控制占宽，避免与条码重叠）
+        f'TEXT 40,44,"TSS24.BF2",0,1,2,"{coil_id}"\n'
         # 行2 左下：Part
         f'TEXT 40,120,"TSS24.BF2",0,1,2,"Part : {part}"\n'
         # 行2 右下：Lenght（"Lenght :" 与参考图一致）
@@ -235,10 +235,10 @@ def _gdi_print(printer_name: str, label: dict) -> None:
         dc.FillRect((0, 0, width_px, height_px), white_brush)
 
         # 字体（80×26mm 两行分栏，字号相对 4 行旧版式放大）
-        #   title_font：行1 卷标ID 大字（最大、加粗，高 6mm）
+        #   title_font：行1 卷标ID（高 5mm、加粗；9 位不右溢到条码）
         #   text_font ：行2 Part/Lenght（高 3.8mm）
         title_font = win32ui.CreateFont({
-            'name': 'Arial', 'height': mm_y(6.0), 'weight': 700, 'charset': 1,
+            'name': 'Arial', 'height': mm_y(5.0), 'weight': 700, 'charset': 1,
         })
         text_font = win32ui.CreateFont({
             'name': 'Arial', 'height': mm_y(3.8), 'weight': 600, 'charset': 1,
