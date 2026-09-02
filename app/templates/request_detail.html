@@ -78,13 +78,13 @@
 
             <!-- 明细表格 -->
             <div class="card shadow-sm mb-3">
-                <div class="card-header bg-white py-3">
+                <div class="card-header bg-white py-3" id="itemsHeader">
                     <h5 class="mb-0">
                         <i class="fas fa-list me-2 text-success"></i><span data-i18n="detail.items_title">物料明细</span> <span class="badge bg-secondary ms-1" id="detailItemCount">0</span>
                     </h5>
                 </div>
                 <div class="card-body p-0">
-                    <div class="table-responsive">
+                    <div class="table-responsive" id="itemsTableWrap">
                         <table class="table table-hover table-bordered mb-0" id="itemsDetailTable">
                             <thead class="table-light">
                                 <tr>
@@ -397,7 +397,15 @@ function loadRequestDetail() {
         document.getElementById('detailLoading').classList.add('d-none');
         document.getElementById('detailContent').classList.remove('d-none');
         renderDetail(resp.request, resp.logs);
-        renderItems(resp.request.items || []);
+        if (resp.request.request_type === 'return') {
+            // 退料单只有退料清单，隐藏「物料明细」标题与表格
+            const itemsHeader = document.getElementById('itemsHeader');
+            const itemsTableWrap = document.getElementById('itemsTableWrap');
+            if (itemsHeader) itemsHeader.classList.add('d-none');
+            if (itemsTableWrap) itemsTableWrap.classList.add('d-none');
+        } else {
+            renderItems(resp.request.items || []);
+        }
         renderReturnItems(resp.request);
         renderActions(resp.request);
         renderLogs(resp.logs);
@@ -470,13 +478,7 @@ function renderReturnSignArea(request) {
             '</div>';
         return;
     }
-    const hasPending = (request.return_items || []).some(function (it) { return it.review_status == null || it.review_status === ''; });
-    if (request.status === 'confirmed' && !hasPending && (userRole === 'requester' || userRole === 'admin')) {
-        area.innerHTML =
-            '<button class="btn btn-primary" onclick="openSignaturePad(' + REQUEST_ID + ', \'return\')">' +
-            '<i class="fas fa-pen me-1"></i>' + __('returndetail.sign_confirm') + '</button>';
-        return;
-    }
+    // 签字按钮已移至操作区（renderActions），此处仅保留 completed 状态的回显
     area.innerHTML = '';
 }
 
@@ -705,6 +707,10 @@ function doAction(requestId, action) {
     if (action === 'sign') {
         // 签字操作 → 打开签字板
         openSignaturePad(requestId);
+        return;
+    } else if (action === 'sign_return') {
+        // 退料签字 → 打开签字板（类型 'return'，提交到 /api/returns/<id>/sign）
+        openSignaturePad(requestId, 'return');
         return;
     } else if (action === 'reject') {
         document.getElementById('actionModalExtra').classList.remove('d-none');

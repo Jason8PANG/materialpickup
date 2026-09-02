@@ -485,6 +485,16 @@ function renderActions(req) {
         actions.push({label: __('action.sign'), class: 'btn-primary', action: 'sign'});
     }
 
+    // 退料签字：退料单 confirmed + 全部卷标已复核 + requester/admin
+    if ((role === 'requester' || role === 'admin') &&
+        req.request_type === 'return' &&
+        status === 'confirmed' &&
+        (req.return_items || []).every(function (it) {
+            return it.review_status != null && it.review_status !== '';
+        })) {
+        actions.push({label: __('returndetail.sign_confirm'), class: 'btn-primary', action: 'sign_return'});
+    }
+
     if (actions.length === 0) {
         area.classList.add('d-none');
         return;
