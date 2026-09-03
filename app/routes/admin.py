@@ -4,6 +4,7 @@ from pymysql.err import IntegrityError
 from app.models import get_db_connection
 from app.utils import WhereBuilder
 from app.config import Config
+from app.services.label_print_service import test_printer_connection, print_test_page
 
 VALID_PRINT_CHANNELS = ('gdi', 'raw_zpl', 'raw_tspl', 'gateway')
 
@@ -351,3 +352,57 @@ def delete_site_printer(printer_id):
         cursor.close()
 
     return jsonify({'success': True, 'message': '删除成功'})
+
+
+def _get_site_printer_row(printer_id):
+    """按 id 查站点打印机记录，返回 row 或 None"""
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM kr_site_printer WHERE id = %s", (printer_id,))
+        row = cursor.fetchone()
+        cursor.close()
+    return row
+
+
+@admin_bp.route('/api/site-printers/<int:printer_id>/test-connection', methods=['POST'])
+def test_site_printer_connection(printer_id):
+    """连接测试：按配置通道探测打印机可达性（不实际打印）"""
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    row = _get_site_printer_row(printer_id)
+    if not row:
+        return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+    result = test_printer_connection(row['printer_name'], row['channel'])
+    return jsonify({
+        'success': bool(result.get('success')),
+        'message': result.get('message', ''),
+        'detail': result.get('detail', ''),
+        'printer_name': row['printer_name'],
+        'channel': row['channel'],
+    })
+
+
+@admin_bp.route('/api/site-printers/<int:printer_id>/test-print', methods=['POST'])
+def test_site_printer_print(printer_id):
+    """测试页打印：按配置通道实际打印一张固定测试标签"""
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    row = _get_site_printer_row(printer_id)
+    if not row:
+        return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+    result = print_test_page(row['printer_name'], row['channel'])
+    return jsonify({
+        'success': bool(result.get('success')),
+        'message': result.get('message', ''),
+        'detail': result.get('detail', ''),
+        'printed': result.get('printed', 0),
+        'errors': result.get('errors', []),
+        'printer_name': row['printer_name'],
+        'channel': row['channel'],
+    })

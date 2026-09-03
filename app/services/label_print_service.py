@@ -466,3 +466,208 @@ def print_labels(coils: list[dict], printer_name: str = None, channel: str = Non
                 errors.append(f"{coil_id}: 打印失败 - {e}")
 
     return {'printed': printed, 'errors': errors, 'success': not errors}
+
+
+# ================= 打印机连接测试 / 测试页打印 =================
+
+# win32print 打印机状态位（GetPrinter level2 -> Status），0 = PRINTER_STATUS_READY
+_PRINTER_STATUS_BITS = (
+    (0x00000001, '已暂停(PAUSED)'),
+    (0x00000002, '出错(ERROR)'),
+    (0x00000004, '删除中(PENDING_DELETION)'),
+    (0x00000008, '卡纸(PAPER_JAM)'),
+    (0x00000010, '缺纸(PAPER_OUT)'),
+    (0x00000040, '纸张问题(PAPER_PROBLEM)'),
+    (0x00000080, '脱机(OFFLINE)'),
+    (0x00000100, 'I/O 活动中(IO_ACTIVE)'),
+    (0x00000200, '忙(BUSY)'),
+    (0x00000400, '打印中(PRINTING)'),
+    (0x00000800, '输出盒满(OUTPUT_BIN_FULL)'),
+    (0x00001000, '不可用(NOT_AVAILABLE)'),
+    (0x00008000, '初始化中(INITIALIZING)'),
+    (0x00010000, '预热中(WARMING_UP)'),
+    (0x00020000, '耗材余量低(TONER_LOW)'),
+    (0x00040000, '无耗材(NO_TONER)'),
+    (0x00100000, '需人工干预(USER_INTERVENTION)'),
+    (0x00400000, '盖门打开(DOOR_OPEN)'),
+    (0x01000000, '省电(POWER_SAVE)'),
+)
+
+
+def _printer_status_text(status: int) -> str:
+    """把 win32print 状态位转成可读文本"""
+    if not status:
+        return '就绪(READY)'
+    parts = [name for bit, name in _PRINTER_STATUS_BITS if status & bit]
+    return ', '.join(parts) if parts else f'状态码 {status}'
+
+
+def _printer_probe_error(err: Exception) -> str:
+    """把 win32print.OpenPrinter 抛出的 WinError 中文化（附原始错误便于排查）"""
+    winerr = getattr(err, 'winerror', None)
+    raw = str(err)
+    if winerr == 1801:
+        text = '找不到该打印机（打印机名无效：本地无此打印机或共享名不存在）'
+    elif winerr == 2:
+        text = '找不到打印机或共享名不可达'
+    elif winerr == 1722:
+        text = 'RPC 服务不可用（网络打印机不可达）'
+    elif winerr == 5:
+        text = '拒绝访问（无权限访问该打印机）'
+    elif winerr == 53:
+        text = '网络路径找不到（主机不可达或共享不存在）'
+    elif winerr:
+        text = f'无法连接打印机（WinError {winerr}）'
+    else:
+        text = '无法连接打印机'
+    return f'{text}（原始错误: {raw}）'
+
+
+def _open_printer_probe(printer_name: str) -> dict:
+    """用 win32print.OpenPrinter 探测打印机：能打开即驱动/共享可达，并回读名称/状态"""
+    if not _HAS_WIN32PRINT:
+        return {
+            'success': False,
+            'message': '当前环境缺少 pywin32（win32print），无法探测 GDI/RAW 打印机',
+            'detail': '未安装 pywin32',
+        }
+    h = None
+    try:
+        h = win32print.OpenPrinter(printer_name)
+        try:
+            info = win32print.GetPrinter(h, 2)
+        except Exception as e:
+            # 能打开句柄即认为可达；读不到详细信息不视为失败
+            return {
+                'success': True,
+                'message': '打印机可达（未能读取详细信息）',
+                'detail': f'OpenPrinter 成功，GetPrinter(level=2) 失败: {e}',
+            }
+        resolved = info.get('pPrinterName') or info.get('pName') or printer_name
+        port = info.get('pPortName') or ''
+        status = int(info.get('Status') or 0)
+        return {
+            'success': True,
+            'message': f'打印机可达，状态：{_printer_status_text(status)}',
+            'detail': f'pPrinterName={resolved!r}, port={port!r}, status_code={status}',
+        }
+    except Exception as e:
+        return {'success': False, 'message': _printer_probe_error(e), 'detail': str(e)}
+    finally:
+        if h is not None:
+            try:
+                win32print.ClosePrinter(h)
+            except Exception:
+                pass
+
+
+def _gateway_probe() -> dict:
+    """探测打印网关可达性：GET 网关根路径，收到任意 HTTP 响应即视为服务连通"""
+    url = (Config.LABEL_PRINT_GATEWAY_URL or '').strip().rstrip('/')
+    if not url:
+        return {
+            'success': False,
+            'message': '未配置 LABEL_PRINT_GATEWAY_URL',
+            'detail': '',
+        }
+    import httpx
+    try:
+        resp = httpx.get(url, timeout=5.0, verify=False)
+        return {
+            'success': True,
+            'message': f'打印网关可达（HTTP {resp.status_code}）',
+            'detail': f'GET {url} -> {resp.status_code}',
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'message': f'无法连接打印网关（{url}）',
+            'detail': f'{type(e).__name__}: {e}',
+        }
+
+
+def test_printer_connection(printer_name: str, channel: str = 'gdi') -> dict:
+    """
+    探测打印机配置可达性（不实际打印）。
+
+    Args:
+        printer_name: 打印机名/共享路径（gateway 通道只关心网关可达性）
+        channel: gdi / raw_zpl / raw_tspl / gateway
+
+    Returns:
+        {'success': bool, 'message': 中文说明, 'detail': 附加信息（成功时含名称/状态，失败时为原始错误）}
+    """
+    printer = (printer_name or '').strip()
+    ch = (channel or 'gdi').lower()
+    if not printer:
+        return {'success': False, 'message': '打印机名称为空，请先填写', 'detail': 'printer_name 为空'}
+    if ch not in ('gdi', 'raw_zpl', 'raw_tspl', 'gateway'):
+        return {'success': False, 'message': f'未知打印通道: {ch}', 'detail': ''}
+    if ch == 'gateway':
+        return _gateway_probe()
+    return _open_printer_probe(printer)
+
+
+def print_test_page(printer_name: str = None, channel: str = None) -> dict:
+    """
+    按配置通道实际打印一张固定测试标签（不依赖数据库卷标）。
+
+    内部组装最小测试卷并复用 print_labels 的 gdi/raw_zpl/raw_tspl/gateway 路径；
+    送打前先做连接探测，给出中文化可读错误。
+
+    Returns:
+        {'success': bool, 'message': 中文说明, 'detail': ...,
+         'printed': int, 'errors': [str, ...]}
+    """
+    printer = (printer_name or '').strip()
+    ch = (channel or Config.LABEL_PRINT_CHANNEL or 'gdi').lower()
+    if not printer:
+        return {'success': False, 'message': '打印机名称为空，请先填写', 'detail': '', 'printed': 0, 'errors': []}
+    if ch == 'gateway' and not (Config.LABEL_PRINT_GATEWAY_URL or '').strip():
+        return {
+            'success': False,
+            'message': '通道为 gateway，但未配置 LABEL_PRINT_GATEWAY_URL',
+            'detail': '', 'printed': 0, 'errors': [],
+        }
+
+    # 送打前先探测连接，失败直接返回中文可读错误（避免把 WinError 原文抛给前端）
+    conn = test_printer_connection(printer, ch)
+    if not conn.get('success'):
+        return {
+            'success': False,
+            'message': '测试页未发送：' + conn.get('message', '连接探测失败'),
+            'detail': conn.get('detail', ''),
+            'printed': 0, 'errors': [],
+        }
+
+    fake_coil = {
+        'coil_id': 'TESTPAGE',
+        'part_number': 'TEST',
+        'coil_length': 0,
+        'unit': '',
+        'is_initial_half': 0,
+    }
+    try:
+        result = print_labels([fake_coil], printer, ch)
+    except Exception as e:
+        logger.error(f"[LABEL] 测试页打印异常: {e}")
+        return {
+            'success': False,
+            'message': f'测试页打印异常：{e}',
+            'detail': str(e), 'printed': 0, 'errors': [],
+        }
+
+    if result.get('success'):
+        return {
+            'success': True,
+            'message': f"测试页已发送（{result.get('printed', 0)} 张）",
+            'detail': '', 'printed': result.get('printed', 0), 'errors': [],
+        }
+    errors = result.get('errors') or ['未知打印错误']
+    return {
+        'success': False,
+        'message': '测试页打印失败：' + errors[0],
+        'detail': '; '.join(errors),
+        'printed': result.get('printed', 0),
+        'errors': errors,
+    }

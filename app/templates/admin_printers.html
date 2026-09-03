@@ -18,7 +18,7 @@
                         <th data-i18n="printers.printer_name">打印机名</th>
                         <th data-i18n="printers.channel">通道</th>
                         <th data-i18n="printers.remark">备注</th>
-                        <th style="width:140px" data-i18n="admin.col_actions">操作</th>
+                        <th style="width:205px" data-i18n="admin.col_actions">操作</th>
                     </tr>
                 </thead>
                 <tbody id="printerTableBody">
@@ -109,6 +109,12 @@ function loadPrinters() {
                 '<td><span class="badge bg-info">' + escapeHtml(channelLabel(p.channel)) + '</span></td>' +
                 '<td>' + escapeHtml(p.remark || '-') + '</td>' +
                 '<td class="text-center">' +
+                    '<button type="button" class="btn btn-sm btn-outline-info me-1" ' +
+                        'title="' + __('printers.test_conn') + '" ' +
+                        'onclick="testConnection(' + p.id + ')"><i class="fas fa-plug"></i></button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-warning me-1" ' +
+                        'title="' + __('printers.test_print') + '" ' +
+                        'onclick="testPrint(' + p.id + ')"><i class="fas fa-file-alt"></i></button>' +
                     '<button type="button" class="btn btn-sm btn-outline-primary me-1" ' +
                         'data-id="' + escAttr(p.id) + '" ' +
                         'data-siteref="' + escAttr(p.siteref) + '" ' +
@@ -178,6 +184,25 @@ function deletePrinter(id) {
     apiDelete('/api/site-printers/' + id, function (resp) {
         showToast('success', resp.message || __('common.success'));
         loadPrinters();
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+// 连接测试：探测打印机可达性，把后端中文结果用 toast 展示
+function testConnection(id) {
+    apiPost('/api/site-printers/' + id + '/test-connection', {}, function (resp) {
+        showToast(resp.success ? 'success' : 'error', resp.message || __('common.error'));
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+// 测试打印：确认后向该打印机发送一张固定测试标签
+function testPrint(id) {
+    if (!confirm(__('printers.test_print_confirm'))) return;
+    apiPost('/api/site-printers/' + id + '/test-print', {}, function (resp) {
+        showToast(resp.success ? 'success' : 'error', resp.message || __('common.error'));
     }, function (err) {
         showToast('error', err.message || __('common.error'));
     });
