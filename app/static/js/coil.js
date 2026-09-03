@@ -515,7 +515,7 @@ function previewExistingCoil(coilId) {
     });
 }
 
-/* ---- 标签预览（80×26mm 等比缩放为 320×104px，5mm margin≈20px，两行左右分栏） ---- */
+/* ---- 标签预览（方案 C：80×26mm 等比缩放为 320×104px = 4px/mm，5mm margin≈20px，两行左右分栏） ---- */
 
 function updatePreview() {
     const row = coilState.rows.find(function (r) { return r.coil_id; });
@@ -546,30 +546,28 @@ function renderLabelPreview(coil) {
     box.style.border = '1px dashed #999';
     box.style.position = 'relative';
     box.style.background = '#fff';
-    // 与 ZPL/TSPL/GDI 版式一致（80×26mm → 320×104px，4px/mm，右 margin 5mm=20px → 内容右缘 300px）：
-    //   行1带顶（y40dot→20px）：左="Coil ID: <id>"（12px bold，顶部与条码对齐）；右=Code128（高 44dot→22px，条码底 42px）
-    //   5mm 空白（40dot→20px）：条码底 42px → 行2 文字顶 62px
-    //   行2：左=Part（62px）| 右=Lenght（左缘与条码左缘对齐），文字同 12px bold
-    //   角标「始」：期初半卷时在条码正上方（y16dot→8px，右缘贴 300px，底=条码顶 20px）
+    // 与 ZPL/TSPL/GDI 版式一致（80×26mm → 320×104px，4px/mm，dot→px = ÷2，右 margin 5mm=20px → 内容右缘 300px）：
+    //   行1（顶 y40dot→20px）：左列 键名 "Coil ID:" 10px(y20) 上 / 卷号大字 18px(y32=64dot，右缘远 <150px)；
+    //                           右 = Code128 条码（高 44dot→22px，左缘固定 150px=x300dot，条码底 42px）
+    //   行1↔行2 间隔 24dot→12px：条码底 42px / 卷号底 50px → 行2 文字顶 y108dot→54px
+    //   行2：左=Part(54px) | 右=Lenght（左缘 150px 与条码左缘一致），文字 18px bold（底 72px ≤ 内容底 84px）
+    //   角标「始」：期初半卷时右上角（y16dot→8px，右缘贴 300px），随条码左移仍不重叠
     const initialBadge = coil.is_initial_half
         ? '<div style="position:absolute;right:20px;top:8px;font-size:12px;font-weight:bold;">始</div>'
         : '';
     box.innerHTML = `
-        <div style="position:absolute;left:20px;top:20px;font-size:12px;font-weight:bold;white-space:nowrap;">Coil ID: ${escapeHtml(coilId)}</div>
+        <div style="position:absolute;left:20px;top:20px;font-size:10px;font-weight:bold;white-space:nowrap;">Coil ID:</div>
         ${initialBadge}
-        <svg id="previewBarcodeCoil" style="position:absolute;left:170px;top:20px;height:22px;"></svg>
-        <div style="position:absolute;left:20px;top:62px;font-size:12px;font-weight:bold;white-space:nowrap;">Part : ${escapeHtml(part)}</div>
-        <div id="previewLenghtText" style="position:absolute;left:170px;top:62px;font-size:12px;font-weight:bold;white-space:nowrap;">Lenght :${escapeHtml(lengthText)}</div>
+        <div style="position:absolute;left:20px;top:32px;font-size:18px;font-weight:bold;white-space:nowrap;">${escapeHtml(coilId)}</div>
+        <svg id="previewBarcodeCoil" style="position:absolute;left:150px;top:20px;height:22px;"></svg>
+        <div style="position:absolute;left:20px;top:54px;font-size:18px;font-weight:bold;white-space:nowrap;">Part : ${escapeHtml(part)}</div>
+        <div id="previewLenghtText" style="position:absolute;left:150px;top:54px;font-size:18px;font-weight:bold;white-space:nowrap;">Lenght :${escapeHtml(lengthText)}</div>
     `;
     if (window.JsBarcode) {
         try {
             JsBarcode('#previewBarcodeCoil', coilId, {format: 'CODE128', width: 1.4, height: 22, displayValue: false, margin: 0});
-            // 条码右对齐到 300px（320 − 20px 右 margin）；Lenght 与条码左缘对齐
-            const svg = document.getElementById('previewBarcodeCoil');
-            const bw = svg.getBBox().width;
-            const left = Math.max(0, 300 - bw);
-            svg.style.left = left + 'px';
-            document.getElementById('previewLenghtText').style.left = left + 'px';
+            // 方案 C：条码与 Lenght 都以「左缘固定 x300dot = 150px」定位（打印端两者左缘同为 x300），
+            // 不要按条码渲染后的实际宽度动态右对齐，否则 Lenght 会跟条码右缘走导致与打印错位。
         } catch (e) {
             console.warn('JsBarcode 渲染失败', e);
         }
