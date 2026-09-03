@@ -102,8 +102,12 @@
                 }
                 const d = res.j.data;
                 if (!d.can_return) {
-                    coilFeedback.innerHTML = '<span class="text-danger">' + escapeHtml(coilId) + ' ' + __('return.not_returnable') +
-                        escapeHtml(d.status_label) + __('return.not_returnable2') + '</span>';
+                    if (d.reason) {
+                        coilFeedback.innerHTML = '<span class="text-danger">' + escapeHtml(coilId) + ' ' + escapeHtml(d.reason) + '</span>';
+                    } else {
+                        coilFeedback.innerHTML = '<span class="text-danger">' + escapeHtml(coilId) + ' ' + __('return.not_returnable') +
+                            escapeHtml(d.status_label) + __('return.not_returnable2') + '</span>';
+                    }
                     coilInput.focus();
                     return;
                 }

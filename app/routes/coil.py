@@ -847,7 +847,8 @@ def request_in_stock_coils(request_id):
             # 在库卷标（含剩余长度 = coil_length - 已消耗；is_return 标记退料回来的卷标，优先推荐）
             cursor.execute(
                 f"SELECT c.coil_id, c.part_number, c.unit, c.coil_length, "
-                f"COALESCE((SELECT SUM(out_length) FROM kr_wire_coil_consumption k WHERE k.coil_id = c.coil_id), 0) AS used, "
+                f"COALESCE((SELECT SUM(out_length) FROM kr_wire_coil_consumption k "
+                f"WHERE k.coil_id = c.coil_id AND k.consume_type IN ('consumption','count_adjust')), 0) AS used, "
                 f"EXISTS (SELECT 1 FROM kr_return_item ri WHERE ri.coil_id = c.coil_id) AS is_return "
                 f"FROM kr_wire_coil c "
                 f"WHERE c.status = 'in_stock' AND c.is_deleted = 0 AND c.part_number IN ({ph}) "
@@ -1209,7 +1210,8 @@ def print_coils():
     if result['success']:
         return jsonify({'success': True, 'message': f"已提交 {result['printed']} 张标签打印",
                         'printed': result['printed'], 'errors': []})
-    return jsonify({'success': False, 'message': '部分标签打印失败',
+    first_err = (result.get('errors') or ['未知打印错误'])[0]
+    return jsonify({'success': False, 'message': f'部分标签打印失败: {first_err}',
                     'printed': result['printed'], 'errors': result['errors']})
 
 
@@ -1290,7 +1292,8 @@ def print_coils_inner(coil_ids, explicit_printer, user, request_id=None):
     if result['success']:
         return jsonify({'success': True, 'message': f"已提交 {result['printed']} 张标签打印",
                         'printed': result['printed'], 'errors': []})
-    return jsonify({'success': False, 'message': '部分标签打印失败',
+    first_err = (result.get('errors') or ['未知打印错误'])[0]
+    return jsonify({'success': False, 'message': f'部分标签打印失败: {first_err}',
                     'printed': result['printed'], 'errors': result['errors']})
 
 
@@ -1460,6 +1463,8 @@ def create_consumption(request_id):
 
                 # R8：单次 + 累计 ≤ 卷长（统一换算 mm 比较，文档 7.1 R8）
                 #   卷长(mm) = coil_length × 换算系数；out_length / SUM(out_length) 原始单位为 mm
+                #   注意：此处 consume_type='issue' 是「出库累计防超发」专用口径（同卷多次出库累计 ≤ 卷长），
+                #   与剩余扣减口径（consumption+count_adjust）不同，请勿改动下方 SQL。
                 total_length = float(coil['coil_length'])
                 factor = Config.UNIT_CONVERT_FACTOR.get(unit.upper()) if unit else None
                 cursor.execute(

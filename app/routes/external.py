@@ -10,8 +10,8 @@ Base：/api/external/
 接口：
   GET  /api/external/coils/<coil_id>            卷标查询（含剩余）
   GET  /api/external/consumption?coil_id=&job_order=   消耗查询
-  POST /api/external/consumption                消耗登记（stage=complete，含超限校验+force）
-  POST /api/external/consumption/scrap          报废登记
+  POST /api/external/consumption                消耗登记（stage=complete，强制剩余长度校验）
+  POST /api/external/consumption/scrap          报废登记（强制剩余长度校验）
   GET  /api/external/cutting-check?job_order=   首末件检查查询
   POST /api/external/cutting-check              首末件检查登记（公差校验+force）
   GET  /api/external/cutting-ref?job_order=&part_number=  裁剪参数查询
@@ -146,7 +146,7 @@ def ext_coil_lookup(coil_id):
             return jsonify({'success': False, 'error': '卷标不存在'}), 404
         cur.execute(
             "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
-            "WHERE coil_id = %s",
+            "WHERE coil_id = %s AND consume_type IN ('consumption','count_adjust')",
             (coil_id,)
         )
         used = float(cur.fetchone()['used'] or 0)
@@ -210,7 +210,6 @@ def ext_create_consumption():
     if scrap < 0:
         return jsonify({'success': False, 'error': '报废长度格式不正确'}), 400
     out_length = qty * act_len + scrap
-    force = bool(b.get('force'))
 
     with get_db_connection() as db:
         cur = db.cursor()
@@ -237,18 +236,19 @@ def ext_create_consumption():
             return jsonify({'success': False, 'error': f'卷标 {coil_id} 正在盘点中（已锁定），不允许消耗'}), 400
         cur.execute(
             "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
-            "WHERE coil_id = %s",
+            "WHERE coil_id = %s AND consume_type IN ('consumption','count_adjust')",
             (coil_id,)
         )
         used = float(cur.fetchone()['used'] or 0)
         factor = _factor(coil.get('unit'))
         if factor:
             total_mm = float(coil['coil_length'] or 0) * factor
-            if out_length + used > total_mm + 0.0001 and not force:
+            if out_length + used > total_mm + 0.0001:
                 cur.close()
                 return jsonify({
-                    'success': False, 'error': '长度超限，需确认人授权',
-                    'needForce': True,
+                    'success': False,
+                    'error': f'消耗超限：卷标 {coil_id} 本次消耗 {out_length:g}mm，'
+                             f'累计 {used + out_length:g}mm 已超过剩余长度 {total_mm - used:g}mm',
                 }), 400
 
         cur.execute(
@@ -336,6 +336,24 @@ def ext_create_scrap():
             cur.close()
             return jsonify({'success': False, 'error': f'卷标 {coil_id} 正在盘点中（已锁定），不允许报废'}), 400
         factor = _factor(coil.get('unit'))
+        # 剩余扣减口径 consumption+count_adjust；报废(scrap)本身不入 used，
+        # 但校验用「本次 scrap + used ≤ total_mm」判断本次报废是否超剩余
+        cur.execute(
+            "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
+            "WHERE coil_id = %s AND consume_type IN ('consumption','count_adjust')",
+            (coil_id,)
+        )
+        used = float(cur.fetchone()['used'] or 0)
+        if factor:
+            total_mm = float(coil['coil_length'] or 0) * factor
+            if scrap_len + used > total_mm + 0.0001:
+                cur.close()
+                return jsonify({
+                    'success': False,
+                    'error': f'报废超限：卷标 {coil_id} 本次报废 {scrap_len:g}mm，'
+                             f'累计 {used + scrap_len:g}mm 已超过剩余长度 {total_mm - used:g}mm',
+                }), 400
+
         cur.execute(
             """INSERT INTO kr_wire_coil_consumption
                (coil_id, job_order, part_number, consume_type, out_length, unit,

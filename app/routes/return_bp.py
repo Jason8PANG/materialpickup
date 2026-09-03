@@ -7,7 +7,8 @@
      卷标状态 在车间(in_shop) → 在库(in_stock)，剩余长度回写 coil_length
   3. 仓库驳回 → POST /api/returns/<id>/reject
 
-剩余长度 = 卷标原始长度(coil_length) - 已消耗长度(consumption 表 out_length 汇总，含裁剪+报废)
+剩余长度 = 卷标原始长度(coil_length) - 已消耗长度(consumption 表 out_length 汇总，
+口径 = consumption 剪线消耗 + count_adjust 盘点调整；issue 出库 / scrap 报废不计入)
 """
 import re
 from datetime import datetime
@@ -31,8 +32,10 @@ RETURN_STATUS_LABELS = {
 def _coil_remain_length(cur, coil_id: str):
     """计算卷标剩余长度（与 coil_length 同单位，即系统单位如 M/FT）：
     coil_length - 已消耗(out_length 汇总，mm) ÷ 换算系数 → 原始单位。
-    消耗表 out_length 固定为 mm（出库/裁剪/报废登记），卷长存原始单位，
-    相减前必须换算，否则单位不一致导致剩余为负、误判不可退料。"""
+    消耗表 out_length 固定为 mm（剪线/盘点/出库/报废登记），卷长存原始单位，
+    相减前必须换算，否则单位不一致导致剩余为负、误判不可退料。
+    剩余扣减口径统一为 consumption+count_adjust（剪线消耗+盘点库存调整）；
+    issue（出库登记）、scrap（报废）不计入剩余扣减。"""
     cur.execute(
         "SELECT coil_length, unit FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
         (coil_id,)
@@ -42,7 +45,7 @@ def _coil_remain_length(cur, coil_id: str):
         return 0.0
     cur.execute(
         "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
-        "WHERE coil_id = %s ",
+        "WHERE coil_id = %s AND consume_type IN ('consumption','count_adjust')",
         (coil_id,)
     )
     used = float(cur.fetchone()['used'] or 0)
@@ -288,6 +291,14 @@ def coil_info(coil_id):
         remain = _coil_remain_length(cur, coil_id)
         cur.close()
 
+    can_return = c['status'] == 'in_shop' and remain > 0
+    if c['status'] != 'in_shop':
+        reason = f'仅状态为「在车间」的卷标可退料（当前：{COIL_STATUS_LABEL(c["status"])}）'
+    elif remain <= 0:
+        reason = f'卷标剩余长度不足（当前剩余 {remain} {(c["unit"] or "").strip()}），无法退料'
+    else:
+        reason = ''
+
     return jsonify({
         'success': True,
         'data': {
@@ -297,7 +308,8 @@ def coil_info(coil_id):
             'status': c['status'],
             'status_label': COIL_STATUS_LABEL(c['status']),
             'remain_length': remain,
-            'can_return': c['status'] == 'in_shop' and remain > 0,
+            'can_return': can_return,
+            'reason': reason,
         }
     })
 

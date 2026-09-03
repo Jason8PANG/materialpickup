@@ -142,7 +142,7 @@ def api_coils():
         cur.execute(
             f"SELECT c.*, "
             f"COALESCE((SELECT SUM(out_length) FROM kr_wire_coil_consumption k "
-            f"WHERE k.coil_id = c.coil_id), 0) AS used_mm "
+            f"WHERE k.coil_id = c.coil_id AND k.consume_type IN ('consumption','count_adjust')), 0) AS used_mm "
             f"FROM kr_wire_coil c WHERE {where} ORDER BY c.id DESC LIMIT 500",
             params
         )
@@ -193,7 +193,7 @@ def export_coils():
         cur.execute(
             f"SELECT c.*, "
             f"COALESCE((SELECT SUM(out_length) FROM kr_wire_coil_consumption k "
-            f"WHERE k.coil_id = c.coil_id), 0) AS used_mm "
+            f"WHERE k.coil_id = c.coil_id AND k.consume_type IN ('consumption','count_adjust')), 0) AS used_mm "
             f"FROM kr_wire_coil c WHERE {where} ORDER BY c.id DESC",
             params
         )
@@ -490,7 +490,7 @@ def api_create_count():
                 continue
             cur.execute(
                 "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
-                "WHERE coil_id = %s ",
+                "WHERE coil_id = %s AND consume_type IN ('consumption','count_adjust')",
                 (cid,)
             )
             used_mm = float(cur.fetchone()['used'] or 0)
