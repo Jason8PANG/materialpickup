@@ -500,11 +500,10 @@ def print_labels(coils: list[dict], printer_name: str = None, channel: str = Non
 # 而是生成一个 .dd 触发文本文件写入打印服务器共享目录，由 Bartender 监视该目录自动打印。
 #
 # 文件内容格式（需求逐字确认，注意行尾为 CRLF）：
-#   %BTW%                                                   # 第1行 固定
-#   /AF="F:\Labels\Coil_Label.btw" /PRN="<打印机名>" /P /D="%Trigger File Name%" /C=1 /R=3  # 第2行：仅 /PRN 动态
-#   %END%                                                   # 第3行 固定
-#   CoilId|CoilIdString|Part|PartString|Length|LengthString|Unit|UnitString|IsInitial|IsInitialString|Lot|LotString|  # 第4行 标题行 固定
-#   CoilId|<id>|Part|<part>|Length|<length>|Unit|<unit>|IsInitial|<1/0>|Lot|<lot>|   # 第5行起 每卷一行
+#   %BTW% /AF="F:\Labels\Coil_Label.btw" /PRN="<打印机名>" /P /D="%Trigger File Name%" /C=1 /R=3  # 第1行 %BTW% 与 /AF 同行，仅 /PRN 动态
+#   %END%                                                   # 第2行 固定
+#   CoilId|CoilIdString|Part|PartString|Length|LengthString|Unit|UnitString|IsInitial|IsInitialString|Lot|LotString|  # 第3行 标题行 固定
+#   CoilId|<id>|Part|<part>|Length|<length>|Unit|<unit>|IsInitial|<1/0>|Lot|<lot>|   # 第4行起 每卷一行
 #
 # 编码：UTF-8 无 BOM（卷标内容为 ASCII 数字/字母/单位，Bartender 兼容；若未来出现中文值
 #       需改 GBK 或与 Bartender 现场确认）。行尾：CRLF（Windows/Bartender 原生行尾）。
@@ -543,7 +542,7 @@ def build_bartender_file(coils: list[dict], printer_name: str) -> str:
         printer_name: 站点打印机名（kr_site_printer.printer_name），写入 /PRN="..."。
 
     Returns:
-        完整 .dd 文件内容字符串（第 1~3 行固定头 + 第 4 行标题 + N 行数据，末行带换行）。
+        完整 .dd 文件内容字符串（第 1 行 %BTW% 与 /AF 选项同行、第 2 行 %END%、第 3 行标题 + N 行数据，末行带换行）。
 
     Raises:
         ValueError: coils 为空 / printer_name 为空 / 某卷缺少 coil_id（中文可读信息）。
@@ -555,8 +554,7 @@ def build_bartender_file(coils: list[dict], printer_name: str) -> str:
         raise ValueError('没有需要打印的卷标')
 
     lines = [
-        '%BTW%',
-        _BTW_OPTION_LINE_TMPL.format(printer=printer),
+        f'%BTW% {_BTW_OPTION_LINE_TMPL.format(printer=printer)}',
         '%END%',
         _BTW_HEADER_LINE,
     ]
