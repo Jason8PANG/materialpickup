@@ -1142,9 +1142,11 @@ def _resolve_site_printer(cursor, coils, explicit_printer):
     优先级：
       1. 请求体显式指定的 printer（最高优先级）
       2. 站点表 kr_site_printer（按第一条卷标的 siteref 查询）
-      3. 站点表未配 → printer 留空、channel 留空（print_labels 内回退 Config 默认）
+      3. 站点表未配 → printer 留空、channel 留空（Bartender 模式返回可读错误提示未配置）
 
     一批卷标应为同站点，取第一条卷标的 siteref。
+    注：打印已改为 Bartender 触发文件方式，channel（raw_zpl/gdi/...）不再参与下发，
+        仅保留查询逻辑以兼容历史配置读取 printer_name。
     """
     printer = (explicit_printer or '').strip()
     channel = None
@@ -1160,6 +1162,16 @@ def _resolve_site_printer(cursor, coils, explicit_printer):
                 printer = (row.get('printer_name') or '').strip()
                 channel = (row.get('channel') or '').strip()
     return printer, channel
+
+
+def _order_coils_by_ids(coils, coil_ids):
+    """把 SQL 查询返回的卷行按请求 coil_ids 的顺序重排。
+
+    WHERE coil_id IN (...) 不带 ORDER BY，返回顺序与请求顺序无关；
+    Bartender 文件以首卷 id 命名、数据行按选择顺序输出，故需显式对齐。
+    """
+    pos = {str(cid): i for i, cid in enumerate(coil_ids)}
+    return sorted(coils, key=lambda c: pos.get(str(c.get('coil_id') or ''), len(pos)))
 
 
 @coil_bp.route('/api/coils/print', methods=['POST'])
@@ -1194,7 +1206,7 @@ def print_coils():
             )
         coils = cursor.fetchall()
         # 按站点解析打印机与通道（显式 printer 优先）
-        printer, channel = _resolve_site_printer(cursor, coils, explicit_printer)
+        printer, _channel = _resolve_site_printer(cursor, coils, explicit_printer)
         # 操作日志
         _add_log(cursor, None, user['username'], 'COIL_PRINT',
                  f"标签打印: {len(coils)} 卷（{','.join(coil_ids[:10])}{'...' if len(coil_ids) > 10 else ''}）",
@@ -1205,14 +1217,19 @@ def print_coils():
     if not coils:
         return jsonify({'success': False, 'message': '未找到可打印的卷标（可能不属于当前站点）'}), 404
 
-    # 打印失败不影响其他操作，返回可读错误
-    result = label_print_service.print_labels([dict(c) for c in coils], printer, channel)
+    # Bartender 触发文件方式：生成 .dd 文件到打印服务器共享目录，由 Bartender 监视自动打印。
+    # 不再向打印机发 ZPL/TSPL/GDI 指令；channel 仅作站点配置解析（上面已查），不参与下发。
+    result = label_print_service.write_bartender_file(
+        _order_coils_by_ids([dict(c) for c in coils], coil_ids), printer)
     if result['success']:
-        return jsonify({'success': True, 'message': f"已提交 {result['printed']} 张标签打印",
-                        'printed': result['printed'], 'errors': []})
-    first_err = (result.get('errors') or ['未知打印错误'])[0]
-    return jsonify({'success': False, 'message': f'部分标签打印失败: {first_err}',
-                    'printed': result['printed'], 'errors': result['errors']})
+        return jsonify({'success': True,
+                        'message': f"已生成 Bartender 打印文件（{result['count']} 卷）",
+                        'printed': result['count'], 'errors': [],
+                        'file_path': result.get('path') or ''})
+    first_err = (result.get('errors') or [result.get('message') or '生成打印文件失败'])[0]
+    return jsonify({'success': False, 'message': f'标签打印失败: {first_err}',
+                    'printed': result.get('count', 0),
+                    'errors': result.get('errors') or [first_err]})
 
 
 @coil_bp.route('/api/requests/<int:request_id>/coils/print', methods=['POST'])
@@ -1279,7 +1296,7 @@ def print_coils_inner(coil_ids, explicit_printer, user, request_id=None):
             )
         coils = cursor.fetchall()
         # 按站点解析打印机与通道（显式 printer 优先）
-        printer, channel = _resolve_site_printer(cursor, coils, explicit_printer)
+        printer, _channel = _resolve_site_printer(cursor, coils, explicit_printer)
         _add_log(cursor, request_id, user['username'], 'COIL_PRINT',
                  f"标签打印: {len(coils)} 卷", request.remote_addr)
         db.commit()
@@ -1288,13 +1305,19 @@ def print_coils_inner(coil_ids, explicit_printer, user, request_id=None):
     if not coils:
         return jsonify({'success': False, 'message': '未找到可打印的卷标'}), 404
 
-    result = label_print_service.print_labels([dict(c) for c in coils], printer, channel)
+    # Bartender 触发文件方式：生成 .dd 文件到打印服务器共享目录，由 Bartender 监视自动打印。
+    # 不再向打印机发 ZPL/TSPL/GDI 指令；channel 仅作站点配置解析（上面已查），不参与下发。
+    result = label_print_service.write_bartender_file(
+        _order_coils_by_ids([dict(c) for c in coils], coil_ids), printer)
     if result['success']:
-        return jsonify({'success': True, 'message': f"已提交 {result['printed']} 张标签打印",
-                        'printed': result['printed'], 'errors': []})
-    first_err = (result.get('errors') or ['未知打印错误'])[0]
-    return jsonify({'success': False, 'message': f'部分标签打印失败: {first_err}',
-                    'printed': result['printed'], 'errors': result['errors']})
+        return jsonify({'success': True,
+                        'message': f"已生成 Bartender 打印文件（{result['count']} 卷）",
+                        'printed': result['count'], 'errors': [],
+                        'file_path': result.get('path') or ''})
+    first_err = (result.get('errors') or [result.get('message') or '生成打印文件失败'])[0]
+    return jsonify({'success': False, 'message': f'标签打印失败: {first_err}',
+                    'printed': result.get('count', 0),
+                    'errors': result.get('errors') or [first_err]})
 
 
 # ================= 7. 标签渲染数据（预览） =================

@@ -36,7 +36,9 @@
 """
 import io
 import logging
+import os
 import threading
+from datetime import datetime
 
 from app.config import Config
 
@@ -490,6 +492,152 @@ def print_labels(coils: list[dict], printer_name: str = None, channel: str = Non
                 errors.append(f"{coil_id}: 打印失败 - {e}")
 
     return {'printed': printed, 'errors': errors, 'success': not errors}
+
+
+# ================= Bartender 触发文件（.dd）通道 =================
+#
+# 卷标打印改为 Bartender 触发文件方式：系统不再向打印机发 ZPL/TSPL/GDI 指令，
+# 而是生成一个 .dd 触发文本文件写入打印服务器共享目录，由 Bartender 监视该目录自动打印。
+#
+# 文件内容格式（需求逐字确认，注意行尾为 CRLF）：
+#   %BTW%                                                   # 第1行 固定
+#   /AF="F:\Labels\Coil_Label.btw" /PRN="<打印机名>" /P /D="%Trigger File Name%" /C=1 /R=3  # 第2行：仅 /PRN 动态
+#   %END%                                                   # 第3行 固定
+#   CoilId|CoilIdString|Part|PartString|Length|LengthString|Unit|UnitString|IsInitial|IsInitialString|Lot|LotString|  # 第4行 标题行 固定
+#   CoilId|<id>|Part|<part>|Length|<length>|Unit|<unit>|IsInitial|<1/0>|Lot|<lot>|   # 第5行起 每卷一行
+#
+# 编码：UTF-8 无 BOM（卷标内容为 ASCII 数字/字母/单位，Bartender 兼容；若未来出现中文值
+#       需改 GBK 或与 Bartender 现场确认）。行尾：CRLF（Windows/Bartender 原生行尾）。
+
+_BTW_OPTION_LINE_TMPL = '/AF="F:\\Labels\\Coil_Label.btw" /PRN="{printer}" /P /D="%Trigger File Name%" /C=1 /R=3'
+_BTW_HEADER_LINE = 'CoilId|CoilIdString|Part|PartString|Length|LengthString|Unit|UnitString|IsInitial|IsInitialString|Lot|LotString|'
+
+
+def _btw_bool(value) -> str:
+    """is_initial_half → '1'/'0'（兼容 int 0/1、'0'/'1'、'true'/'yes' 等形态；缺失/空 → '0'）"""
+    return '1' if str(value or '').strip().lower() in ('1', 'true', 'yes') else '0'
+
+
+def _btw_length_text(value) -> str:
+    """coil_length → 数值字符串：整数不带小数点、小数去掉尾 0（如 200.00→'200'、85.25→'85.25'）"""
+    if value is None or value == '':
+        return ''
+    try:
+        from decimal import Decimal, InvalidOperation
+        text = format(Decimal(str(value)), 'f')
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+    if '.' in text:
+        text = text.rstrip('0').rstrip('.')
+    return text
+
+
+def build_bartender_file(coils: list[dict], printer_name: str) -> str:
+    """
+    按 Bartender 触发文件（.dd）格式纯生成文件内容字符串（UTF-8 无 BOM，CRLF 行尾）。
+
+    Args:
+        coils: 卷标 dict 列表（原始 coil dict 即可，字段名与 kr_wire_coil 一致），
+               每项须含 coil_id / part_number / coil_length / unit / is_initial_half / lot_no；
+               lot_no / is_initial_half 缺失时给默认值（空 / 0），不抛错。
+        printer_name: 站点打印机名（kr_site_printer.printer_name），写入 /PRN="..."。
+
+    Returns:
+        完整 .dd 文件内容字符串（第 1~3 行固定头 + 第 4 行标题 + N 行数据，末行带换行）。
+
+    Raises:
+        ValueError: coils 为空 / printer_name 为空 / 某卷缺少 coil_id（中文可读信息）。
+    """
+    printer = (printer_name or '').strip()
+    if not printer:
+        raise ValueError('未配置目标打印机（站点打印机表未配置，或请求未显式指定 printer）')
+    if not coils:
+        raise ValueError('没有需要打印的卷标')
+
+    lines = [
+        '%BTW%',
+        _BTW_OPTION_LINE_TMPL.format(printer=printer),
+        '%END%',
+        _BTW_HEADER_LINE,
+    ]
+    for idx, coil in enumerate(coils, 1):
+        coil_id = str(coil.get('coil_id') or '').strip()
+        if not coil_id:
+            raise ValueError(f'第 {idx} 卷缺少 coil_id，无法生成打印文件')
+        part = str(coil.get('part_number') or '').strip()
+        length = _btw_length_text(coil.get('coil_length'))
+        unit = str(coil.get('unit') or '').strip()
+        is_initial = _btw_bool(coil.get('is_initial_half'))
+        lot = str(coil.get('lot_no') or '').strip()
+        lines.append(
+            f'CoilId|{coil_id}|Part|{part}|Length|{length}|'
+            f'Unit|{unit}|IsInitial|{is_initial}|Lot|{lot}|'
+        )
+    return '\r\n'.join(lines) + '\r\n'
+
+
+def _btw_write_error_text(err: Exception) -> str:
+    """把写 .dd 触发文件过程的异常转成可读中文（保留原始错误便于排查）"""
+    raw = str(err)
+    if isinstance(err, ValueError):
+        return raw  # build 阶段抛出的中文校验错误，直接透出
+    winerror = getattr(err, 'winerror', None)
+    if isinstance(err, PermissionError) or winerror == 5:
+        return f'无权限写入打印共享目录（需在打印服务器侧开放共享写权限，WinError 5）：{raw}'
+    if isinstance(err, NotADirectoryError) or winerror == 267:
+        return f'打印共享目录不存在或不可访问（请检查 LABEL_PRINT_BTW_DIR）：{raw}'
+    if winerror in (3, 53):
+        return f'打印共享目录不可达（网络路径/共享名错误）：{raw}'
+    if isinstance(err, OSError) and err.errno:
+        return f'写入打印共享目录失败（errno={err.errno}）：{raw}'
+    return f'生成 Bartender 触发文件失败：{raw}'
+
+
+def write_bartender_file(coils: list[dict], printer_name: str, file_dir: str = None) -> dict:
+    """
+    Bartender 触发文件打印入口：组装内容 → 命名 .dd 文件 → 写入打印服务器共享目录。
+
+    批量打印 N 卷只生成 1 个文件：第 4 行标题 + N 行数据；单卷同理 1 个文件 1 行数据。
+
+    - 文件名：<首卷 coil_id>_<YYYYMMDDHHMMSS>.dd（多卷也以首卷 id 命名）
+    - 目标目录：file_dir 优先；否则取 Config.LABEL_PRINT_BTW_DIR
+      （默认 \\\\172.26.1.7\\Coil_Label_Scanned，可用环境变量 LABEL_PRINT_BTW_DIR 覆盖）
+    - 编码：UTF-8 无 BOM；行尾：CRLF
+
+    Args:
+        coils: 卷标 dict 列表（原始 coil dict，字段含 coil_id/part_number/coil_length/
+               unit/is_initial_half/lot_no；后两者缺失时给默认值 0/空）。
+        printer_name: 站点打印机名（kr_site_printer.printer_name），如 \\\\172.26.1.7\\png-zt231-08。
+        file_dir: 输出目录（None 用配置默认值；测试/调试可传入临时目录）。
+
+    Returns:
+        {'success': bool, 'message': 中文说明, 'path': 完整文件路径(成功)或 '',
+         'count': 卷数, 'errors': [中文错误, ...]（失败时含原因）}
+    """
+    try:
+        content = build_bartender_file(coils, printer_name)
+        first_coil_id = str(coils[0].get('coil_id') or '').strip()
+        filename = f"{first_coil_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.dd"
+        target = (file_dir or Config.LABEL_PRINT_BTW_DIR or '').strip()
+        if not target:
+            raise ValueError('未配置 Bartender 打印共享目录（LABEL_PRINT_BTW_DIR）')
+        if not os.path.isdir(target):
+            raise NotADirectoryError(target)
+        full_path = os.path.join(target, filename)
+        with open(full_path, 'wb') as fh:
+            fh.write(content.encode('utf-8'))
+        logger.info(f"[BTW] 已写入 Bartender 触发文件 {full_path}（{len(coils)} 卷）")
+        return {
+            'success': True,
+            'message': f'已生成 Bartender 打印文件（{len(coils)} 卷）',
+            'path': full_path,
+            'count': len(coils),
+            'errors': [],
+        }
+    except Exception as e:
+        logger.error(f"[BTW] 生成/写入 Bartender 触发文件失败: {e}")
+        text = _btw_write_error_text(e)
+        return {'success': False, 'message': text, 'path': '', 'count': 0, 'errors': [text]}
 
 
 # ================= 打印机连接测试 / 测试页打印 =================

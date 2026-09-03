@@ -94,6 +94,8 @@ class Config:
     # ============================================================ #
     # 目标打印机名称；空则取系统默认打印机
     LABEL_PRINTER_NAME = os.environ.get('LABEL_PRINTER_NAME', '')
+    # Bartender 触发文件（.dd）输出目录：默认打印服务器共享目录，可用环境变量覆盖
+    LABEL_PRINT_BTW_DIR = os.environ.get('LABEL_PRINT_BTW_DIR', r'\\172.26.1.7\Coil_Label_Scanned')
     # 打印通道：gdi（GDI 驱动打印，通用）/ raw_zpl（ZPL 指令直发，Zebra）/
     #           raw_tspl（TSPL 指令直发，TSC）/ gateway（Windows 打印网关代理）
     LABEL_PRINT_CHANNEL = os.environ.get('LABEL_PRINT_CHANNEL', 'gdi')

@@ -12,6 +12,9 @@ services:
       - .env
     environment:
       - TZ=Asia/Shanghai
+    volumes:
+      # Bartender 触发文件输出目录：宿主机挂载 Windows 共享到 /mnt/coil_label_scanned 后透传容器
+      - /mnt/coil_label_scanned:/mnt/coil_label_scanned
     restart: unless-stopped
 
 networks:
