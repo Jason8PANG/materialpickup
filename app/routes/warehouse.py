@@ -105,13 +105,16 @@ def complete_prep(request_id):
 
         # 卷标按行维护校验：仅最小包装（minpack）申请单 —— A/B 开头物料的每一行
         # 都必须至少录入 1 个卷标，否则阻止完成备料（卷标录入仅对 minpack 开放）
+        # 例外：已按行维护缺料原因（short_reason 非空）的 A/B 行不发卷，豁免该校验
         if (req.get('request_type') or '') == 'minpack':
             cursor.execute(
-                "SELECT id, part_number FROM kr_request_item WHERE request_id = %s",
+                "SELECT id, part_number, short_reason FROM kr_request_item WHERE request_id = %s",
                 (request_id,)
             )
+            # 需录卷标的 A/B 行：仅限未缺料（short_reason 为空）的行；已按行维护缺料原因的行不发卷，豁免卷标校验
             ab_items = [it for it in cursor.fetchall()
-                        if (it['part_number'] or '')[:1].upper() in ('A', 'B')]
+                        if (it['part_number'] or '')[:1].upper() in ('A', 'B')
+                        and (it.get('short_reason') or '').strip() == '']
             if ab_items:
                 placeholders = ','.join(['%s'] * len(ab_items))
                 cursor.execute(
