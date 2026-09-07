@@ -12,6 +12,7 @@
   8. POST /api/requests/<request_id>/consumption     出库消耗登记（issue）
   9. GET  /api/requests/<request_id>/consumption     申请单消耗记录查询
  10. DELETE /api/coils/<id>                          删除卷标（仅本申请单 + warehouse/admin）
+ 11. PUT   /api/coils/<id>                           修改已录入卷标 Lot/长度（备料中+在库可改，改后可重打标签）
 
 兼容别名（开发任务清单约定）：
   - POST /api/requests/<request_id>/coil-number      卷号生成（POST 形式）
@@ -146,7 +147,11 @@ def _coil_to_dict(row):
 
 
 def _gen_next_id(cursor, d: datetime) -> str:
-    """按当天计数生成下一可用卷号；当日 >=999 抛 ValueError。
+    """按当天最大卷号（含软删）+1 生成下一可用卷号；当日 >=999 抛 ValueError。
+
+    软删语义：卷号一经分配即占用 kr_wire_coil.uk_coil_id 唯一索引，软删（is_deleted=1）
+    行仍占号不可复用，故取 MAX 必须**包含软删行**——当天删掉 ...092 后新号应为 ...093，
+    而不能按未删计数（COUNT+1）算出 ...092，与软删行撞唯一键报"已存在"（1062）。
 
     使用当前读（SELECT ... FOR UPDATE）：REPEATABLE READ 下一致性快照读看不到
     并发会话已提交的新数据，冲突后重试会取回同一卷号；当前读锁定当日前缀记录，
@@ -154,13 +159,21 @@ def _gen_next_id(cursor, d: datetime) -> str:
     """
     prefix = d.strftime('%y%m%d')
     cursor.execute(
-        "SELECT COUNT(*) AS cnt FROM kr_wire_coil WHERE coil_id LIKE %s AND is_deleted = 0 FOR UPDATE",
+        "SELECT COALESCE(MAX(coil_id), '') AS max_id FROM kr_wire_coil "
+        "WHERE coil_id LIKE %s FOR UPDATE",
         (prefix + '%',)
     )
-    cnt = cursor.fetchone()['cnt']
-    if cnt >= DAILY_LIMIT:
+    max_id = cursor.fetchone()['max_id'] or ''
+    if max_id:
+        try:
+            seq = int(max_id[-3:])  # 当天最大序号（含软删，天然跳过被删号）
+        except ValueError:  # 异常数据（末3位非数字）兜底从 001 起
+            seq = 0
+    else:  # 当天无记录 → 001
+        seq = 0
+    if seq >= DAILY_LIMIT:
         raise ValueError(f'当日卷号已用完（每天最多{DAILY_LIMIT}卷）')
-    return f"{prefix}{cnt + 1:03d}"
+    return f"{prefix}{seq + 1:03d}"
 
 
 # 进程内单位缓存：{(siteref, part_number): (unit, fetched_at)}，TTL 30 分钟
@@ -224,6 +237,7 @@ def next_coil_id():
             'date': d.strftime('%Y-%m-%d'),
             'date_prefix': d.strftime('%y%m%d'),
             'seq': int(coil_id[-3:]),
+            # 展示用：生成规则为含软删 MAX+1，此处为「当天已分配（含软删）卷号数量」的近似值
             'daily_count': int(coil_id[-3:]) - 1,
             'daily_limit': DAILY_LIMIT,
         }
@@ -325,6 +339,7 @@ def coil_number_alias(request_id):
             'date': d.strftime('%Y-%m-%d'),
             'date_prefix': d.strftime('%y%m%d'),
             'seq': int(coil_id[-3:]),
+            # 展示用：生成规则为含软删 MAX+1，此处为「当天已分配（含软删）卷号数量」的近似值
             'daily_count': int(coil_id[-3:]) - 1,
             'daily_limit': DAILY_LIMIT,
         }
@@ -730,6 +745,138 @@ def delete_coil(coil_id):
         return jsonify({'success': False, 'message': f'删除失败: {e}'}), 500
 
     return jsonify({'success': True, 'message': '卷标已删除（软删除，可恢复）'})
+
+
+# ================= 3.2 修改已录入卷标（Lot / 长度，可重打标签） =================
+
+@coil_bp.route('/api/coils/<int:coil_id>', methods=['PUT'])
+def update_coil(coil_id):
+    """修改已录入卷标的 Lot / 长度（仅限本申请单 + warehouse/admin）。
+
+    前置校验（全部满足才允许）：
+      1. 卷标存在且未删除；
+      2. 来源申请单为 minpack 且处于备料中（prepping）——已出库/已完成不允许事后改数据；
+      3. 卷状态为「在库」(in_stock)——已出库/在车间/报废统一拒绝；
+      4. 改长度时：若该卷已有任何消耗记录（SUM(out_length)>0，单位 mm），
+         须满足 新长度(原始单位) × 换算系数 ≥ 已消耗(mm)；换算系数缺失则拒绝并提示联系管理员；
+         无消耗时任意 >0 长度放行。
+    参数：lot_no（空串=清空）/ coil_length（>0）可只传其一。
+    """
+    user, err_resp, err_code = _check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json(silent=True) or {}
+    # lot_no：可传空串清空（strip 后空 → None）
+    has_lot = data.get('lot_no') is not None
+    lot_new = None
+    if has_lot:
+        lot_new = str(data.get('lot_no')).strip() or None
+
+    # coil_length：必须 > 0
+    len_raw = data.get('coil_length')
+    has_len = len_raw is not None and str(len_raw).strip() != ''
+    length_new = None
+    if has_len:
+        try:
+            length_new = round(float(len_raw), 2)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': '长度格式无效'}), 400
+        if length_new <= 0:
+            return jsonify({'success': False, 'message': '长度必须大于0'}), 400
+
+    if not has_lot and not has_len:
+        return jsonify({'success': False, 'message': '没有需要修改的字段（lot_no / coil_length）'}), 400
+
+    try:
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("SELECT * FROM kr_wire_coil WHERE id = %s AND is_deleted = 0", (coil_id,))
+            coil = cursor.fetchone()
+            if not coil:
+                cursor.close()
+                return jsonify({'success': False, 'message': '卷标不存在或已删除'}), 404
+
+            # 站点隔离：按来源申请单校验（与删除接口一致，无跨站修改）
+            req = _get_request(cursor, coil['request_id'])
+            if not req:
+                cursor.close()
+                return jsonify({'success': False, 'message': '卷标来源申请单不存在'}), 404
+            err = _check_site(req, user)
+            if err:
+                cursor.close()
+                return err
+            if (req.get('request_type') or '') != 'minpack':
+                cursor.close()
+                return jsonify({'success': False, 'message': '仅最小包装（minpack）申请单的卷标可修改'}), 400
+            if req['status'] != 'prepping':
+                cursor.close()
+                return jsonify({'success': False, 'message': '仅备料中（prepping）状态的申请单卷标可修改（已出库/已完成不可改）'}), 400
+
+            if coil['status'] != 'in_stock':
+                cursor.close()
+                return jsonify({
+                    'success': False,
+                    'message': f"卷标 {coil['coil_id']} 已离开仓库（状态：{COIL_STATUS_LABELS.get(coil['status'], coil['status'])}），不可修改"
+                }), 400
+
+            # 改长度：已有消耗时须满足 新长度×系数 ≥ 已消耗（out_length 单位 mm）
+            if has_len:
+                cursor.execute(
+                    "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption WHERE coil_id = %s",
+                    (coil['coil_id'],)
+                )
+                used = float(cursor.fetchone()['used'])
+                if used > 0:
+                    unit = (coil.get('unit') or '').strip().upper()
+                    factor = Config.UNIT_CONVERT_FACTOR.get(unit) if unit else None
+                    if not factor:
+                        cursor.close()
+                        return jsonify({
+                            'success': False,
+                            'message': f"卷标 {coil['coil_id']} 单位 {unit or '未知'} 未收录换算系数，无法校验已消耗长度，请联系管理员"
+                        }), 400
+                    if length_new * factor + 1e-6 < used:
+                        cursor.close()
+                        return jsonify({
+                            'success': False,
+                            'message': f"卷标 {coil['coil_id']} 新长度 {length_new:g}{unit} 小于已消耗长度 {used / factor:g}{unit}，无法修改"
+                        }), 400
+
+            # 仅更新传入字段
+            updates, params = [], []
+            if has_lot:
+                updates.append("lot_no = %s")
+                params.append(lot_new)
+            if has_len:
+                updates.append("coil_length = %s")
+                params.append(length_new)
+            params.append(coil_id)
+            cursor.execute(
+                f"UPDATE kr_wire_coil SET {', '.join(updates)}, updated_at = NOW() "
+                "WHERE id = %s AND is_deleted = 0",
+                params
+            )
+            if cursor.rowcount == 0:
+                cursor.close()
+                return jsonify({'success': False, 'message': '卷标状态已变化，请刷新后重试'}), 400
+
+            # 操作日志：detail 记录新旧值变化
+            changes = []
+            if has_lot:
+                old_lot = (coil.get('lot_no') or '').strip() or None
+                changes.append(f"Lot {old_lot or '空'}→{lot_new or '空'}")
+            if has_len:
+                old_len = float(coil['coil_length']) if coil.get('coil_length') is not None else None
+                changes.append(f"长度 {old_len}→{length_new}")
+            _add_log(cursor, coil['request_id'], user['username'], 'COIL_UPDATE',
+                     f"修改卷标 {coil['coil_id']}: " + ", ".join(changes), request.remote_addr)
+            db.commit()
+            cursor.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'保存失败: {e}'}), 500
+
+    return jsonify({'success': True, 'message': '卷标信息已更新'})
 
 
 # ================= 4. 线卷库存列表查询 =================

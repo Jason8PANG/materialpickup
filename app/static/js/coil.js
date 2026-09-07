@@ -425,18 +425,60 @@ function deleteCoil(id, coilId) {
     });
 }
 
+function saveCoilEdit(id, coilId) {
+    // 保存行内修改的 Lot / 长度：仅提交有变化（或清空 Lot）的字段，成功后刷新已录入列表
+    if (!id || !coilState.requestId) return;
+    const lotInput = document.getElementById('edit_lot_' + id);
+    const lenInput = document.getElementById('edit_len_' + id);
+    if (!lotInput && !lenInput) return;
+    const current = coilState.existingCoils.find(function (x) { return x.id === id; }) || {};
+    const body = {};
+    let changed = false;
+
+    if (lotInput) {
+        const newLot = lotInput.value.trim();
+        if (newLot !== ((current.lot_no || ''))) {
+            body.lot_no = newLot;   // 空串 = 清空 Lot
+            changed = true;
+        }
+    }
+    if (lenInput && lenInput.value.trim() !== '') {
+        const newLen = parseFloat(lenInput.value);
+        if (!(newLen > 0)) { showToast('error', '长度必须大于0'); return; }
+        const curLen = current.coil_length != null ? parseFloat(current.coil_length) : null;
+        if (curLen == null || Math.abs(newLen - curLen) > 1e-9) {
+            body.coil_length = newLen;
+            changed = true;
+        }
+    }
+    if (!changed) { showToast('info', '没有需要保存的修改'); return; }
+
+    apiPut('/api/coils/' + id, body, function (resp) {
+        showToast('success', resp.message || '卷标信息已更新');
+        apiGet('/api/requests/' + coilState.requestId + '/coils' + (coilState.itemId ? '?item_id=' + coilState.itemId : ''), function (resp2) {
+            coilState.existingCoils = resp2.data || [];
+            renderExistingCoils();
+        }, showError);
+    }, function (err) {
+        // 后端中文原因直接透出（如「新长度小于已消耗，无法修改」）
+        showToast('error', err.message || '保存失败');
+    });
+}
+
 function renderExistingCoils() {
     const tbody = document.getElementById('existingCoilsBody');
     if (!tbody) return;
     tbody.innerHTML = '';
     if (!coilState.existingCoils || coilState.existingCoils.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
         return;
     }
     // 从后往前删除：仅最后一条（id 最大，列表末尾）允许删除
     const maxId = coilState.existingCoils.reduce(function (m, c) {
         return (c.id > m) ? c.id : m;
     }, 0);
+    // 仅备料中（prepping）的申请单允许行内修改 Lot/长度（与服务端校验一致）
+    const editableAllowed = !!(coilState.request && coilState.request.status === 'prepping');
     coilState.existingCoils.forEach(function (c) {
         const isLast = (c.id === maxId);
         const delBtn = isLast
@@ -447,6 +489,24 @@ function renderExistingCoils() {
         const unuseBtn = (c.prev_request_id !== null && c.prev_request_id !== undefined)
             ? '<button class="btn btn-sm btn-outline-warning" onclick="unuseStockCoil(\'' + escapeHtml(c.coil_id) + '\')" title="取消选用，卷标回到在库可选清单"><i class="fas fa-undo-alt"></i></button>'
             : '';
+        // 可编辑：申请单备料中 + 该卷在库（在库外的卷不允许事后改数据，保持只读文本展示）
+        const editable = editableAllowed && c.status === 'in_stock';
+        let lotCell, lenCell, saveBtnCell;
+        if (editable) {
+            lotCell = '<td onclick="event.stopPropagation()"><input type="text" id="edit_lot_' + c.id +
+                '" class="form-control form-control-sm" value="' + escapeHtml(c.lot_no || '') +
+                '" placeholder="Lot" maxlength="64" style="min-width:110px"></td>';
+            lenCell = '<td onclick="event.stopPropagation()"><input type="number" id="edit_len_' + c.id +
+                '" class="form-control form-control-sm" value="' + c.coil_length +
+                '" min="0.01" step="any" style="min-width:90px"></td>';
+            saveBtnCell = '<td class="text-center" onclick="event.stopPropagation()">' +
+                '<button class="btn btn-sm btn-primary" onclick="saveCoilEdit(' + c.id + ', \'' + escapeHtml(c.coil_id) +
+                '\')" title="保存Lot/长度修改"><i class="fas fa-save"></i></button></td>';
+        } else {
+            lotCell = '<td>' + escapeHtml(c.lot_no || '-') + '</td>';
+            lenCell = '<td>' + c.coil_length + '</td>';
+            saveBtnCell = '<td class="text-center" onclick="event.stopPropagation()"></td>';
+        }
         const tr = document.createElement('tr');
         // 鼠标所在行背景浅色高亮（table-hover 由父表格启用，这里补充行内样式保证生效）
         tr.style.cursor = 'pointer';
@@ -458,12 +518,13 @@ function renderExistingCoils() {
                        onchange="this.closest('tr').classList.toggle('coil-row-selected', this.checked); updateBatchPrintBtn();" title="选择该行">
             </td>
             <td>${escapeHtml(c.coil_id)}</td>
-            <td>${escapeHtml(c.lot_no || '-')}</td>
+            ${lotCell}
             <td>${escapeHtml(c.part_number)}</td>
-            <td>${c.coil_length}</td>
+            ${lenCell}
             <td>${escapeHtml(c.unit || '-')}</td>
             <td><span class="badge ${c.status === 'in_stock' ? 'bg-success' : c.status === 'issued' ? 'bg-secondary' : 'bg-danger'}">${escapeHtml(c.status_label || c.status)}</span></td>
             <td class="text-center">${c.is_initial_half ? '<span class="badge bg-danger" title="期初半卷">始</span>' : ''}</td>
+            ${saveBtnCell}
             <td class="text-center" onclick="event.stopPropagation()">
                 <button class="btn btn-sm btn-outline-success" onclick="printCoils(['${escapeHtml(c.coil_id)}'])" title="打印本行卷标"><i class="fas fa-print"></i></button>
             </td>

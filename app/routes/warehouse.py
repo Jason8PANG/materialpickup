@@ -190,6 +190,46 @@ def restore_from_short(request_id):
     return jsonify({'success': True, 'message': '已转为待取料'})
 
 
+@warehouse_bp.route('/api/requests/<int:request_id>/back-to-prepping', methods=['POST'])
+def back_to_prepping(request_id):
+    """待取料退回备料中：用于补录/修正卷标、出库登记等（仅改 status，无其他副作用字段）"""
+    user, err_resp, err_code = check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT * FROM kr_material_request WHERE id = %s AND is_deleted = 0",
+            (request_id,)
+        )
+        req = cursor.fetchone()
+        if not req:
+            cursor.close()
+            return jsonify({'success': False, 'message': '单据不存在'}), 404
+
+        # 站点校验
+        err = validate_site_match(req, user)
+        if err:
+            cursor.close()
+            return err
+
+        if req['status'] != 'ready_pickup':
+            cursor.close()
+            return jsonify({'success': False,
+                            'message': '仅待取料（ready_pickup）状态的申请单可回到备料中'}), 400
+
+        cursor.execute(
+            "UPDATE kr_material_request SET status = 'prepping' WHERE id = %s",
+            (request_id,)
+        )
+        add_log(cursor, request_id, user['username'], 'BACK_TO_PREPPING', '待取料退回备料中', request.remote_addr)
+        db.commit()
+        cursor.close()
+
+    return jsonify({'success': True, 'message': '已回到备料中，可继续维护卷标/出库登记'})
+
+
 @warehouse_bp.route('/api/requests/<int:request_id>/short', methods=['POST'])
 def short_material(request_id):
     user, err_resp, err_code = check_warehouse_or_admin()

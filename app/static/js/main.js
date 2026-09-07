@@ -296,6 +296,7 @@ function doAction(requestId, action) {
         'reject': __('action.reject'),
         'start_prep': __('action.start_prep'),
         'complete_prep': __('action.complete_prep'),
+        'back_to_prepping': __('action.back_to_prepping'),
         'short': __('action.short'),
         'sign': __('action.sign'),
         'confirm_return': __('action.confirm_return'),
@@ -344,6 +345,7 @@ function confirmAction() {
         'cancel': '/api/requests/' + currentRequestId + '/cancel',
         'start_prep': '/api/requests/' + currentRequestId + '/start-prep',
         'complete_prep': '/api/requests/' + currentRequestId + '/complete-prep',
+        'back_to_prepping': '/api/requests/' + currentRequestId + '/back-to-prepping',
         'short': '/api/requests/' + currentRequestId + '/short',
         'sign': '/api/requests/' + currentRequestId + '/sign',
         'confirm_return': '/api/returns/' + currentRequestId + '/confirm',
@@ -478,6 +480,9 @@ function renderActions(req) {
         if (status === 'short') {
             actions.push({label: __('action.restore_from_short'), class: 'btn-warning', action: 'restore_from_short'});
         }
+        if (status === 'ready_pickup') {
+            actions.push({label: __('action.back_to_prepping'), class: 'btn-outline-warning', action: 'back_to_prepping'});
+        }
     }
 
     if ((role === 'requester' || role === 'warehouse' || role === 'admin') &&
@@ -550,6 +555,7 @@ function renderLogs(logs) {
         'REJECT': '驳回',
         'START_PREP': '开始备料',
         'COMPLETE_PREP': '完成备料',
+        'BACK_TO_PREPPING': '待取料退回备料中',
         'SHORT': '缺料登记',
         'SIGN': '签字确认',
         'ASSIGN_WORKER': '指定备料员'

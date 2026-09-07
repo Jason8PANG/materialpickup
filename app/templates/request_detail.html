@@ -268,6 +268,7 @@
                                             <th style="width:40px" class="text-center" title="选择该行" data-i18n="coils.select">选</th>
                                             <th data-i18n="coils.coil_id">卷标ID</th><th>Lot</th><th data-i18n="coils.part">物料</th><th data-i18n="coils.length">长度</th><th data-i18n="coils.unit">单位</th><th data-i18n="coils.status">状态</th>
                                             <th style="width:66px" class="text-center" title="期初半卷：勾选后标签右上角打印「始」角标">期初半卷</th>
+                                            <th style="width:66px" class="text-center" title="保存Lot/长度修改">保存</th>
                                             <th style="width:66px" class="text-center" data-i18n="coils.print">打印</th>
                                             <th style="width:66px" class="text-center" data-i18n="coils.preview">预览</th>
                                             <th style="width:80px" class="text-center" data-i18n="coils.unuse">取消选用</th>
@@ -385,7 +386,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="{{ url_for('static', filename='js/coil.js') }}?v=20260903b"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20260907a"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -407,6 +408,29 @@ function loadRequestDetail() {
             if (itemsTableWrap) itemsTableWrap.classList.add('d-none');
         } else {
             renderItems(resp.request.items || []);
+            // 预拉卷标列表，让物料明细行能按 hasCoil 显示绿底；
+            // 仅复用列表接口（GET），不开弹窗、不发写请求
+            apiGet('/api/requests/' + REQUEST_ID + '/coils', function (resp2) {
+                if (typeof coilState !== 'undefined' && coilState) {
+                    coilState.existingCoils = resp2.data || [];
+                }
+                // renderItems 已在 existingCoils 为空时渲染过，这里对「已录卷标」的行按钮补 btn-success（绿底）
+                var coilList = (typeof coilState !== 'undefined' && coilState) ? (coilState.existingCoils || []) : [];
+                var coilItemIds = {};
+                coilList.forEach(function (c) {
+                    if (c.item_id == null) return;
+                    if (c.is_deleted !== undefined && c.is_deleted !== 0) return;
+                    coilItemIds[c.item_id] = true;
+                });
+                Object.keys(coilItemIds).forEach(function (id) {
+                    var b = document.getElementById('coil_btn_' + id);
+                    if (b) { b.className = 'btn btn-sm btn-success'; b.title = '维护卷标（已录入）'; }
+                });
+                // 已录入卷标列表若已展开需刷新（默认隐藏，但保底重渲染）
+                if (typeof renderExistingCoils === 'function' && document.getElementById('existingCoilsBody')) {
+                    renderExistingCoils();
+                }
+            }, function () { /* 静默失败：网络/权限错误不影响主流程，最多绿底不显示 */ });
         }
         renderReturnItems(resp.request);
         renderActions(resp.request);
@@ -520,8 +544,22 @@ function renderItems(items) {
         const hasBatch = !!(item.batch_no && String(item.batch_no).trim());
         const coilDisabled = hasBatch ? '' : 'disabled';
         const coilIsAB = isABPart(item.part_number);
-        const coilBtnCls = coilIsAB ? 'btn-warning' : 'btn-outline-info';
-        const coilBtnTitle = coilIsAB ? '维护卷标（A/B 开头必须录入）' : '维护卷标（可选）';
+        // 已录卷标判定：coilState.existingCoils（coil.js 维护）中该 item 存在未删除记录即已录（绿底优先）
+        const hasCoil = !!(typeof coilState !== 'undefined' && coilState && coilState.existingCoils &&
+                           coilState.existingCoils.some(function (c) {
+                               return c.item_id === item.id && (c.is_deleted === undefined || c.is_deleted === 0);
+                           }));
+        let coilBtnCls, coilBtnTitle;
+        if (hasCoil) {
+            coilBtnCls = 'btn-success';   // 已录，绿底
+            coilBtnTitle = '维护卷标（已录入）';
+        } else if (coilIsAB) {
+            coilBtnCls = 'btn-warning';   // A/B 必录，黄底（保持）
+            coilBtnTitle = '维护卷标（A/B 开头必须录入）';
+        } else {
+            coilBtnCls = 'btn-outline-info';
+            coilBtnTitle = '维护卷标（可选）';
+        }
         // 纯图标按钮（紧凑，不撑高行）：A/B 黄色高亮，必填信息用 title 提示
         const coilBtnInner = '<i class="fas fa-tags"></i>';
         tr.innerHTML = `
@@ -616,8 +654,24 @@ function enableCoilBtn(itemId) {
     btn.disabled = false;
     var part = btn.getAttribute('data-part') || '';
     var isAB = isABPart(part);
-    btn.className = 'btn btn-sm ' + (isAB ? 'btn-warning' : 'btn-outline-info');
-    btn.title = isAB ? '维护卷标（A/B 开头必须录入）' : '维护卷标（可选）';
+    // 已录卷标判定（与 renderItems 保持一致）：coilState.existingCoils 存在该 item 的未删除记录即绿底
+    var hasCoil = !!(typeof coilState !== 'undefined' && coilState && coilState.existingCoils &&
+                     coilState.existingCoils.some(function (c) {
+                         return c.item_id === itemId && (c.is_deleted === undefined || c.is_deleted === 0);
+                     }));
+    var coilBtnCls, coilBtnTitle;
+    if (hasCoil) {
+        coilBtnCls = 'btn-success';   // 已录，绿底
+        coilBtnTitle = '维护卷标（已录入）';
+    } else if (isAB) {
+        coilBtnCls = 'btn-warning';   // A/B 必录，黄底（保持）
+        coilBtnTitle = '维护卷标（A/B 开头必须录入）';
+    } else {
+        coilBtnCls = 'btn-outline-info';
+        coilBtnTitle = '维护卷标（可选）';
+    }
+    btn.className = 'btn btn-sm ' + coilBtnCls;
+    btn.title = coilBtnTitle;
     btn.innerHTML = '<i class="fas fa-tags"></i>';
 }
 
@@ -700,6 +754,7 @@ function doAction(requestId, action) {
         'reject': __('action.reject'),
         'start_prep': __('action.start_prep'),
         'complete_prep': __('action.complete_prep'),
+        'back_to_prepping': __('action.back_to_prepping'),
         'short': __('action.short'),
         'sign': __('action.sign'),
         'confirm_return': __('action.confirm_return'),
@@ -755,6 +810,7 @@ function confirmAction() {
         'reject': '/api/requests/' + currentRequestId + '/reject',
         'start_prep': '/api/requests/' + currentRequestId + '/start-prep',
         'complete_prep': '/api/requests/' + currentRequestId + '/complete-prep',
+        'back_to_prepping': '/api/requests/' + currentRequestId + '/back-to-prepping',
         'restore_from_short': '/api/requests/' + currentRequestId + '/restore-from-short',
         'cancel': '/api/requests/' + currentRequestId + '/cancel',
         'short': '/api/requests/' + currentRequestId + '/short',
