@@ -123,7 +123,7 @@ function logout() {
     });
 }
 
-/* ========== Admin 站点切换 ========== */
+/* ========== 站点切换（任意角色，仅限其可访问站点） ========== */
 function switchSite(site) {
     apiPost('/api/auth/switch-site', {siteref: site}, function (resp) {
         showToast('success', '已切换到: ' + resp.siteref_name);
@@ -795,13 +795,42 @@ function renderMappingTable(data) {
     tbody.innerHTML = '';
     data.forEach(function (row) {
         const tr = document.createElement('tr');
-        const siterefDisplay = row.siteref ? (siteLabels[row.siteref] || row.siteref) : '<span class="text-muted">跨站</span>';
+        // 原始值存 dataset，编辑时直接回填，不依赖单元格文本解析
+        tr.dataset.id = row.id;
+        tr.dataset.account = row.domain_account;
+        tr.dataset.display = row.display_name || '';
+        tr.dataset.role = row.role;
+        tr.dataset.siteref = row.siteref || '';
+        tr.dataset.siteAccess = row.site_access || '';
+        tr.dataset.email = row.email || '';
+        tr.dataset.active = row.is_active;
+        tr.dataset.remark = row.remark || '';
+
+        let siterefDisplay;
+        if (row.role === 'admin' && !row.siteref) {
+            siterefDisplay = '<span class="text-muted">跨站</span>';
+        } else if (row.siteref) {
+            siterefDisplay = siteLabels[row.siteref] || row.siteref;
+        } else {
+            siterefDisplay = '<span class="text-muted">-</span>';
+        }
+
+        // 多站点展示：默认站之外的可访问站点以灰色小字追加
+        let accessExtra = '';
+        if (row.site_access) {
+            const list = String(row.site_access).split(',').map(s => s.trim()).filter(Boolean);
+            const extra = list.filter(s => s !== row.siteref);
+            if (extra.length) {
+                accessExtra = '<div class="text-muted small">' + extra.map(s => siteLabels[s] || s).join('、') + '</div>';
+            }
+        }
+
         tr.innerHTML = `
             <td>${row.id}</td>
             <td>${escapeHtml(row.domain_account)}</td>
             <td>${escapeHtml(row.display_name || '-')}</td>
             <td><span class="badge bg-primary">${roleLabels[row.role] || row.role}</span></td>
-            <td>${siterefDisplay}</td>
+            <td>${siterefDisplay}${accessExtra}</td>
             <td>${escapeHtml(row.email || '-')}</td>
             <td>${row.is_active ? '<span class="badge bg-success">启用</span>' : '<span class="badge bg-secondary">禁用</span>'}</td>
             <td>${escapeHtml(row.remark || '-')}</td>
@@ -814,18 +843,67 @@ function renderMappingTable(data) {
     });
 }
 
+function syncSiteAccessCheckboxes() {
+    // 保证默认站（siteref）必在可访问站点内：有默认站时对应框勾选并禁用
+    const site = document.getElementById('fSiteref').value || '';
+    const boxes = document.querySelectorAll('#siteAccessBox input[type=checkbox]');
+    boxes.forEach(function (c) {
+        if (site && c.value === site) {
+            c.checked = true;
+            c.disabled = true;
+        } else {
+            c.disabled = false;
+        }
+    });
+}
+
+function onDefaultSiteChange() {
+    syncSiteAccessCheckboxes();
+}
+
+function setSiteAccessValue(valueStr) {
+    const boxes = document.querySelectorAll('#siteAccessBox input[type=checkbox]');
+    boxes.forEach(function (c) { c.checked = false; });
+    String(valueStr || '').split(',').forEach(function (s) {
+        s = s.trim();
+        if (!s) return;
+        const cb = document.querySelector('#siteAccessBox input[value="' + s + '"]');
+        if (cb) cb.checked = true;
+    });
+    syncSiteAccessCheckboxes();
+}
+
+function collectSiteAccess() {
+    // 收集勾选的可访问站点；admin 自动全站，无需配置
+    if (document.getElementById('fRole').value === 'admin') return null;
+    const boxes = document.querySelectorAll('#siteAccessBox input[type=checkbox]:checked');
+    return Array.from(boxes).map(c => c.value).join(',') || null;
+}
+
 function toggleSiteField() {
     const role = document.getElementById('fRole').value;
-    const siteSelect = document.getElementById('fSiteref');
     const siteRequired = document.getElementById('siteRequired');
     const siteHint = document.getElementById('siteAdminHint');
+    const isAdmin = role === 'admin';
+    const isMeEngineer = role === 'me_engineer';
 
-    if (role === 'admin' || role === 'me_engineer') {
+    if (isAdmin || isMeEngineer) {
         siteRequired.classList.add('d-none');
         if (siteHint) siteHint.classList.remove('d-none');
     } else {
         siteRequired.classList.remove('d-none');
         if (siteHint) siteHint.classList.add('d-none');
+    }
+
+    // 可访问站点（多选）：admin 自动全站，禁用并提示；其他角色启用
+    if (isAdmin) {
+        document.getElementById('siteAccessHint').classList.add('d-none');
+        document.getElementById('siteAccessAdminHint').classList.remove('d-none');
+        document.querySelectorAll('#siteAccessBox input[type=checkbox]').forEach(function (c) { c.disabled = true; });
+    } else {
+        document.getElementById('siteAccessHint').classList.remove('d-none');
+        document.getElementById('siteAccessAdminHint').classList.add('d-none');
+        syncSiteAccessCheckboxes();
     }
 }
 
@@ -840,8 +918,9 @@ function showAddModal() {
     document.getElementById('fEmail').value = '';
     document.getElementById('fIsActive').value = '1';
     document.getElementById('fRemark').value = '';
-    document.getElementById('saveMappingBtn').onclick = createMapping;
+    setSiteAccessValue('');
     toggleSiteField();
+    document.getElementById('saveMappingBtn').onclick = createMapping;
     mappingModal.show();
 }
 
@@ -851,6 +930,7 @@ function createMapping() {
         display_name: document.getElementById('fDisplayName').value.trim(),
         role: document.getElementById('fRole').value,
         siteref: document.getElementById('fSiteref').value || null,
+        site_access: collectSiteAccess(),
         email: document.getElementById('fEmail').value.trim(),
         is_active: parseInt(document.getElementById('fIsActive').value),
         remark: document.getElementById('fRemark').value.trim()
@@ -879,30 +959,20 @@ function editMapping(id) {
     document.getElementById('mappingModalTitle').textContent = '编辑账号';
     document.getElementById('editId').value = id;
 
-    const rows = document.querySelectorAll('#mappingTableBody tr');
-    for (const row of rows) {
-        const cells = row.querySelectorAll('td');
-        if (cells.length >= 9 && cells[0].textContent == id) {
-            document.getElementById('fDomainAccount').value = cells[1].textContent.trim();
-            document.getElementById('fDomainAccount').readOnly = true;
-            document.getElementById('fDisplayName').value = cells[2].textContent.trim() === '-' ? '' : cells[2].textContent.trim();
+    const tr = document.querySelector('#mappingTableBody tr[data-id="' + id + '"]');
+    if (!tr) return;
+    const d = tr.dataset;
 
-            const roleText = cells[3].textContent.trim();
-            const roleMap = {'管理员': 'admin', '领料员': 'requester', '主管': 'supervisor', '仓库': 'warehouse', 'ME工程师': 'me_engineer'};
-            document.getElementById('fRole').value = roleMap[roleText] || 'requester';
-
-            // 站点字段
-            const siteText = cells[4].textContent.trim();
-            const siteMap = {'苏州工厂': '310', '槟城工厂': '410'};
-            document.getElementById('fSiteref').value = siteMap[siteText] || '';
-            toggleSiteField();
-
-            document.getElementById('fEmail').value = cells[5].textContent.trim() === '-' ? '' : cells[5].textContent.trim();
-            document.getElementById('fIsActive').value = cells[6].textContent.includes('启用') ? '1' : '0';
-            document.getElementById('fRemark').value = cells[7].textContent.trim() === '-' ? '' : cells[7].textContent.trim();
-            break;
-        }
-    }
+    document.getElementById('fDomainAccount').value = d.account;
+    document.getElementById('fDomainAccount').readOnly = true;
+    document.getElementById('fDisplayName').value = d.display;
+    document.getElementById('fRole').value = d.role;
+    document.getElementById('fSiteref').value = d.siteref;
+    document.getElementById('fEmail').value = d.email;
+    document.getElementById('fIsActive').value = d.active == '1' ? '1' : '0';
+    document.getElementById('fRemark').value = d.remark;
+    setSiteAccessValue(d.siteAccess);
+    toggleSiteField();
 
     document.getElementById('saveMappingBtn').onclick = function () {
         updateMapping(id);
@@ -915,6 +985,7 @@ function updateMapping(id) {
         display_name: document.getElementById('fDisplayName').value.trim(),
         role: document.getElementById('fRole').value,
         siteref: document.getElementById('fSiteref').value || null,
+        site_access: collectSiteAccess(),
         email: document.getElementById('fEmail').value.trim(),
         is_active: parseInt(document.getElementById('fIsActive').value),
         remark: document.getElementById('fRemark').value.trim()

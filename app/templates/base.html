@@ -85,15 +85,16 @@
                         <span id="siteName">{{ session.user.siteref }}</span>
                     </span>
 
-                    <!-- admin 站点切换 -->
-                    {% if session.user.role == 'admin' %}
+                    <!-- 站点切换（可访问站点数 > 1 时显示，不再仅限 admin） -->
+                    {% if session.user.available_sites|length > 1 %}
                     <div class="dropdown me-2">
                         <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
                             <i class="fas fa-exchange-alt me-1"></i><span data-i18n="nav.switch_site">切换站点</span>
                         </button>
                         <ul class="dropdown-menu" id="siteSwitchMenu">
-                            <li><a class="dropdown-item" href="#" data-site="310" onclick="switchSite('310')">苏州工厂 (310)</a></li>
-                            <li><a class="dropdown-item" href="#" data-site="410" onclick="switchSite('410')">槟城工厂 (410)</a></li>
+                            {% for site in session.user.available_sites %}
+                            <li><a class="dropdown-item" href="#" data-site="{{ site }}" onclick="switchSite('{{ site }}')">{{ site_config.get(site, site) }}</a></li>
+                            {% endfor %}
                         </ul>
                     </div>
                     {% endif %}

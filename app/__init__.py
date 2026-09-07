@@ -37,6 +37,11 @@ def create_app(config_class=Config):
     app.register_blueprint(external_bp)
     app.register_blueprint(cutting_bp)
 
+    # 全局模板上下文：站点编号 → 双语站点名（供导航切换站点菜单等渲染）
+    @app.context_processor
+    def _inject_site_config():
+        return {'site_config': Config.SITE_CONFIG}
+
     # 页面路由
     from app.routes import pages
     app.register_blueprint(pages)

@@ -47,6 +47,33 @@ def list_mappings():
     return jsonify({'success': True, 'data': rows})
 
 
+def _normalize_site_access(raw, role, default_site):
+    """规范化 site_access：
+    - 接受逗号分隔字符串或列表；去空格、过滤非法站点、去重、排序后 join；
+    - 空结果返回 None（= 仅默认站，由登录侧兜底）；
+    - 非空列表且未含默认站 siteref 时自动补入（默认站必然可访问）；
+    - admin 返回 None（登录时自动全站）。
+    """
+    if role == 'admin':
+        return None
+    parts = []
+    if isinstance(raw, str):
+        parts = raw.split(',')
+    elif isinstance(raw, (list, tuple)):
+        parts = raw
+    sites = []
+    for p in parts:
+        p = str(p).strip()
+        if p and p in Config.SITE_CONFIG and p not in sites:
+            sites.append(p)
+    if not sites:
+        return None
+    if default_site and default_site in Config.SITE_CONFIG and default_site not in sites:
+        sites.append(default_site)
+    sites.sort()
+    return ','.join(sites)
+
+
 @admin_bp.route('/api/role-mappings', methods=['POST'])
 def create_mapping():
     _, err_resp, err_code = check_admin()
@@ -72,17 +99,22 @@ def create_mapping():
     if siteref and siteref not in Config.SITE_CONFIG:
         return jsonify({'success': False, 'message': f'无效站点，可选: {", ".join(Config.SITE_CONFIG.keys())}'}), 400
 
+    # site_access：逗号分隔可访问站点，可为空（= 仅默认站）；非空时自动补入默认站兜底
+    site_access = _normalize_site_access(data.get('site_access'), data['role'], siteref)
+
     try:
         with get_db_connection() as db:
             cursor = db.cursor()
             cursor.execute(
-                "INSERT INTO kr_role_mapping (domain_account, display_name, role, siteref, email, is_active, remark) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "INSERT INTO kr_role_mapping "
+                "(domain_account, display_name, role, siteref, site_access, email, is_active, remark) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     data['domain_account'].strip(),
                     data.get('display_name', '').strip(),
                     data['role'],
                     siteref,
+                    site_access,
                     data.get('email', '').strip(),
                     data.get('is_active', 1),
                     data.get('remark', '').strip()
@@ -113,15 +145,25 @@ def update_mapping(mapping_id):
                 cursor.close()
                 return jsonify({'success': False, 'message': '记录不存在'}), 404
 
+            # 更新后的角色与默认站（用于 site_access 规范化：角色为 admin 时置空、默认站兜底补入）
+            role_after = data.get('role') or existing.get('role')
+            if 'siteref' in data:
+                siteref_after = str(data['siteref']).strip() if data['siteref'] else None
+            else:
+                siteref_after = existing.get('siteref')
+
             update_fields = []
             update_params = []
 
-            for field in ['display_name', 'role', 'email', 'is_active', 'remark', 'domain_account', 'siteref']:
+            for field in ['display_name', 'role', 'email', 'is_active', 'remark', 'domain_account', 'siteref', 'site_access']:
                 if field in data:
                     val = data[field]
                     # siteref 空字符串转为 None
                     if field == 'siteref':
                         val = val.strip() if val else None
+                    # site_access 规范化：过滤/去重/补默认站，admin 置空
+                    elif field == 'site_access':
+                        val = _normalize_site_access(val, role_after, siteref_after)
                     update_fields.append(f"{field} = %s")
                     update_params.append(val)
 

@@ -102,12 +102,15 @@ def login():
     siteref = mapping.get('siteref')
     siteref_name = Config.SITE_CONFIG.get(siteref, '') if siteref else ''
 
-    # admin 跨站
+    # admin 跨站；非 admin 的可访问站点来自 site_access（逗号分隔），空则回退默认站 siteref
     if mapping['role'] == 'admin':
         available_sites = list(Config.SITE_CONFIG.keys())
         effective_siteref = siteref or '310'
     else:
-        available_sites = [siteref] if siteref else []
+        raw_access = mapping.get('site_access') or ''
+        available_sites = [s.strip() for s in str(raw_access).split(',') if s.strip()]
+        if not available_sites:
+            available_sites = [siteref] if siteref else []
         effective_siteref = siteref
 
     # 使用 LDAP 返回的 displayName
@@ -160,18 +163,28 @@ def me():
 
 @auth_bp.route('/api/auth/switch-site', methods=['POST'])
 def switch_site():
-    """admin 切换站点"""
+    """切换站点：任何角色均可，只要目标站点在该用户 available_sites 内（admin 全站）"""
     user = session.get('user')
     if not user:
         return jsonify({'success': False, 'message': '未登录'}), 401
-    if user['role'] != 'admin':
-        return jsonify({'success': False, 'message': '权限不足'}), 403
 
     data = request.get_json() or {}
     target_site = data.get('siteref', '').strip()
 
     if target_site not in Config.SITE_CONFIG:
         return jsonify({'success': False, 'message': '无效的站点'}), 400
+
+    # 授权校验：目标站点必须在可访问站点列表中（admin 登录时 available_sites 即全站列表）
+    available = user.get('available_sites')
+    if available:
+        available = list(available)
+    elif user.get('role') == 'admin':
+        available = list(Config.SITE_CONFIG.keys())
+    else:
+        current_site = user.get('siteref')
+        available = [current_site] if current_site else []
+    if target_site not in available:
+        return jsonify({'success': False, 'message': '无权访问该站点'}), 403
 
     # 更新 session 中的当前站点
     user['siteref'] = target_site

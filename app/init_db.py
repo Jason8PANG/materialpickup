@@ -43,6 +43,7 @@ CREATE_TABLES = [
       display_name    VARCHAR(128)    DEFAULT NULL COMMENT '显示名称',
       role            VARCHAR(32)     NOT NULL COMMENT '角色: admin/requester/supervisor/warehouse',
       siteref         VARCHAR(16)     DEFAULT NULL COMMENT '所属站点：310-苏州 / 410-槟城；NULL 表示跨站点（仅 admin 角色可用）',
+      site_access     VARCHAR(64)     DEFAULT NULL COMMENT '可访问站点列表(逗号分隔)；NULL=仅默认站',
       email           VARCHAR(256)    DEFAULT NULL COMMENT '邮箱地址（主管必填，用于接收审批邮件）',
       password_hash   VARCHAR(256)    DEFAULT NULL COMMENT '密码哈希',
       is_active       TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '是否启用',
