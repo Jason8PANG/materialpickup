@@ -202,14 +202,24 @@ def ext_create_consumption():
         return jsonify({'success': False, 'error': 'coil_id、part_number 为必填项'}), 400
     qty = _num(b.get('shear_qty'))
     act_len = _num(b.get('actual_shear_length'))
-    if qty is None or qty <= 0:
-        return jsonify({'success': False, 'error': '消耗数量必须大于0'}), 400
-    if act_len is None or act_len <= 0:
-        return jsonify({'success': False, 'error': '实际剪切长度必须大于0'}), 400
     scrap = _num(b.get('scrap_length_actual'), 0) or 0
     if scrap < 0:
         return jsonify({'success': False, 'error': '报废长度格式不正确'}), 400
+    # 报废型消耗：数量/剪长可空（视为 0），报废长度 > 0 → 仍落 consume_type='consumption'
+    is_scrap_only = qty is None or qty <= 0 or act_len is None or act_len <= 0
+    if is_scrap_only:
+        if not scrap or scrap <= 0:
+            return jsonify({'success': False, 'error': '报废登记需提供报废长度（scrap_length_actual > 0）'}), 400
+        qty = qty or 0
+        act_len = act_len or 0
+    else:
+        if qty is None or qty <= 0:
+            return jsonify({'success': False, 'error': '消耗数量必须大于0'}), 400
+        if act_len is None or act_len <= 0:
+            return jsonify({'success': False, 'error': '实际剪切长度必须大于0'}), 400
     out_length = qty * act_len + scrap
+    if out_length <= 0:
+        return jsonify({'success': False, 'error': '长度必须大于0'}), 400
 
     with get_db_connection() as db:
         cur = db.cursor()
@@ -265,7 +275,7 @@ def ext_create_consumption():
              factor and coil.get('unit') or None,
              int(qty),
              _num(b.get('cut_length_mm')),
-             act_len,
+             (act_len or None),
              _parse_tol(b.get('length_tolerance')),
              (b.get('shear_equipment') or '').strip() or None,
              (b.get('shear_device_no') or '').strip() or None,
