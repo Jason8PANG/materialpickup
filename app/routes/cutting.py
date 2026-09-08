@@ -11,7 +11,7 @@ import json
 
 from flask import Blueprint, jsonify, request, session
 
-from app.models import get_db_connection
+from app.models import get_db_connection, get_site_filter
 from app.utils import WhereBuilder
 from app.services.cutting_import import import_cutting_ref
 
@@ -82,6 +82,11 @@ def list_cutting_ref():
                "OR color LIKE %s OR term_a LIKE %s OR term_b LIKE %s)",
                *([f"%{keyword}%"] * 6))
 
+    # 站点隔离：各站点独立规格，仅展示当前用户站点数据
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        wb.add(site_filter, *site_params)
+
     where_clause, params = wb.build()
 
     with get_db_connection() as db:
@@ -130,10 +135,15 @@ def create_cutting_ref():
     if not values.get('finished_part') and not values.get('wire_part'):
         return jsonify({'success': False, 'message': '成品料号与线材料号至少填写一项'}), 400
 
-    columns = list(EDITABLE_FIELDS)
+    # 落库站点 = 当前用户站点（各站点独立规格）
+    siteref = (user.get('siteref') or '').strip() or None
+    if not siteref:
+        return jsonify({'success': False, 'message': '站点信息缺失'}), 400
+
+    columns = list(EDITABLE_FIELDS) + ['siteref']
     placeholders = ', '.join(['%s'] * len(columns))
     sql = f"INSERT INTO kr_cutting_ref ({', '.join(columns)}) VALUES ({placeholders})"
-    params = [values[f] for f in columns]
+    params = [values[f] for f in EDITABLE_FIELDS] + [siteref]
 
     try:
         with get_db_connection() as db:
@@ -170,16 +180,28 @@ def update_cutting_ref(ref_id):
     if not update_fields:
         return jsonify({'success': False, 'message': '没有需要更新的字段'}), 400
 
+    # 站点隔离：仅允许更新本站点记录（SELECT 存在性校验 + UPDATE 双重带站约束）
+    site_filter, site_params = get_site_filter(user)
+    site_guard_sql, site_guard_params = "", ()
+    if site_filter:
+        site_guard_sql = " AND siteref = %s"
+        site_guard_params = (site_params[0],)
+
     try:
         with get_db_connection() as db:
             cur = db.cursor()
-            cur.execute("SELECT id FROM kr_cutting_ref WHERE id = %s", (ref_id,))
+            cur.execute(
+                f"SELECT id FROM kr_cutting_ref WHERE id = %s{site_guard_sql}",
+                (ref_id,) + site_guard_params
+            )
             if not cur.fetchone():
                 cur.close()
                 return jsonify({'success': False, 'message': '记录不存在'}), 404
             update_params.append(ref_id)
+            update_params.extend(site_guard_params)
             cur.execute(
-                f"UPDATE kr_cutting_ref SET {', '.join(update_fields)} WHERE id = %s",
+                f"UPDATE kr_cutting_ref SET {', '.join(update_fields)} "
+                f"WHERE id = %s{site_guard_sql}",
                 update_params
             )
             db.commit()
@@ -201,13 +223,26 @@ def delete_cutting_ref(ref_id):
     if perm_err:
         return perm_err
 
+    # 站点隔离：仅允许删除本站点记录（SELECT 存在性校验 + DELETE 双重带站约束）
+    site_filter, site_params = get_site_filter(user)
+    site_guard_sql, site_guard_params = "", ()
+    if site_filter:
+        site_guard_sql = " AND siteref = %s"
+        site_guard_params = (site_params[0],)
+
     with get_db_connection() as db:
         cur = db.cursor()
-        cur.execute("SELECT id FROM kr_cutting_ref WHERE id = %s", (ref_id,))
+        cur.execute(
+            f"SELECT id FROM kr_cutting_ref WHERE id = %s{site_guard_sql}",
+            (ref_id,) + site_guard_params
+        )
         if not cur.fetchone():
             cur.close()
             return jsonify({'success': False, 'message': '记录不存在'}), 404
-        cur.execute("DELETE FROM kr_cutting_ref WHERE id = %s", (ref_id,))
+        cur.execute(
+            f"DELETE FROM kr_cutting_ref WHERE id = %s{site_guard_sql}",
+            (ref_id,) + site_guard_params
+        )
         db.commit()
         cur.close()
 
@@ -215,7 +250,7 @@ def delete_cutting_ref(ref_id):
 
 
 # ================================================================== #
-#  批量导入（me_engineer + admin，覆盖式：清空重导）
+#  批量导入（me_engineer + admin，站点化覆盖：仅清空当前站点旧数据后重导）
 # ================================================================== #
 @cutting_bp.route('/api/cutting-ref/import', methods=['POST'])
 def import_cutting_ref_api():
@@ -235,14 +270,25 @@ def import_cutting_ref_api():
         return jsonify({'success': False, 'message': '仅支持 .xlsx 文件'}), 400
 
     buf = io.BytesIO(f.read())
+    # 站点化覆盖导入：默认导入当前用户站点；支持显式 site 参数（须在用户可访问站点内）
+    site = (request.form.get('site') or '').strip() or (request.args.get('site') or '').strip()
+    if not site:
+        site = (user.get('siteref') or '').strip()
+    available = user.get('available_sites') or []
+    if available and site not in available:
+        return jsonify({'success': False, 'message': f'无权向站点 {site} 导入裁线规格'}), 403
+    if not site:
+        return jsonify({'success': False, 'message': '站点信息缺失，无法导入'}), 400
     try:
-        result = import_cutting_ref(buf, truncate=True)
+        result = import_cutting_ref(buf, siteref=site)
     except Exception as e:
         return jsonify({'success': False, 'message': f'导入失败: {str(e)}'}), 400
 
     return jsonify({
         'success': True,
+        'siteref': site,
         'imported': result['imported'],
         'skipped': result['skipped'],
-        'message': f'导入完成：{result["imported"]} 行（跳过空行 {result["skipped"]}）',
+        'message': f'站点 {site} 导入完成：{result["imported"]} 行（跳过空行 {result["skipped"]}，'
+                   f'已覆盖该站点原 {result["deleted"]} 行旧数据）',
     })

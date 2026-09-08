@@ -88,8 +88,9 @@ def create_return():
                 errors.append(f'{cid}: 卷标ID格式无效')
                 continue
             cur.execute(
-                "SELECT coil_id, part_number, unit, status, coil_length FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
-                (cid,)
+                "SELECT coil_id, part_number, unit, status, coil_length FROM kr_wire_coil "
+                "WHERE coil_id = %s AND is_deleted = 0 AND siteref = %s",
+                (cid, siteref)
             )
             c = cur.fetchone()
             if not c:

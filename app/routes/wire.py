@@ -69,8 +69,8 @@ def count_page():
 # ================================================================== #
 #  卷标查询
 # ================================================================== #
-def _build_coil_query():
-    """解析卷标查询参数，返回 (where_clause, params)"""
+def _build_coil_query(user=None):
+    """解析卷标查询参数，返回 (where_clause, params)；传入 user 时按当前站点隔离"""
     wb = WhereBuilder(['c.is_deleted = 0'])
     args = request.args
     if args.get('coil_id'):
@@ -92,6 +92,10 @@ def _build_coil_query():
         wb.add('DATE(c.created_at) >= %s', args['date_from'].strip())
     if args.get('date_to'):
         wb.add('DATE(c.created_at) <= %s', args['date_to'].strip())
+    # 站点隔离：session 当前站点（get_site_filter 对无 siteref 的 admin 不过滤）
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        wb.add(f'c.{site_filter}', *site_params)
     return wb.build()
 
 
@@ -136,7 +140,7 @@ def api_coils():
     if err:
         return err
     status_filter = request.args.get('status') or ''
-    where, params = _build_coil_query()
+    where, params = _build_coil_query(user)
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -187,7 +191,7 @@ def export_coils():
     user, err = _check_login()
     if err:
         return err
-    where, params = _build_coil_query()
+    where, params = _build_coil_query(user)
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -231,7 +235,7 @@ def export_coils():
 # ================================================================== #
 #  消耗查询
 # ================================================================== #
-def _build_consumption_query():
+def _build_consumption_query(user=None):
     wb = WhereBuilder(['1=1'])
     args = request.args
     if args.get('coil_id'):
@@ -246,6 +250,10 @@ def _build_consumption_query():
         wb.add('DATE(c.created_at) >= %s', args['date_from'].strip())
     if args.get('date_to'):
         wb.add('DATE(c.created_at) <= %s', args['date_to'].strip())
+    # 站点隔离：session 当前站点（get_site_filter 对无 siteref 的 admin 不过滤）
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        wb.add(f'c.{site_filter}', *site_params)
     return wb.build()
 
 
@@ -254,7 +262,7 @@ def api_consumption():
     user, err = _check_login()
     if err:
         return err
-    where, params = _build_consumption_query()
+    where, params = _build_consumption_query(user)
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -278,7 +286,7 @@ def export_consumption():
     user, err = _check_login()
     if err:
         return err
-    where, params = _build_consumption_query()
+    where, params = _build_consumption_query(user)
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -380,12 +388,13 @@ def api_count_adjust():
             cur.execute(
                     """INSERT INTO kr_wire_coil_consumption
                        (coil_id, job_order, part_number, consume_type, out_length, unit,
-                        converted_length, converted_unit, operator, remark, created_at, is_manual)
-                       VALUES (%s, %s, %s, 'count_adjust', %s, %s, %s, %s, %s, %s, %s, 1)""",
+                        converted_length, converted_unit, operator, remark, created_at, is_manual, siteref)
+                       VALUES (%s, %s, %s, 'count_adjust', %s, %s, %s, %s, %s, %s, %s, 1, %s)""",
                     (it['coil_id'], count_no, it.get('part_number'),
                      adjust_mm, it.get('unit'),
                      adjust_converted, it.get('unit'),
-                     operator, f'盘点差异调整（{count_no}）', now)
+                     operator, f'盘点差异调整（{count_no}）', now,
+                     count.get('siteref') or user.get('siteref'))
                 )
             inserted += 1
         db.commit()

@@ -525,7 +525,11 @@ def ext_delete_consumption(record_id):
         if not cur.fetchone():
             cur.close()
             return jsonify({'success': False, 'error': '记录不存在'}), 404
-        cur.execute("DELETE FROM kr_wire_coil_consumption WHERE id = %s", (record_id,))
+        # 纵深防御：SELECT 已校验站点，DELETE 同样带 siteref 约束（防止并发下误删其它站点记录）
+        cur.execute(
+            "DELETE FROM kr_wire_coil_consumption WHERE id = %s AND siteref = %s",
+            (record_id, site)
+        )
         db.commit()
     return jsonify({'success': True, 'message': '记录已删除', 'id': record_id})
 
@@ -778,8 +782,10 @@ def ext_cutting_ref():
     site = _require_site()
     if isinstance(site, tuple):
         return site
-    # kr_cutting_ref 无 siteref 列，参数为跨站点共享；仅校验站点标识有效性，不做数据过滤
+    # kr_cutting_ref 已站点化（各站点独立规格）：按解析站点过滤数据
     wb_where, wb_params = [], []
+    wb_where.append('siteref = %s')
+    wb_params.append(site)
     finished_part = (request.args.get('finished_part') or '').strip()
     wire_part = (request.args.get('wire_part') or '').strip()
     if finished_part:

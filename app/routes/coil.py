@@ -998,13 +998,14 @@ def request_in_stock_coils(request_id):
                 f"WHERE k.coil_id = c.coil_id AND k.consume_type IN ('consumption','count_adjust')), 0) AS used, "
                 f"EXISTS (SELECT 1 FROM kr_return_item ri WHERE ri.coil_id = c.coil_id) AS is_return "
                 f"FROM kr_wire_coil c "
-                f"WHERE c.status = 'in_stock' AND c.is_deleted = 0 AND c.part_number IN ({ph}) "
+                f"WHERE c.status = 'in_stock' AND c.is_deleted = 0 "
+                f"AND c.siteref = %s AND c.part_number IN ({ph}) "
                 f"AND NOT EXISTS ( "
                 f"  SELECT 1 FROM kr_material_request r WHERE r.id = c.request_id "
                 f"  AND r.is_deleted = 0 AND r.status IN ('pending_prep','prepping','ready_pickup','short') "
                 f") "
                 f"ORDER BY is_return DESC, c.id",
-                parts
+                (req['siteref'], *parts)
             )
             for r in cursor.fetchall():
                 unit = (r['unit'] or '').strip().upper()
@@ -1656,15 +1657,15 @@ def create_consumption(request_id):
                     # 单位未知时无法换算校验，仅警告不阻断（与 R11 降级策略一致）
                     warnings.append(f'卷标 {coil_id} 单位 {unit or "未知"} 未收录换算系数，已跳过长度校验')
 
-                # 写入消耗记录（冗余 part_number/unit；不再写 request_id，追溯经 coil_id 上查 kr_wire_coil.request_id）
+                # 写入消耗记录（冗余 part_number/unit/siteref；不再写 request_id，追溯经 coil_id 上查 kr_wire_coil.request_id）
                 cols = (['coil_id', 'job_order', 'part_number', 'consume_type', 'out_length',
                          'unit', 'converted_length', 'converted_unit']
                         + list(CONSUMPTION_EXTRA_FIELDS.keys())
-                        + ['operator', 'remark', 'created_at'])
+                        + ['operator', 'remark', 'created_at', 'siteref'])
                 vals = [coil_id, job_order, coil['part_number'], 'issue', round(out_length, 2),
                         unit, converted_length, converted_unit]
                 vals += [extra[k] for k in CONSUMPTION_EXTRA_FIELDS]
-                vals += [operator, remark, datetime.now()]
+                vals += [operator, remark, datetime.now(), siteref]
                 cursor.execute(
                     "INSERT INTO kr_wire_coil_consumption (%s) VALUES (%s)"
                     % (', '.join(cols), ', '.join(['%s'] * len(cols))),
