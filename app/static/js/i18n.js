@@ -317,6 +317,14 @@ const I18N = {
         'cutting.import_confirm': '导入将清空现有全部数据并覆盖，确认继续？',
         'cutting.select_file': '请选择文件',
         'cutting.importing': '导入中（约 2.5 万行，可能需要数十秒）...',
+        'cutting.exempt': '成品豁免名单',
+        'cutting.exempt_title': '成品豁免名单',
+        'cutting.exempt_note': '备注',
+        'cutting.created_at': '创建时间',
+        'cutting.exempt_hint': '名单内的成品料号不参与裁线校验（按当前站点维护）。',
+        'cutting.exempt_search_placeholder': '搜索成品料号 / 备注...',
+        'cutting.exempt_part_required': '成品料号不能为空',
+        'cutting.exempt_delete_confirm': '确认删除此豁免记录吗？',
 
         // === 登录 ===
         'login.title': '物料领取看板',
@@ -789,6 +797,14 @@ const I18N = {
         'cutting.import_confirm': 'Import will clear all existing data and overwrite. Continue?',
         'cutting.select_file': 'Select file',
         'cutting.importing': 'Importing (~25k rows, may take tens of seconds)...',
+        'cutting.exempt': 'Exemption List',
+        'cutting.exempt_title': 'Exemption List',
+        'cutting.exempt_note': 'Note',
+        'cutting.created_at': 'Created At',
+        'cutting.exempt_hint': 'Finished parts in this list are excluded from cutting validation (maintained per site).',
+        'cutting.exempt_search_placeholder': 'Search finished part / note...',
+        'cutting.exempt_part_required': 'Finished part is required',
+        'cutting.exempt_delete_confirm': 'Delete this exemption record?',
 
         // === Login ===
         'login.title': 'Material Pickup Kanban',

@@ -292,3 +292,210 @@ def import_cutting_ref_api():
         'message': f'站点 {site} 导入完成：{result["imported"]} 行（跳过空行 {result["skipped"]}，'
                    f'已覆盖该站点原 {result["deleted"]} 行旧数据）',
     })
+
+
+# ================================================================== #
+#  成品豁免名单（cutting_no_cut_exempt）
+#    可维护字段：finished_part + note；siteref 自动取登录站点，不可手工指定
+#    同一站点内成品料号唯一（接口层拦截，不建库唯一索引）
+# ================================================================== #
+def _exempt_site_guard(user):
+    """返回 (and_sql, params) 站点守卫片段，用于 WHERE 追加 siteref 约束。"""
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        return " AND siteref = %s", (site_params[0],)
+    return "", ()
+
+
+@cutting_bp.route('/api/cutting-exempt', methods=['GET'])
+def list_cutting_exempt():
+    user, err = _check_login()
+    if err:
+        return err
+
+    keyword = (request.args.get('keyword') or '').strip()
+    page = int(request.args.get('page', 1) or 1)
+    size = int(request.args.get('size', 50) or 50)
+    size = max(1, min(size, 200))
+    page = max(1, page)
+
+    wb = WhereBuilder(["1=1"])
+    if keyword:
+        wb.add("(finished_part LIKE %s OR note LIKE %s)", *([f"%{keyword}%"] * 2))
+
+    # 站点隔离：仅展示当前站点豁免名单
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        wb.add(site_filter, *site_params)
+
+    where_clause, params = wb.build()
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(f"SELECT COUNT(*) AS total FROM cutting_no_cut_exempt WHERE {where_clause}", params)
+        total = cur.fetchone()['total']
+        offset = (page - 1) * size
+        cur.execute(
+            "SELECT id, siteref, finished_part, note, "
+            "DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created_at "
+            f"FROM cutting_no_cut_exempt WHERE {where_clause} ORDER BY id LIMIT %s OFFSET %s",
+            params + [size, offset]
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+    return jsonify({
+        'success': True,
+        'data': rows,
+        'total': total,
+        'page': page,
+        'size': size,
+        'total_pages': (total + size - 1) // size,
+        'can_edit': user['role'] in WRITE_ROLES,
+    })
+
+
+@cutting_bp.route('/api/cutting-exempt', methods=['POST'])
+def create_cutting_exempt():
+    user, err = _check_login()
+    if err:
+        return err
+    perm_err = _check_write(user)
+    if perm_err:
+        return perm_err
+
+    data = request.get_json() or {}
+    finished_part = str(data.get('finished_part') or '').strip()
+    if not finished_part:
+        return jsonify({'success': False, 'message': '成品料号不能为空'}), 400
+
+    note_raw = data.get('note')
+    note = str(note_raw).strip() if note_raw is not None and str(note_raw).strip() else None
+
+    # 落库站点 = 当前用户站点（各站点独立豁免名单）
+    siteref = (user.get('siteref') or '').strip() or None
+    if not siteref:
+        return jsonify({'success': False, 'message': '站点信息缺失'}), 400
+
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            # 同站同料号查重
+            cur.execute(
+                "SELECT id FROM cutting_no_cut_exempt WHERE siteref = %s AND finished_part = %s",
+                (siteref, finished_part)
+            )
+            if cur.fetchone():
+                cur.close()
+                return jsonify({'success': False, 'message': '该成品料号已在本站豁免名单中'}), 400
+
+            cur.execute(
+                "INSERT INTO cutting_no_cut_exempt (siteref, finished_part, note) VALUES (%s, %s, %s)",
+                (siteref, finished_part, note)
+            )
+            db.commit()
+            new_id = cur.lastrowid
+            cur.close()
+        return jsonify({'success': True, 'id': new_id, 'message': '创建成功'}), 201
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'创建失败: {str(e)}'}), 400
+
+
+@cutting_bp.route('/api/cutting-exempt/<int:exempt_id>', methods=['PUT'])
+def update_cutting_exempt(exempt_id):
+    user, err = _check_login()
+    if err:
+        return err
+    perm_err = _check_write(user)
+    if perm_err:
+        return perm_err
+
+    data = request.get_json() or {}
+    update_fields = []
+    update_params = []
+    new_finished_part = None
+
+    if 'finished_part' in data:
+        new_finished_part = str(data.get('finished_part') or '').strip()
+        if not new_finished_part:
+            return jsonify({'success': False, 'message': '成品料号不能为空'}), 400
+        update_fields.append("finished_part = %s")
+        update_params.append(new_finished_part)
+    if 'note' in data:
+        note_raw = data.get('note')
+        note = str(note_raw).strip() if note_raw is not None and str(note_raw).strip() else None
+        update_fields.append("note = %s")
+        update_params.append(note)
+
+    if not update_fields:
+        return jsonify({'success': False, 'message': '没有需要更新的字段'}), 400
+
+    # 站点隔离：仅允许修改本站记录（SELECT 存在性校验 + UPDATE 双重带站约束）
+    site_guard_sql, site_guard_params = _exempt_site_guard(user)
+
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"SELECT id, siteref FROM cutting_no_cut_exempt WHERE id = %s{site_guard_sql}",
+                (exempt_id,) + site_guard_params
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+            # 改成品料号时同站查重（排除自身）
+            if new_finished_part is not None:
+                cur.execute(
+                    "SELECT id FROM cutting_no_cut_exempt "
+                    "WHERE siteref = %s AND finished_part = %s AND id <> %s",
+                    (row['siteref'], new_finished_part, exempt_id)
+                )
+                if cur.fetchone():
+                    cur.close()
+                    return jsonify({'success': False, 'message': '该成品料号已在本站豁免名单中'}), 400
+
+            update_params.append(exempt_id)
+            update_params.extend(site_guard_params)
+            cur.execute(
+                f"UPDATE cutting_no_cut_exempt SET {', '.join(update_fields)} "
+                f"WHERE id = %s{site_guard_sql}",
+                update_params
+            )
+            db.commit()
+            cur.close()
+        return jsonify({'success': True, 'message': '更新成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'更新失败: {str(e)}'}), 400
+
+
+@cutting_bp.route('/api/cutting-exempt/<int:exempt_id>', methods=['DELETE'])
+def delete_cutting_exempt(exempt_id):
+    user, err = _check_login()
+    if err:
+        return err
+    perm_err = _check_write(user)
+    if perm_err:
+        return perm_err
+
+    # 站点隔离：仅允许删除本站记录（SELECT 存在性校验 + DELETE 双重带站约束）
+    site_guard_sql, site_guard_params = _exempt_site_guard(user)
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"SELECT id FROM cutting_no_cut_exempt WHERE id = %s{site_guard_sql}",
+            (exempt_id,) + site_guard_params
+        )
+        if not cur.fetchone():
+            cur.close()
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+        cur.execute(
+            f"DELETE FROM cutting_no_cut_exempt WHERE id = %s{site_guard_sql}",
+            (exempt_id,) + site_guard_params
+        )
+        db.commit()
+        cur.close()
+
+    return jsonify({'success': True, 'message': '删除成功'})

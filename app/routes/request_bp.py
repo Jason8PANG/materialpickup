@@ -559,59 +559,12 @@ def create_minpack_request():
     with get_db_connection() as db:
         cursor = db.cursor()
 
-        # 插入主表 - 状态直接到 pending_prep（待备料），不需要审批
-        cursor.execute(
-            """INSERT INTO kr_material_request 
-            (siteref, request_type, requester, request_time, status, remark, is_urgent)
-            VALUES (%s, 'minpack', %s, %s, 'pending_prep', %s, %s)""",
-            (siteref, user['username'], now, data.get('remark', ''), data.get('is_urgent', 0))
+        # 主表 + 明细 + 单位回填：与外部接口共用（app/services/minpack_service.py）
+        from app.services.minpack_service import create_minpack_request_core
+        request_id = create_minpack_request_core(
+            cursor, siteref, user['username'], items,
+            data.get('remark', ''), data.get('is_urgent', 0), now=now
         )
-        request_id = cursor.lastrowid
-
-        # 插入明细
-        item_data = []
-        for item in items:
-            qty = float(item['quantity'])
-            price = float(item['price']) if item.get('price') else 0
-            total = qty * price
-            stock_qty = float(item['stock_qty']) if item.get('stock_qty') else None
-            stock_loc = item.get('stock_loc')
-            item_data.append((
-                request_id, item['part_number'], qty, price, total,
-                stock_qty, stock_loc
-            ))
-
-        cursor.executemany(
-            """INSERT INTO kr_request_item 
-            (request_id, job_order, part_number, quantity, price, total_amount, stock_qty, stock_loc)
-            VALUES (%s, NULL, %s, %s, %s, %s, %s, %s)""",
-            item_data
-        )
-
-        # 2.1 发起时自动获取物料单位（CSI），写入 kr_request_item.unit（与 create_request 一致）
-        #     后续卷标录入/出库直接读库，不再连 CSI
-        try:
-            from app.routes.coil import _get_unit_cached
-            from concurrent.futures import ThreadPoolExecutor
-            unique_parts = list(dict.fromkeys(
-                str(item.get('part_number') or '').strip() for item in items if item.get('part_number')
-            ))
-            unit_map = {}
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                futures = {pool.submit(_get_unit_cached, siteref, p): p for p in unique_parts}
-                for fut in futures:
-                    try:
-                        unit_map[futures[fut]] = fut.result() or None
-                    except Exception:
-                        pass
-            for p, u in unit_map.items():
-                if u:
-                    cursor.execute(
-                        "UPDATE kr_request_item SET unit = %s WHERE request_id = %s AND part_number = %s AND (unit IS NULL OR unit = '')",
-                        (u, request_id, p)
-                    )
-        except Exception as e:
-            print(f"[REQUEST] minpack 发起时获取单位失败: {e}")
 
         # 操作日志
         cursor.execute(

@@ -4,16 +4,19 @@
 <div class="card shadow-sm">
     <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0"><i class="fas fa-cut me-2 text-primary"></i><span data-i18n="cutting.title">裁线规格管理</span></h5>
-        {% if session.user.role in ['me_engineer', 'admin'] %}
-        <div>
-            <button class="btn btn-outline-primary btn-sm me-2" onclick="showImportModal()">
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary btn-sm" onclick="showExemptModal()">
+                <i class="fas fa-ban me-1"></i><span data-i18n="cutting.exempt">成品豁免名单</span>
+            </button>
+            {% if session.user.role in ['me_engineer', 'admin'] %}
+            <button class="btn btn-outline-primary btn-sm" onclick="showImportModal()">
                 <i class="fas fa-upload me-1"></i><span data-i18n="cutting.import">批量导入</span>
             </button>
             <button class="btn btn-primary btn-sm" onclick="showAddModal()">
                 <i class="fas fa-plus me-1"></i><span data-i18n="cutting.add">新增</span>
             </button>
+            {% endif %}
         </div>
-        {% endif %}
     </div>
     <div class="card-body">
         <!-- 搜索栏 -->
@@ -114,6 +117,87 @@
     </div>
 </div>
 {% endif %}
+
+<!-- 成品豁免名单弹窗（登录即可查看；写按钮由 can_edit 控制） -->
+<div class="modal fade" id="exemptModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" data-i18n="cutting.exempt_title">成品豁免名单</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-2" data-i18n="cutting.exempt_hint">名单内的成品料号不参与裁线校验（按当前站点维护）。</p>
+                <!-- 搜索 + 新增 -->
+                <div class="row g-2 mb-3">
+                    <div class="col-auto flex-grow-1">
+                        <input type="text" class="form-control form-control-sm" id="exemptKeyword"
+                               data-i18n-placeholder="cutting.exempt_search_placeholder"
+                               placeholder="搜索成品料号 / 备注...">
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-primary btn-sm" onclick="loadExempts(1)">
+                            <i class="fas fa-search me-1"></i><span data-i18n="common.search">搜索</span>
+                        </button>
+                    </div>
+                    <div class="col-auto" id="exemptAddBtnWrap">
+                        <button class="btn btn-success btn-sm" onclick="showExemptForm()">
+                            <i class="fas fa-plus me-1"></i><span data-i18n="cutting.add">新增</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 内联新增/编辑表单 -->
+                <div class="border rounded p-2 mb-3 d-none" id="exemptForm">
+                    <input type="hidden" id="exemptEditId" value="">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-5">
+                            <label class="form-label small mb-1" data-i18n="cutting.finished_part">成品料号</label>
+                            <input type="text" class="form-control form-control-sm" id="exemptFinishedPart">
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label small mb-1" data-i18n="cutting.exempt_note">备注</label>
+                            <input type="text" class="form-control form-control-sm" id="exemptNote">
+                        </div>
+                        <div class="col-md-2 text-nowrap">
+                            <button class="btn btn-primary btn-sm" id="exemptSaveBtn" data-i18n="common.save">保存</button>
+                            <button class="btn btn-secondary btn-sm" onclick="hideExemptForm()" data-i18n="common.cancel">取消</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-hover table-bordered table-sm" style="font-size:0.85rem;">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:56px">ID</th>
+                                <th data-i18n="cutting.finished_part">成品料号</th>
+                                <th data-i18n="cutting.exempt_note">备注</th>
+                                <th data-i18n="cutting.created_at">创建时间</th>
+                                <th id="exemptActionTh" data-i18n="admin.col_actions">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="exemptTableBody">
+                            <tr><td colspan="5" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 分页 -->
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <span class="text-muted small" id="exemptPageInfo"></span>
+                    <div>
+                        <button class="btn btn-outline-secondary btn-sm" id="exemptPrevBtn" onclick="exemptPrevPage()" data-i18n="common.prev_page">上一页</button>
+                        <button class="btn btn-outline-secondary btn-sm" id="exemptNextBtn" onclick="exemptNextPage()" data-i18n="common.next_page">下一页</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -307,6 +391,120 @@ function doImport() {
         .catch(err => { btn.disabled = false; showToast('error', err.message); });
 }
 
+/* ==================== 成品豁免名单 ==================== */
+let exemptPage = 1;
+let exemptTotalPages = 1;
+let exemptRows = [];
+
+function showExemptModal() {
+    hideExemptForm();
+    document.getElementById('exemptKeyword').value = '';
+    loadExempts(1);
+    new bootstrap.Modal(document.getElementById('exemptModal')).show();
+}
+
+function loadExempts(page) {
+    const keyword = document.getElementById('exemptKeyword').value.trim();
+    const url = '/api/cutting-exempt?keyword=' + encodeURIComponent(keyword) + '&page=' + page + '&size=50';
+    apiGet(url, function (resp) {
+        exemptPage = resp.page || 1;
+        exemptTotalPages = resp.total_pages || 1;
+        exemptRows = resp.data || [];
+        const canEdit = resp.can_edit !== false && CAN_EDIT;
+        document.getElementById('exemptAddBtnWrap').style.display = canEdit ? '' : 'none';
+        document.getElementById('exemptActionTh').style.display = canEdit ? '' : 'none';
+        document.getElementById('exemptPageInfo').textContent =
+            __('kanban.total') + ' ' + resp.total + ' ' + __('kanban.items') +
+            ' · ' + __('cutting.exempt_title') + ' ' + exemptPage + '/' + exemptTotalPages;
+        document.getElementById('exemptPrevBtn').disabled = exemptPage <= 1;
+        document.getElementById('exemptNextBtn').disabled = exemptPage >= exemptTotalPages;
+        renderExemptTable(exemptRows, canEdit);
+    }, function (err) {
+        document.getElementById('exemptTableBody').innerHTML =
+            '<tr><td colspan="5" class="text-center text-danger">' + (err.message || __('common.error')) + '</td></tr>';
+    });
+}
+
+function renderExemptTable(rows, canEdit) {
+    const tbody = document.getElementById('exemptTableBody');
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">' + __('common.no_data') + '</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(function (r) {
+        let html = '<tr>' +
+            '<td>' + r.id + '</td>' +
+            '<td>' + cell(r.finished_part) + '</td>' +
+            '<td>' + cell(r.note) + '</td>' +
+            '<td>' + cell(r.created_at) + '</td>';
+        if (canEdit) {
+            html += '<td class="text-nowrap text-center">' +
+                '<button class="btn btn-sm btn-outline-primary me-1" onclick="editExempt(' + r.id + ')"><i class="fas fa-edit"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="deleteExempt(' + r.id + ')"><i class="fas fa-trash"></i></button>' +
+                '</td>';
+        }
+        html += '</tr>';
+        return html;
+    }).join('');
+}
+
+function showExemptForm() {
+    document.getElementById('exemptEditId').value = '';
+    document.getElementById('exemptFinishedPart').value = '';
+    document.getElementById('exemptNote').value = '';
+    document.getElementById('exemptForm').classList.remove('d-none');
+    document.getElementById('exemptFinishedPart').focus();
+}
+
+function editExempt(id) {
+    const row = exemptRows.find(function (x) { return String(x.id) === String(id); });
+    if (!row) { showToast('error', __('common.error')); return; }
+    document.getElementById('exemptEditId').value = id;
+    document.getElementById('exemptFinishedPart').value = row.finished_part || '';
+    document.getElementById('exemptNote').value = row.note || '';
+    document.getElementById('exemptForm').classList.remove('d-none');
+    document.getElementById('exemptFinishedPart').focus();
+}
+
+function hideExemptForm() {
+    document.getElementById('exemptForm').classList.add('d-none');
+}
+
+function saveExempt() {
+    const id = document.getElementById('exemptEditId').value;
+    const finishedPart = document.getElementById('exemptFinishedPart').value.trim();
+    const note = document.getElementById('exemptNote').value.trim();
+    if (!finishedPart) {
+        showToast('error', __('cutting.exempt_part_required'));
+        return;
+    }
+    const data = {finished_part: finishedPart, note: note === '' ? null : note};
+    const onOk = function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        hideExemptForm();
+        loadExempts(id ? exemptPage : 1);
+    };
+    const onErr = function (err) { showToast('error', err.message || __('common.error')); };
+    if (id) {
+        apiPut('/api/cutting-exempt/' + id, data, onOk, onErr);
+    } else {
+        apiPost('/api/cutting-exempt', data, onOk, onErr);
+    }
+}
+
+function deleteExempt(id) {
+    if (!confirm(__('cutting.exempt_delete_confirm'))) return;
+    apiDelete('/api/cutting-exempt/' + id, function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        loadExempts(exemptPage);
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+function exemptPrevPage() { if (exemptPage > 1) loadExempts(exemptPage - 1); }
+function exemptNextPage() { if (exemptPage < exemptTotalPages) loadExempts(exemptPage + 1); }
+
 document.addEventListener('DOMContentLoaded', function () {
     if (CAN_EDIT) {
         buildFormFields();
@@ -315,6 +513,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     document.getElementById('searchKeyword').addEventListener('keydown', function (e) {
         if (e.key === 'Enter') loadRefs(1);
+    });
+    document.getElementById('exemptSaveBtn').addEventListener('click', saveExempt);
+    document.getElementById('exemptKeyword').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') loadExempts(1);
     });
     loadRefs(1);
 });

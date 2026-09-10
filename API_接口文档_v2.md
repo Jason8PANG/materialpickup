@@ -1,8 +1,9 @@
 # 物料领取看板 — API 接口文档 v2
 
-> **生成日期：2026-09-08**
-> **版本说明：** 本文档基于本地最新代码（`app/routes/` 下 12 个蓝图共 **109** 条路由）逐路由提取生成，与旧版 `API 文档.md`（805 行，已过时）相互独立。凡与旧文档不一致处，**以本文档及代码为准**。涵盖近几日的多站点隔离、Bartender 触发文件打印、卷标编辑、回到备料、卷号生成含软删取号等变更。
-> **覆盖范围**：admin 12 / approval 4 / auth 4 / coil 19 / cutting 5 / external 12 / kanban 3 / request_bp 8 / return_bp 10 / validate 4 / warehouse 10 / wire 18。
+> **生成日期：2026-09-08　│　最近更新：2026-09-10**
+> **版本说明：** 本文档基于本地最新代码（`app/routes/` 下 12 个蓝图共 **114** 条路由）逐路由提取生成，与旧版 `API 文档.md`（805 行，已过时）相互独立。凡与旧文档不一致处，**以本文档及代码为准**。涵盖近几日的多站点隔离、Bartender 触发文件打印、卷标编辑、回到备料、卷号生成含软删取号等变更。
+> **2026-09-10 增补**：补录**成品豁免名单**（§10.6~10.9，表 `cutting_no_cut_exempt`）与**外部创建最小包装申请单**（§12.13，`POST /api/external/minpack-request`）；接口总数 **109 → 114**（cutting 5→9、external 12→13）。
+> **覆盖范围**：admin 12 / approval 4 / auth 4 / coil 19 / cutting 9 / external 13 / kanban 3 / request_bp 8 / return_bp 10 / validate 4 / warehouse 10 / wire 18。
 > **用途**：作为后续需求修改的接口契约依据（供开发/测试 agent 引用）。
 
 ---
@@ -575,7 +576,7 @@
 
 ---
 
-## 10. 裁线规格（cutting.py · 5 接口）
+## 10. 裁线规格（cutting.py · 9 接口）
 
 数据表 `kr_cutting_ref` **已站点化**（新增 `siteref` 列）：各站点独立规格，list 只返回当前站；写操作落库当前站；更新/删除带站约束；import 按目标站"删旧插新"覆盖导入。
 可编辑 15 个字段：`finished_part, wire_part, wire_awg, color, qty_per_group, cut_length_mm, length_tol, cut_device, device_no, strip_len_a, strip_tol_a, strip_len_b, strip_tol_b, term_a, term_b`（`raw_data` 为导入自动生成，不手工编辑）。数值字段：`qty_per_group/cut_length_mm/strip_len_a/strip_len_b`。
@@ -611,6 +612,37 @@
 - 目标站点：form/query 参数 `site`（可选）→ 缺省 `当前用户站点`；若显式传 site，须在用户 `available_sites` 内（否则 403「无权向站点 X 导入裁线规格」）。
 - 行为（`import_cutting_ref`）：解析 Excel 行 → **先删除该站点全部旧规格 → 再全量插入**（站内覆盖，不影响他站）；空行跳过。
 - 响应：`siteref`、`imported`、`skipped`、`message`（含覆盖删除的旧行数）。
+
+### 10.6 成品豁免名单 · 列表
+`GET /api/cutting-exempt`
+- 权限：登录即可（响应 `can_edit` 标识当前用户是否具备维护权限）。
+- query：`keyword`（对 `finished_part`/`note` LIKE）、`page`（≥1，默认 1）、`size`（默认 50，1~200）。
+- 站点：按当前登录站点过滤（`get_site_filter`），仅返回本站豁免名单。
+- 响应：`data[]`（`id`、`siteref`、`finished_part`、`note`、`created_at`）、`total`、`page`、`size`、`total_pages`、`can_edit`（`true` 当角色 ∈ `me_engineer`/`admin`）。
+
+### 10.7 成品豁免名单 · 新增
+`POST /api/cutting-exempt`
+- 权限：`me_engineer`、`admin`（`WRITE_ROLES`，其他 403「仅 ME 工程师/管理员可修改」）。
+- 请求体：`finished_part`（必填）、`note`（可选，空串 → NULL）。
+- `siteref` 自动取当前登录站点（**不接受传入**；站点缺失 400「站点信息缺失」）——各站豁免名单独立。
+- 校验：同站点内 `finished_part` 唯一（重复 → 400「该成品料号已在本站豁免名单中」）。
+- 响应 201：`{"success":true,"id":new_id,"message":"创建成功"}`。
+
+### 10.8 成品豁免名单 · 编辑
+`PUT /api/cutting-exempt/<int:exempt_id>`
+- 权限：`me_engineer`、`admin`。
+- 请求体：`finished_part`/`note` 任意子集（至少一个，否则 400「没有需要更新的字段」）；`finished_part` 传空 → 400「成品料号不能为空」。
+- 站点隔离：记录须属当前站（`SELECT` 存在性校验 + `UPDATE` 双重带站约束），跨站/不存在 → 404「记录不存在」。
+- 改 `finished_part` 时同站查重（排除自身），重复 → 400「该成品料号已在本站豁免名单中」。
+- 响应 200：`{"success":true,"message":"更新成功"}`。
+
+### 10.9 成品豁免名单 · 删除
+`DELETE /api/cutting-exempt/<int:exempt_id>`
+- 权限：`me_engineer`、`admin`。
+- 站点隔离：`SELECT` + `DELETE` 双重带站约束（`WHERE id + siteref`），跨站/不存在 → 404「记录不存在」。
+- 响应 200：`{"success":true,"message":"删除成功"}`。
+
+> **数据表 `cutting_no_cut_exempt`**：`id`/`siteref`/`finished_part`/`note`/`created_at`；仅 `finished_part`+`note` 可维护，`siteref` 由登录站点自动带入；同一站点内成品料号唯一（接口层拦截，未建库唯一索引）。
 
 ---
 
@@ -719,7 +751,7 @@
 
 ---
 
-## 12. 外部集成接口（external.py · 12 接口）
+## 12. 外部集成接口（external.py · 13 接口）
 
 > **服务对象**：naiwiptrack / production-tracking 等外部系统（替代其直连物料领取库）。
 > **认证**：请求头 `X-API-Key`（默认 `NAI-WIPTRACK-2026`，env `EXTERNAL_API_KEY`）。见 1.5。
@@ -800,6 +832,20 @@
 - 归类：库位名含 `floor`（不区分大小写）→ Floor；其余 → Other。数量按 `UNIT_CONVERT_FACTOR` 换算 `*_mm`。
 - CSI 异常 → 502「CSI 实时库存查询失败」。
 - 响应 `data`（与旧 CSI 直连结构兼容）：`item/unit/floor_qty/other_qty/total_on_hand` + `*_mm` + `floor_locations/other_locations[]`（location/qty/unit/qty_mm）。
+
+### 12.13 创建最小包装申请单（外部，新增）
+`POST /api/external/minpack-request`
+- 鉴权：请求头 `X-API-Key`（同本章）+ `X-Site-Ref`（复用 `_check_api_key`/`_require_site`，解析规则见 1.5）；缺少/无效 API Key → 401，站点缺失/无效 → 400。
+- 请求体：
+  ```
+  { "items": [{ "part_number":"A...", "quantity":10, "price":1.2, "stock_qty":50, "stock_loc":"S301A01" }],
+    "remark":"", "is_urgent":0, "requester":"system" }
+  ```
+  逐行校验：`items` 须为非空数组；每行 `part_number` 必填、`quantity` 必填且为数字 **>0**；`price`/`stock_qty` 可选（须为数字，缺省 `price=0`、`stock_qty=NULL`）；`stock_loc` 可选文本。违规 → 400，`error` 标注「第 n 行 …」。
+- `requester` 可选，缺省 `'system'`；长度 >64 自动截断为 64 字符（varchar(64)）。
+- 行为：复用 `create_minpack_request_core`（`app/services/minpack_service.py`），创建 `request_type='minpack'`、`status='pending_prep'`（**免审批**，跳过 `pending_approval`）申请单，明细 `job_order=NULL`；发起时自动经 CSI 取物料单位写入 `kr_request_item.unit`（获取失败不阻断）；**不做** CSI 工单 R 状态/库存校验（minpack 无工单）；落库后写操作日志 `SUBMIT_MINPACK`（`detail` 标注「外部接口创建最小包装申请 …（requester=…）」）。
+- **与内部接口的关系**：与内部 `POST /api/requests/minpack`（§3.2）**共用同一创建逻辑** `create_minpack_request_core`，差异仅在**鉴权方式**（外部为 `X-API-Key`+`X-Site-Ref` 免登录，内部为 session）与 **`requester` 来源**（外部由调用方传入/默认 `system`，内部取登录用户）。
+- 响应 200：`{"success":true,"id":request_id,"message":"最小包装申请已创建，仓库将开始备料"}`；创建异常 → 500 `{"success":false,"error":"创建最小包装申请失败: …"}`。
 
 ---
 
@@ -882,11 +928,21 @@
 | return_bp.py | 10 | §7.1~7.10 | ✅ |
 | kanban.py | 3 | §8.1~8.3 | ✅ |
 | validate.py | 4 | §9.1~9.4 | ✅ |
-| cutting.py | 5 | §10.1~10.5 | ✅ |
+| cutting.py | 9 | §10.1~10.9 | ✅ |
 | wire.py | 18 | §11.1~11.18 | ✅ |
-| external.py | 12 | §12.1~12.12 | ✅ |
+| external.py | 13 | §12.1~12.13 | ✅ |
 | admin.py | 12 | §13.1~13.12 | ✅ |
-| **合计** | **109** | — | ✅ |
+| **合计** | **114** | — | ✅ |
+
+**2026-09-10 增补的 5 条接口索引**（均已计入上表）：
+
+| 方法 | 路径 | 权限 | 章节 |
+|---|---|---|---|
+| GET | `/api/cutting-exempt` | 登录即可 | §10.6 |
+| POST | `/api/cutting-exempt` | `me_engineer`/`admin` | §10.7 |
+| PUT | `/api/cutting-exempt/<id>` | `me_engineer`/`admin` | §10.8 |
+| DELETE | `/api/cutting-exempt/<id>` | `me_engineer`/`admin` | §10.9 |
+| POST | `/api/external/minpack-request` | X-API-Key + X-Site-Ref | §12.13 |
 
 ## 附录 B：相对旧版 `API 文档.md` 的主要差异（新增/变更）
 
@@ -900,4 +956,6 @@
 8. **卷号生成修复**：`_gen_next_id` 改为取**含软删** `MAX+1`（`FOR UPDATE` 当前读），保证软删占号不复用、并发不撞唯一键（§6.1/6.3、1.7）。
 9. **盘点/消耗联动**：消耗、报废、退料、出库登记均增加「活跃盘点锁定」校验；wire 盘点单闭环流程（§11）。
 10. **物料明细行绿底**：前端展示变更，无接口差异，不在本文档契约范围内。
+11. **成品豁免名单（新）**：新增 `cutting_no_cut_exempt` 表及 `GET/POST/PUT/DELETE /api/cutting-exempt`（§10.6~10.9）——按站点隔离（siteref 自动取登录站）、同站成品料号唯一、写权限限 `me_engineer`/`admin`。
+12. **外部创建最小包装申请单（新）**：新增 `POST /api/external/minpack-request`（§12.13）——`X-API-Key`+`X-Site-Ref` 免登录，与内部 `POST /api/requests/minpack`（§3.2）共用 `create_minpack_request_core`，创建免审批的 `minpack` 单并写 `SUBMIT_MINPACK` 日志。
 

@@ -15,6 +15,7 @@ Base：/api/external/
   GET  /api/external/cutting-check?job_order=   首末件检查查询
   POST /api/external/cutting-check              首末件检查登记（公差校验+force）
   GET  /api/external/cutting-ref?job_order=&part_number=  裁剪参数查询
+  POST /api/external/minpack-request            创建最小包装申请单（X-API-Key + X-Site-Ref）
 """
 import re
 from datetime import datetime
@@ -895,3 +896,102 @@ def ext_part_stock(part):
         'other_locations': other_locations,
     }
     return jsonify({'success': True, 'data': data})
+
+
+# ================================================================== #
+#  创建最小包装申请单（外部系统免登录，MES / 服务机器人调用）
+# ================================================================== #
+@external_bp.route('/api/external/minpack-request', methods=['POST'])
+def ext_create_minpack_request():
+    """外部系统免登录创建最小包装申请单。
+
+    鉴权：X-API-Key + X-Site-Ref（与其它 external 接口一致）。
+    入参 JSON：items(必填非空，每行 part_number 必填、quantity 必填且>0，
+              price/stock_qty/stock_loc 可选)、remark/is_urgent 可选、
+              requester 可选（默认 'system'，超 64 字符截断）。
+    行为：与 internal /api/requests/minpack 完全一致（复用 create_minpack_request_core），
+          不做工单 R 状态校验（minpack 无工单），落库后写 SUBMIT_MINPACK 操作日志。
+    """
+    err = _check_api_key()
+    if err:
+        return err
+
+    b = request.get_json(silent=True) or {}
+    site = _require_site()
+    if isinstance(site, tuple):
+        return site
+
+    items = b.get('items') or []
+    if not isinstance(items, list) or not items:
+        return jsonify({'success': False, 'error': 'items 不能为空'}), 400
+
+    # 逐行校验并规范化
+    norm_items = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            return jsonify({'success': False, 'error': f'第{i+1}行格式错误'}), 400
+        part_number = str(item.get('part_number') or '').strip()
+        if not part_number:
+            return jsonify({'success': False, 'error': f'第{i+1}行缺少 part_number'}), 400
+        qty_raw = item.get('quantity')
+        if qty_raw is None or qty_raw == '':
+            return jsonify({'success': False, 'error': f'第{i+1}行缺少 quantity'}), 400
+        try:
+            quantity = float(qty_raw)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': f'第{i+1}行 quantity 必须为数字'}), 400
+        if quantity <= 0:
+            return jsonify({'success': False, 'error': f'第{i+1}行 quantity 必须大于0'}), 400
+        try:
+            price = float(item['price']) if item.get('price') not in (None, '') else 0
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': f'第{i+1}行 price 必须为数字'}), 400
+        try:
+            stock_qty = float(item['stock_qty']) if item.get('stock_qty') not in (None, '') else None
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': f'第{i+1}行 stock_qty 必须为数字'}), 400
+        norm_items.append({
+            'part_number': part_number,
+            'quantity': quantity,
+            'price': price,
+            'stock_qty': stock_qty,
+            'stock_loc': str(item.get('stock_loc') or '').strip(),
+        })
+
+    # requester 可选，默认 'system'；varchar(64) 超长截断并记日志
+    requester = str(b.get('requester') or '').strip() or 'system'
+    if len(requester) > 64:
+        print(f"[EXTERNAL MINPACK] requester 超长({len(requester)})已截断为64: {requester}")
+        requester = requester[:64]
+    remark = b.get('remark') or ''
+    try:
+        is_urgent = int(b.get('is_urgent') or 0)
+    except (TypeError, ValueError):
+        is_urgent = 0
+
+    from app.services.minpack_service import create_minpack_request_core
+
+    now = datetime.now()
+    try:
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            request_id = create_minpack_request_core(
+                cursor, site, requester, norm_items, remark, is_urgent, now=now
+            )
+            cursor.execute(
+                "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
+                "VALUES (%s, %s, 'SUBMIT_MINPACK', %s, %s, %s)",
+                (request_id, requester,
+                 f"外部接口创建最小包装申请：{len(items)}项物料（requester={requester}）",
+                 request.remote_addr, now)
+            )
+            db.commit()
+            cursor.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'创建最小包装申请失败: {e}'}), 500
+
+    return jsonify({
+        'success': True,
+        'id': request_id,
+        'message': '最小包装申请已创建，仓库将开始备料',
+    })
