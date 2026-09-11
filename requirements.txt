@@ -11,3 +11,4 @@ python-barcode>=0.15
 Pillow>=10.0.0
 reportlab
 pywin32>=306; platform_system == "Windows"
+cryptography>=42.0.0
