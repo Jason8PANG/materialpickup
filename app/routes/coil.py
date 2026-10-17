@@ -273,13 +273,15 @@ def validate_lot():
     client = CSIClient(siteref)
 
     # 1. SLLots 验证 Lot（按 Item 过滤）
+    #    业务校验失败（Lot 不存在）属于预期结果，统一用 HTTP 200 + success=false 返回，
+    #    避免浏览器控制台出现 400 红字；仅参数错误保留 400。
     lot_info = client.get_lot_info(part_number, lot_no)
     if lot_info is None:
         return jsonify({
             'success': False,
             'message': f'Lot {lot_no} 不存在或查询失败（SLLots，Item={part_number}）',
             'lot_exists': False,
-        }), 400
+        })
 
     der_qty = lot_info['der_qty_on_hand']
     # 2. 长度对比：录入长度为「原始单位」（与系统单位一致，如 M/FT），
@@ -298,12 +300,13 @@ def validate_lot():
     }
 
     # 3. 长度校验（输入为系统单位原始值，直接与 DerQtyOnHand 比较）
+    #    数量超量同为业务校验结果，返回 HTTP 200 + success=false，供前端红框提示。
     if length is not None:
         if length > der_qty:
             result['success'] = False
             result['message'] = (f'长度 {length:g}{unit or ""} 超过 Lot {lot_no} 可用数量 '
                                  f'{der_qty:g}{unit or ""}（DerQtyOnHand）')
-            return jsonify(result), 400
+            return jsonify(result)
 
     result['message'] = f'Lot {lot_no} 验证通过，可用数量 {der_qty:g}{unit or ""}' if unit else f'Lot {lot_no} 验证通过'
     return jsonify(result)
