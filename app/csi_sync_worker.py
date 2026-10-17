@@ -1,7 +1,8 @@
 """CSI（宝鼎 Syteline）库位转移同步器
 
 职责：扫描接口表 kr_csi_interface 的待处理行 → 提交 sl-qty-move → 轮询终态；
-失败自动换单号重试（最多 3 次），超限发邮件告警并停止自动重试。
+失败自动重试（最多 3 次，**单据号保持不变、只更换 traceId**），
+超限发邮件告警并停止自动重试。
 
 运行方式：
   - 常驻：CSI_SYNC_ENABLED=true 时由 create_app() 启动后台守护线程（见 app/__init__.py）
@@ -9,7 +10,7 @@
   - 常驻调试：docker exec <container> python -c "from app.csi_sync_worker import main; main()"
 
 状态机（is_sync / status）：
-  0 / PENDING       待提交（新入队或换号后待重试）
+  0 / PENDING       待提交（新入队或重试待重投）
   0 / SUBMITTING    本进程已抢占、正在提交/轮询
   0 / QUEUED|PENDING 平台已入队、未到终态（下一轮同 traceId 继续轮询）
   1 / SUCCESS       成功（不再处理）
@@ -89,7 +90,7 @@ class _Repo:
         """取本轮待处理行。
 
         两类：
-          1. is_sync=0 的新入队 / 换号待重试行
+          1. is_sync=0 的新入队 / 重试待重投行
           2. 上次轮询超时未推进的行（QUEUED/PENDING/SUBMITTING）
         两者合并为 is_sync=0 + last_poll_at 超时（新行 last_poll_at 为 NULL，天然满足），
         既覆盖两类的语义，又避免刚被别的线程抢占（last_poll_at=NOW()）的行被重复取出。
@@ -156,15 +157,16 @@ class _Repo:
 # ====================================================================== #
 #  单号 / traceId 生成
 # ====================================================================== #
-def _retry_document_number(request_id, retry):
-    """换号规则：MP{request_id}R{n}，长度 ≤12（接口硬限制）"""
-    return f'MP{request_id}R{retry}'[:12]
+def _retry_trace_id(row):
+    """重试只换 traceId，单据号原样沿用。
 
-
-def _retry_trace_id(row, retry):
-    """换号规则：MP{rid}-R{n}-{coil_id|L{lot_id}}-{uuid8}，长度 < 128"""
+    格式：{documentNumber}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128。
+    平台幂等键为 traceId + site + documentNumber：换 traceId 即可视为新请求，
+    换单号反而可能撞上平台锁死的失败单号（409）。
+    """
     key = row.get('coil_id') or f"L{row.get('lot_id')}"
-    return f"MP{row.get('request_id')}-R{retry}-{key}-{uuid.uuid4().hex[:8]}"
+    base = (row.get('documentnumber') or f"MP{row.get('request_id')}").strip()
+    return f'{base}-{key}-{uuid.uuid4().hex[:12]}'
 
 
 # ====================================================================== #
@@ -269,7 +271,7 @@ def _classify(resp):
 
     if code == 409:
         return {'kind': 'failed', 'status': None,
-                'reason': 'HTTP 409 CONFLICT：该单号曾失败被锁定，需更换新单号'}
+                'reason': 'HTTP 409 CONFLICT：单号被平台锁定/冲突（重试不换号，3 次后转人工）'}
     if code == 400:
         return {'kind': 'failed', 'status': None,
                 'reason': f'HTTP 400 入队被拒：{_outer_message(resp, body)}'}
@@ -362,17 +364,15 @@ def _lookup_from_location(row):
 #  失败处理 / 告警邮件
 # ====================================================================== #
 def _fail(repo, row, reason, stats):
-    """失败重试流程：<3 次换新单号重投；>=3 次转人工并发邮件"""
+    """失败重试流程：<3 次保留原单号、仅换 traceId 重投；>=3 次转人工并发邮件"""
     retry = int(row.get('retry_count') or 0) + 1
     reason = (reason or '未知错误')[:MAX_ERR_LEN]
 
     if retry < _max_retry():
-        doc = _retry_document_number(row.get('request_id'), retry)
-        trace = _retry_trace_id(row, retry)
+        trace = _retry_trace_id(row)
         repo.update(
             row['id'],
             retry_count=retry,
-            documentnumber=doc,
             traceid=trace,
             is_sync=0,
             status='PENDING',
@@ -381,8 +381,9 @@ def _fail(repo, row, reason, stats):
             submitted_at=None,
         )
         stats['retried'] += 1
-        logger.warning('CSI 同步失败（第 %s/%s 次），已换号重试 id=%s request=%s doc=%s trace=%s 原因=%s',
-                       retry, _max_retry(), row['id'], row.get('request_id'), doc, trace, reason)
+        logger.warning('CSI 同步失败（第 %s/%s 次），保留单号仅换 traceId 重试 id=%s request=%s doc=%s trace=%s 原因=%s',
+                       retry, _max_retry(), row['id'], row.get('request_id'),
+                       row.get('documentnumber'), trace, reason)
         return
 
     repo.update(
@@ -430,7 +431,7 @@ def _send_failure_alert(row, retry, reason):
       <p>CSI 库位转移（sl-qty-move）自动同步失败，已停止自动重试，请人工处理。</p>
       <table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;">{rows_html}</table>
       <p style="color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
-      <p>已自动换号重试 3 次仍失败，已停止自动重试，请人工在宝鼎平台重新发送或核对数据。</p>
+      <p>已自动重试 3 次仍失败（单据号保持不变，仅更换 traceId），已停止自动重试，请人工在宝鼎平台重新发送或核对数据。</p>
       <p style="color:#999;font-size:12px;">本邮件由物料领取看板系统自动发送，请勿直接回复。</p>
     </div>
     """

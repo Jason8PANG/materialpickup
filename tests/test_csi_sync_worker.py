@@ -3,9 +3,9 @@
 
 覆盖点：
   1. QUEUED → PENDING → SUCCESS 状态推进（ion 对象 / 数组两种结构）
-  2. HTTP 400 入队被拒 → retry_count+1、换新单号、is_sync=0
-  3. HTTP 409 CONFLICT → 换新单号
-  4. 连续 3 次失败 → is_sync=2/FAILED_MANUAL + 邮件一次，之后不再被扫描
+  2. HTTP 400 入队被拒 → retry_count+1、**单号不变**、只换 traceId、is_sync=0
+  3. HTTP 409 CONFLICT → 单号不变、只换 traceId
+  4. 连续 3 次失败 → is_sync=2/FAILED_MANUAL + 邮件一次，之后不再被扫描，单号全程不变
   5. from_location 为空 → 查 CSI 库位补值
   6. 并发抢占 → 同一行只提交一次
   7. 真实库：2967/2973 两条 PENDING 行能被选中；条件 UPDATE 具备抢占语义
@@ -186,10 +186,10 @@ class TestSuccess:
 
 
 # ====================================================================== #
-#  2/3. 400 / 409 → 换号重试
+#  2/3. 400 / 409 → 保留单号，仅换 traceId 重试
 # ====================================================================== #
-class TestFailAndRetryNumberChange:
-    def test_http_400_changes_document_number(self):
+class TestFailAndRetryKeepDocumentNumber:
+    def test_http_400_keeps_document_number(self):
         repo = FakeRepo([_row()])
         with patch('app.csi_sync_worker.requests.post',
                    return_value=_resp(400, {'success': False, 'message': 'documentNumber 超过 12 位'})):
@@ -197,28 +197,44 @@ class TestFailAndRetryNumberChange:
 
         row = repo.row(1)
         assert row['retry_count'] == 1
-        assert row['documentnumber'] == 'MP2967R1' and len(row['documentnumber']) <= 12
+        # 单号原样沿用，只更换 traceId
+        assert row['documentnumber'] == 'MP2967'
         assert row['traceid'] != 'MP2967-261016004-ce830e42a267'
-        assert row['traceid'].startswith('MP2967-R1-261016004-')
+        assert row['traceid'].startswith('MP2967-261016004-')
+        assert len(row['traceid']) < 128
         assert row['is_sync'] == 0 and row['status'] == 'PENDING'
         assert 'documentNumber' in row['errormessage']
         assert stats['retried'] == 1
 
-    def test_http_409_changes_document_number(self):
+    def test_http_409_keeps_document_number(self):
         repo = FakeRepo([_row()])
         with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})):
             _run(repo)
 
         row = repo.row(1)
         assert row['retry_count'] == 1
-        assert row['documentnumber'] == 'MP2967R1'
+        assert row['documentnumber'] == 'MP2967'
+        assert row['traceid'] != 'MP2967-261016004-ce830e42a267'
         assert '409' in row['errormessage']
         assert row['is_sync'] == 0
 
-    def test_retry_document_number_length_limit(self):
-        """单号长度硬上限 12"""
-        assert len(w._retry_document_number(99999999, 3)) <= 12
-        assert w._retry_document_number(2967, 2) == 'MP2967R2'
+    def test_reverse_row_keeps_reverse_document_number(self):
+        """反向行（MP{rid}B{seq}）重试同样保持单号不变"""
+        repo = FakeRepo([_row(documentnumber='MP2973B01', traceid='MP2973B01-L21-aaaa')])
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})):
+            _run(repo)
+
+        row = repo.row(1)
+        assert row['documentnumber'] == 'MP2973B01'
+        assert row['traceid'].startswith('MP2973B01-')
+
+    def test_retry_trace_id_is_unique_and_bounded(self):
+        """每次重试的 traceId 都不同，且长度 < 128"""
+        row = _row(documentnumber='MP29679999')
+        traces = {w._retry_trace_id(row) for _ in range(5)}
+        assert len(traces) == 5
+        assert all(len(t) < 128 for t in traces)
+        assert all(t.startswith('MP29679999-261016004-') for t in traces)
 
 
 # ====================================================================== #
@@ -227,22 +243,29 @@ class TestFailAndRetryNumberChange:
 class TestManualFailAfterThreeRetries:
     def test_three_failures_then_email_and_stop(self):
         repo = FakeRepo([_row()])
+        traces = []
         with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed())), \
              patch('app.csi_sync_worker.send_email') as mail:
             _run(repo)
             assert repo.row(1)['retry_count'] == 1
-            assert repo.row(1)['documentnumber'] == 'MP2967R1'
+            assert repo.row(1)['documentnumber'] == 'MP2967'
+            traces.append(repo.row(1)['traceid'])
             assert mail.call_count == 0
 
             _run(repo)
             assert repo.row(1)['retry_count'] == 2
-            assert repo.row(1)['documentnumber'] == 'MP2967R2'
+            assert repo.row(1)['documentnumber'] == 'MP2967'
+            traces.append(repo.row(1)['traceid'])
             assert mail.call_count == 0
 
             stats = _run(repo)
             row = repo.row(1)
 
         assert row['retry_count'] == 3
+        # 三次重试单号始终未变，只有 traceId 变化
+        assert row['documentnumber'] == 'MP2967'
+        assert traces[0] != traces[1]
+        assert row['traceid'] == traces[1]   # 转人工不再更换 traceId
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
         assert stats['manual'] == 1
         assert mail.call_count == 1
@@ -250,7 +273,7 @@ class TestManualFailAfterThreeRetries:
         to_email, subject, body = mail.call_args.args
         assert to_email == 'jason.pang@nai-group.com'
         assert '单号2967' in subject
-        assert 'MP2967R2' in body          # 最后一次失败用的单号
+        assert 'MP2967' in body             # 单号保持不变
         assert '科学计数法解析失败' in body
         assert '已停止自动重试' in body
         assert 'A000871' in body and '6.5' in body

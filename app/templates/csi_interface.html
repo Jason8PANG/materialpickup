@@ -95,6 +95,8 @@
                         <th data-i18n="csi.col_unitcode1">unitcode1</th>
                         <th data-i18n="csi.col_unitcode2">unitcode2</th>
                         <th data-i18n="csi.col_doc">单据号</th>
+                        <th data-i18n="csi.col_line_seq">行序号</th>
+                        <th data-i18n="csi.col_direction">方向</th>
                         <th data-i18n="csi.col_trace">traceId</th>
                         <th data-i18n="csi.col_sync">同步状态</th>
                         <th data-i18n="csi.col_status">状态</th>
@@ -113,7 +115,7 @@
                     </tr>
                 </thead>
                 <tbody id="csiBody">
-                    <tr><td colspan="31" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                    <tr><td colspan="33" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -144,6 +146,13 @@ function csiEsc(v) {
 function csiVal(v) {
     if (v === null || v === undefined || v === '') return '-';
     return csiEsc(v);
+}
+
+// 方向：F=正向 B=反向
+function csiDirection(dir) {
+    if (dir === 'B') return csiEsc(__('csi.direction_b'));
+    if (dir === 'F') return csiEsc(__('csi.direction_f'));
+    return '-';
 }
 
 function buildCsiQuery(withPaging) {
@@ -191,7 +200,7 @@ function csiStatusBadge(status) {
 
 function loadCsi() {
     var tb = document.getElementById('csiBody');
-    tb.innerHTML = '<tr><td colspan="31" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="33" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
         var summary = resp.summary || {};
@@ -201,7 +210,7 @@ function loadCsi() {
             ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
             ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
         if (!resp.data || resp.data.length === 0) {
-            tb.innerHTML = '<tr><td colspan="31" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="33" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
         } else {
             tb.innerHTML = resp.data.map(function (r) {
                 var trace = csiEsc(r.traceid);
@@ -225,6 +234,8 @@ function loadCsi() {
                     '<td>' + csiVal(r.unitcode1) + '</td>' +
                     '<td>' + csiVal(r.unitcode2) + '</td>' +
                     '<td>' + csiVal(r.documentnumber) + '</td>' +
+                    '<td class="text-end">' + csiVal(r.line_seq) + '</td>' +
+                    '<td>' + csiDirection(r.direction) + '</td>' +
                     '<td><span class="d-inline-block text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</span></td>' +
                     '<td>' + syncCell + '</td>' +
                     '<td>' + csiStatusBadge(r.status) + '</td>' +

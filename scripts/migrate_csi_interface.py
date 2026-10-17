@@ -21,7 +21,14 @@ kr_csi_interface，由常驻同步器每分钟提交到宝鼎 Syteline（Infor C
   4. 卷标 / 批次记录 Lot 所在库位
        kr_wire_coil.loc / kr_request_item_lot.loc VARCHAR(128)
        卷标维护、批次维护时自动带出并持久化，完成备料写接口表时作为 from_location
-  5. 索引
+  5. 单内行序号
+       line_seq  INT NULL     单内行序号（1..N，永久递增不复用）
+       direction VARCHAR(1)    F=正向 B=反向
+       原因：同一申请单可能拆成多行（多卷标/多批次），若共用单据号
+       documentNumber，平台会按 traceId+site+documentNumber 判为同一笔，
+       第 2 行起被拒。改为每行独立单号 MP{request_id}{seq:02d} /
+       MP{request_id}B{seq:02d}，seq 由 line_seq 提供且不复用。
+  6. 索引
        idx_sync(is_sync) / idx_status(status) / idx_request(request_id)
        idx_row(request_id, coil_id, lot_id, api_name) 普通索引（原 uk_row 唯一键已废弃）
        原因：uk_row 唯一键会阻止「完成备料 → 回到备料 → 再次完成备料」写入第二条
@@ -63,6 +70,8 @@ CREATE TABLE IF NOT EXISTS `{TABLE}` (
   `unitcode1` VARCHAR(10) DEFAULT NULL,
   `unitcode2` VARCHAR(10) DEFAULT NULL,
   `documentnumber` VARCHAR(12) DEFAULT NULL,
+  `line_seq` INT NULL COMMENT '单内行序号(1..N，永久递增不复用)',
+  `direction` VARCHAR(1) NOT NULL DEFAULT 'F' COMMENT 'F=正向 B=反向',
   `is_sync` INT DEFAULT NULL,
   `status` VARCHAR(255) DEFAULT NULL,
   `retry_count` INT NOT NULL DEFAULT 0,
@@ -104,6 +113,8 @@ NEW_COLUMNS = [
     ('retry_count', "ADD COLUMN `retry_count` INT NOT NULL DEFAULT 0 COMMENT '已重试次数' AFTER `status`"),
     ('submitted_at', "ADD COLUMN `submitted_at` DATETIME NULL COMMENT '最近提交时间' AFTER `retry_count`"),
     ('last_poll_at', "ADD COLUMN `last_poll_at` DATETIME NULL COMMENT '最近轮询时间' AFTER `submitted_at`"),
+    ('line_seq', "ADD COLUMN `line_seq` INT NULL COMMENT '单内行序号(1..N，永久递增不复用)' AFTER `documentnumber`"),
+    ('direction', "ADD COLUMN `direction` VARCHAR(1) NOT NULL DEFAULT 'F' COMMENT 'F=正向 B=反向' AFTER `line_seq`"),
 ]
 
 # (索引名, ADD 语句)
@@ -129,7 +140,7 @@ SPECS = [
         'type_fixes': TYPE_FIXES,
         'new_columns': NEW_COLUMNS,
         'indexes': INDEXES,
-        'verify_columns': ('item', 'traceid', 'lot', 'job', 'um'),
+        'verify_columns': ('item', 'traceid', 'lot', 'job', 'um', 'line_seq', 'direction'),
     },
     {
         'table': 'kr_wire_coil',
@@ -235,6 +246,46 @@ def ensure_new_columns(conn, cursor, spec):
         print(f'[OK] {table} 已新增列 {name}')
 
 
+def backfill_line_seq(conn, cursor, spec):
+    """补历史行的 line_seq：同单按 id 顺序 1..N，续在已有 MAX(line_seq) 之后。
+
+    幂等：只处理 line_seq IS NULL 的行，重跑全 SKIP。
+    direction 由新增列 DEFAULT 'F' 自动填充（历史行均为正向）。
+    """
+    table = spec['table']
+    if not any(name == 'line_seq' for name, _ in spec['new_columns']):
+        return
+    cursor.execute(f"SELECT COUNT(*) AS n FROM `{table}` WHERE `line_seq` IS NULL")
+    pending = int(cursor.fetchone()['n'] or 0)
+    if not pending:
+        print(f'[SKIP] {table}.line_seq 无待回填行')
+        return
+
+    cursor.execute(f"SELECT DISTINCT request_id FROM `{table}` WHERE `line_seq` IS NULL")
+    request_ids = [r['request_id'] for r in cursor.fetchall()]
+    filled = 0
+    for rid in request_ids:
+        cursor.execute(
+            f"SELECT COALESCE(MAX(`line_seq`), 0) AS max_seq FROM `{table}` "
+            "WHERE `request_id` <=> %s",
+            (rid,)
+        )
+        seq = int(cursor.fetchone()['max_seq'] or 0)
+        cursor.execute(
+            f"SELECT `id` FROM `{table}` WHERE `request_id` <=> %s AND `line_seq` IS NULL "
+            "ORDER BY `id`",
+            (rid,)
+        )
+        for row in cursor.fetchall():
+            seq += 1
+            cursor.execute(
+                f"UPDATE `{table}` SET `line_seq` = %s WHERE `id` = %s", (seq, row['id'])
+            )
+            filled += 1
+    conn.commit()
+    print(f'[OK] {table}.line_seq 回填 {filled} 行（原待补 {pending} 行）')
+
+
 def ensure_indexes(conn, cursor, spec):
     table = spec['table']
     names = get_index_names(cursor, table)
@@ -299,6 +350,7 @@ def main():
                 continue
             fix_column_types(conn, cursor, spec)
             ensure_new_columns(conn, cursor, spec)
+            backfill_line_seq(conn, cursor, spec)
             drop_legacy_unique_row(conn, cursor, spec)
             ensure_indexes(conn, cursor, spec)
             verify(cursor, spec)

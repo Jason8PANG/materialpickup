@@ -12,6 +12,12 @@
   - 非 A/B 料：kr_request_item_lot 每条批次一行（lot_id 有值、coil_id 为 NULL）
   - 非 A/B 料既无卷标也无批次：只记 warning，不阻断完成备料（批次为可选维护）
 
+单号规则（平台按 traceId + site + documentNumber 幂等，同单多行必须不同号）：
+  - 正向：MP{request_id}{line_seq:02d}   例 MP297301 / MP297302
+  - 反向：MP{request_id}B{line_seq:02d}  例 MP2973B01，line_seq 取被反向正向行的序号
+  - line_seq 为该申请单内的永久递增行序号（1..N），任何状态占用后都不复用；
+    单号超过 12 位（接口硬限制）的行直接跳过并告警，不产生非法单号。
+
 状态流转（接口表 status，is_sync 见同步器）：
   PENDING → QUEUED|SUBMITTING → SUCCESS（已过账）/ FAILED_MANUAL（失败转人工）
   PENDING|QUEUED|SUBMITTING --回到备料--> CANCELLED（作废，不再提交）
@@ -30,6 +36,7 @@ from app.config import Config
 logger = logging.getLogger(__name__)
 
 API_QTY_MOVE = 'sl-qty-move'
+MAX_DOC_LEN = 12   # documentnumber 列 VARCHAR(12)，接口硬限制
 
 # 尚未过账（同步器仍会扫描）的中间态：回到备料时须作废，避免退回后仍继续过账
 INFLIGHT_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING')
@@ -59,10 +66,31 @@ def _traceid(request_id, key):
     return f'MP{request_id}-{key}-{uuid.uuid4().hex[:12]}'
 
 
+def _next_line_seq(cursor, request_id):
+    """该申请单已用到的最大行序号（含所有状态，保证序号永不复用）。
+
+    反向行的 line_seq 与被反向的正向行相同，不改变 MAX 结果。
+    """
+    cursor.execute(
+        "SELECT COALESCE(MAX(line_seq), 0) AS max_seq FROM kr_csi_interface "
+        "WHERE request_id = %s",
+        (request_id,)
+    )
+    row = cursor.fetchone() or {}
+    return int(row.get('max_seq') or 0)
+
+
+def _document_number(request_id, seq, direction='F'):
+    """单据号：正向 MP{request_id}{seq:02d} / 反向 MP{request_id}B{seq:02d}"""
+    if direction == 'B':
+        return f'MP{request_id}B{seq:02d}'
+    return f'MP{request_id}{seq:02d}'
+
+
 def _not_reverse_clause(request_id):
     """排除反向记录的 SQL 片段与参数。
 
-    反向单号为 MP{request_id}B{n}（见 _reverse_document_number），正向为 MP{request_id}。
+    反向单号为 MP{request_id}B{seq:02d}（见 _document_number），正向为 MP{request_id}{seq:02d}。
     反向行过账后同样是 is_sync=1 / SUCCESS，若不排除会被当成正向行再次反向。
     """
     return "(documentnumber IS NULL OR documentnumber NOT LIKE %s)", f'MP{request_id}B%'
@@ -178,25 +206,37 @@ def enqueue_qty_move(cursor, req, username, now=None):
     existing = {(r.get('coil_id'), r.get('lot_id')) for r in cursor.fetchall()}
 
     now = now or datetime.now()
-    documentnumber = f'MP{request_id}'[:12]
+    # 行序号从该单已用的最大值续起（含 REVERSED/CANCELLED/FAILED_MANUAL 占用的号，
+    # 平台可能锁死失败单号，因此任何状态下用过的 seq 都不复用）
+    seq = _next_line_seq(cursor, request_id)
     inserted = 0
     for row in rows:
         key = (row['coil_id'], row['lot_id'])
         if key in existing:
+            continue
+        seq += 1
+        documentnumber = _document_number(request_id, seq)
+        if len(documentnumber) > MAX_DOC_LEN:
+            logger.warning(
+                '完成备料：单据号超长（%s 位），跳过该行 request_id=%s seq=%s doc=%s key=%s',
+                len(documentnumber), request_id, seq, documentnumber, key
+            )
             continue
         trace_key = row['coil_id'] or f"L{row['lot_id']}"
         cursor.execute(
             "INSERT INTO kr_csi_interface "
             "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, "
             " warehouse, from_location, to_location, reasoncode, unitcode1, unitcode2, documentnumber, "
+            " line_seq, direction, "
             " is_sync, status, retry_count, traceid, createdate, createby) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            " %s, 'F', "
             " 0, 'PENDING', 0, %s, %s, %s)",
             (
                 request_id, row['item_id'], row['coil_id'], row['lot_id'],
                 API_QTY_MOVE, int(siteref), row['item'], row['lot'], _num(row['quantity']), row['um'],
                 Config.CSI_WAREHOUSE_MAP[siteref], row['from_location'], Config.CSI_TO_LOCATION,
-                Config.CSI_REASON_CODE, None, None, documentnumber,
+                Config.CSI_REASON_CODE, None, None, documentnumber, seq,
                 _traceid(request_id, trace_key), now, username,
             )
         )
@@ -211,14 +251,14 @@ def enqueue_qty_move(cursor, req, username, now=None):
 # ====================================================================== #
 #  反向交易（回到备料）
 # ====================================================================== #
-def _reverse_document_number(request_id, n):
-    """反向单号：MP{request_id}B{n}（n 从 1 递增），长度 ≤12（接口硬限制）"""
-    return f'MP{request_id}B{n}'[:12]
+def _reverse_document_number(request_id, seq):
+    """反向单号：MP{request_id}B{seq:02d}（seq 取被反向正向行的 line_seq）"""
+    return _document_number(request_id, seq, 'B')
 
 
-def _reverse_traceid(request_id, n, key):
-    """反向 traceId：MP{request_id}B{n}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128"""
-    return f'MP{request_id}B{n}-{key}-{uuid.uuid4().hex[:12]}'
+def _reverse_traceid(request_id, seq, key):
+    """反向 traceId：MP{request_id}B{seq:02d}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128"""
+    return f'MP{request_id}B{seq:02d}-{key}-{uuid.uuid4().hex[:12]}'
 
 
 def _cancel_inflight(cursor, request_id, now):
@@ -245,7 +285,7 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
     规则：
       - 每条 is_sync=1 / SUCCESS 的正向记录 → 插入一条反向记录，
         from_location = 原 to_location、to_location = 原 from_location，其余字段照抄；
-        单号用新号 MP{request_id}B{n}（原号已过账且被平台幂等锁定，不能复用）；
+        单号沿用正向行的行序号 MP{request_id}B{seq:02d}，与正向单号一一对应；
       - 被反向的正向记录同事务置 status='REVERSED'（is_sync 保持 1），
         之后不再参与反向查询，防止同一正向行被重复反向；
       - 未过账的中间态（is_sync=0 / PENDING|QUEUED|SUBMITTING）→ 置 CANCELLED；
@@ -268,7 +308,7 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
     # 2) 取已成功过账、且尚未被反向的正向记录（反向行 MP{rid}B* 排除在外）
     not_rev_sql, not_rev_param = _not_reverse_clause(request_id)
     cursor.execute(
-        "SELECT id, item_id, coil_id, lot_id, siteRef, item, lot, quantity, um, job, "
+        "SELECT id, item_id, coil_id, lot_id, line_seq, siteRef, item, lot, quantity, um, job, "
         "       warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2 "
         "FROM kr_csi_interface "
         "WHERE request_id = %s AND api_name = %s AND is_sync = 1 AND status = 'SUCCESS' "
@@ -282,7 +322,8 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
                     request_id, cancelled)
         return {'forward_count': 0, 'inserted': 0, 'cancelled': cancelled}
 
-    # 3) 反向单号序号：按该单已有反向单号（MP{rid}B*）计数 +1，避免重号
+    # 3) 反向单号：优先沿用被反向正向行的 line_seq（一一对应）；
+    #    历史行为空时按该单已有反向号顺延兜底，避免重号。
     cursor.execute(
         "SELECT documentnumber FROM kr_csi_interface "
         "WHERE request_id = %s AND api_name = %s AND documentnumber LIKE %s",
@@ -291,7 +332,7 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
     used_docs = {(r.get('documentnumber') or '') for r in cursor.fetchall()}
 
     inserted = 0
-    seq = 0
+    fallback_seq = 0
     for row in forwards:
         from_loc = (row.get('from_location') or '').strip()
         if not from_loc:
@@ -300,6 +341,37 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
             continue
 
         key = row.get('coil_id') or f"L{row.get('lot_id')}"
+
+        seq = row.get('line_seq')
+        if seq is None:
+            # 兜底：历史正向行无 line_seq，顺延该单已有反向单号
+            while True:
+                fallback_seq += 1
+                candidate = _reverse_document_number(request_id, fallback_seq)
+                if candidate not in used_docs:
+                    break
+            seq = fallback_seq
+        else:
+            seq = int(seq)
+
+        documentnumber = _reverse_document_number(request_id, seq)
+        if documentnumber in used_docs:
+            # 极端情况（历史数据行序号重复）：顺延兜底，保证同单不重号
+            logger.warning('回到备料：反向单号 %s 已占用，按反向序号顺延 request_id=%s csi_id=%s',
+                           documentnumber, request_id, row.get('id'))
+            fallback_seq = max(fallback_seq, seq)
+            while True:
+                fallback_seq += 1
+                documentnumber = _reverse_document_number(request_id, fallback_seq)
+                if documentnumber not in used_docs:
+                    break
+            seq = fallback_seq
+
+        if len(documentnumber) > MAX_DOC_LEN:
+            logger.warning('回到备料：反向单号超长（%s 位），跳过该行 request_id=%s csi_id=%s doc=%s',
+                           len(documentnumber), request_id, row.get('id'), documentnumber)
+            continue
+        used_docs.add(documentnumber)
 
         # 先按状态抢占该正向行（REVERSED 后不会再被任何一轮反向选中），
         # 同事务内标记；rowcount=0 说明已被并发操作反向，跳过，避免重复反向。
@@ -313,27 +385,14 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
                            request_id, row.get('id'))
             continue
 
-        # 序号按已用单号顺延，保证同单内不重号
-        while True:
-            seq += 1
-            documentnumber = _reverse_document_number(request_id, seq)
-            if documentnumber not in used_docs:
-                break
-            if len(documentnumber) >= 12:
-                # 单号已顶到 12 位上限（申请单号过长），再顺延会溢出，宁可重号交给同步器换号
-                logger.warning('回到备料：反向单号长度已达上限 request_id=%s doc=%s',
-                               request_id, documentnumber)
-                break
-        used_docs.add(documentnumber)
-
         cursor.execute(
             "INSERT INTO kr_csi_interface "
             "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, job, "
             " warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2, "
-            " documentnumber, is_sync, status, retry_count, traceid, errormessage, "
+            " documentnumber, line_seq, direction, is_sync, status, retry_count, traceid, errormessage, "
             " createdate, createby, submitted_at, last_poll_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-            " 0, 'PENDING', 0, %s, NULL, %s, %s, NULL, NULL)",
+            " %s, 'B', 0, 'PENDING', 0, %s, NULL, %s, %s, NULL, NULL)",
             (
                 request_id, row.get('item_id'), row.get('coil_id'), row.get('lot_id'),
                 API_QTY_MOVE, row.get('siteRef'), row.get('item'), row.get('lot'),
@@ -342,7 +401,7 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
                 # from/to 对调：Floor-Core → 原仓库库位
                 (row.get('to_location') or Config.CSI_TO_LOCATION), from_loc,
                 row.get('reasoncode'), row.get('account'),
-                row.get('unitcode1'), row.get('unitcode2'), documentnumber,
+                row.get('unitcode1'), row.get('unitcode2'), documentnumber, seq,
                 _reverse_traceid(request_id, seq, key), now, username,
             )
         )

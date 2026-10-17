@@ -142,11 +142,14 @@ def _paging():
 SELECT_COLUMNS = (
     'ci.id, ci.api_name, ci.siteref, ci.item, ci.lot, ci.quantity, ci.um, ci.job, '
     'ci.warehouse, ci.from_location, ci.to_location, ci.reasoncode, ci.account, '
-    'ci.unitcode1, ci.unitcode2, ci.documentnumber, ci.is_sync, ci.status, ci.traceid, '
+    'ci.unitcode1, ci.unitcode2, ci.documentnumber, ci.line_seq, ci.direction, '
+    'ci.is_sync, ci.status, ci.traceid, '
     'ci.errormessage, ci.createdate, ci.createby, ci.updatedate, ci.updateby, '
     'ci.request_id, ci.item_id, ci.coil_id, ci.lot_id, ci.retry_count, ci.submitted_at, '
     'ci.last_poll_at'
 )
+
+DIRECTION_LABELS = {'F': '正向', 'B': '反向'}
 
 
 def _to_dict(row):
@@ -209,7 +212,7 @@ def api_list():
 
 EXPORT_HEADERS = [
     '申请单号', '站点', '接口', '物料号', '批次', '数量', '单位', '仓库',
-    '源货位', '目的货位', '原因码', '单据号', 'traceId', '同步状态', '状态',
+    '源货位', '目的货位', '原因码', '单据号', '行序号', '方向', 'traceId', '同步状态', '状态',
     '重试次数', '错误信息', '创建时间', '创建人', '更新时间',
 ]
 
@@ -281,7 +284,9 @@ def api_export():
             row.get('request_id'), row.get('siteref'), row.get('api_name'),
             row.get('item'), row.get('lot'), row.get('quantity'), row.get('um'),
             row.get('warehouse'), row.get('from_location'), row.get('to_location'),
-            row.get('reasoncode'), row.get('documentnumber'), row.get('traceid'),
+            row.get('reasoncode'), row.get('documentnumber'), row.get('line_seq'),
+            DIRECTION_LABELS.get(row.get('direction'), row.get('direction')),
+            row.get('traceid'),
             SYNC_LABELS.get(row.get('is_sync'), row.get('is_sync')),
             row.get('status'), row.get('retry_count'), row.get('errormessage'),
             row.get('createdate'), row.get('createby'), row.get('updatedate'),
@@ -289,7 +294,7 @@ def api_export():
         ws.append([_cell_text(v) for v in values])
         is_sync = row.get('is_sync')
         if is_sync in SYNC_FILLS:
-            ws.cell(row=r_idx, column=14).fill = SYNC_FILLS[is_sync]
+            ws.cell(row=r_idx, column=16).fill = SYNC_FILLS[is_sync]
         for c_idx, val in enumerate(values, start=1):
             if val is not None:
                 widths[c_idx - 1] = max(widths[c_idx - 1], len(str(val)) + 2)
