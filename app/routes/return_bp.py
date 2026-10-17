@@ -494,9 +494,9 @@ def review_coil_confirm(coil_id):
         # 任一步失败整体回滚，避免「退了但没记账」的半状态。
         try:
             cur.execute(
-                "UPDATE kr_wire_coil SET status = 'in_stock', coil_length = %s "
+                "UPDATE kr_wire_coil SET status = 'in_stock', coil_length = %s, loc = %s "
                 "WHERE coil_id = %s AND status = 'in_shop'",
-                (remain, coil_id)
+                (remain, location, coil_id)
             )
             cur.execute(
                 "UPDATE kr_return_item SET review_status = 'confirmed', location = %s, "

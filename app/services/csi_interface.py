@@ -219,11 +219,12 @@ def enqueue_qty_move(cursor, req, username, now=None):
         seq += 1
         documentnumber = _document_number(request_id, seq)
         if len(documentnumber) > MAX_DOC_LEN:
-            logger.warning(
-                '完成备料：单据号超长（%s 位），跳过该行 request_id=%s seq=%s doc=%s key=%s',
-                len(documentnumber), request_id, seq, documentnumber, key
+            # 不能静默跳过：否则会出现「实物已领用、ERP 未记账」的账实不符。
+            # 直接抛错，由调用方回滚整个完成备料操作。
+            raise ValueError(
+                f'CSI 单据号 {documentnumber} 长度 {len(documentnumber)} 位，'
+                f'超过接口上限 {MAX_DOC_LEN} 位（request_id={request_id}）'
             )
-            continue
         trace_key = row['coil_id'] or f"L{row['lot_id']}"
         cursor.execute(
             "INSERT INTO kr_csi_interface "
