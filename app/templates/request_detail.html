@@ -97,7 +97,7 @@
                                     <th style="width:90px" data-i18n="form.stock_qty">库存量</th>
                                     <th style="min-width:120px" data-i18n="form.stock_loc">库存位置</th>
                                     <th data-i18n="form.replenish_reason">补料原因</th>
-                                    <th style="min-width:120px" data-i18n="detail.batch_no">批次号</th>
+                                    <th style="min-width:150px" data-i18n="detail.lot_col">批次维护</th>
                                     <th style="min-width:160px" data-i18n="detail.short_reason">缺料原因</th>
                                     <th style="width:50px"></th>
                                 </tr>
@@ -288,6 +288,65 @@
                 </div>
             </div>
 
+            <!-- 批次维护弹窗（非 A/B 料：多条「批号 + 数量」） -->
+            <div class="modal fade" id="itemLotsModal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">
+                                <i class="fas fa-layer-group me-2 text-primary"></i><span data-i18n="lots.modal_title">批次维护</span>
+                                <span class="text-muted" id="itemLotsTitle"></span>
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="itemLotsOldBatch" class="text-muted small mb-2 d-none"></div>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-sm table-hover mb-2">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th data-i18n="lots.lot_no">批号</th>
+                                            <th style="width:140px" class="text-end" data-i18n="lots.qty">数量</th>
+                                            <th style="width:110px" class="text-center" data-i18n="lots.actions">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="itemLotsBody"></tbody>
+                                </table>
+                            </div>
+                            <div id="itemLotsShortAlert" class="alert alert-warning py-2 small d-none">
+                                <i class="fas fa-exclamation-triangle me-1"></i><span data-i18n="lots.short_alert">批次数量合计不足申请数量（仅提示，不阻断保存）</span>
+                            </div>
+                            <div class="row g-2 align-items-end mt-2">
+                                <div class="col-md-5">
+                                    <label class="small text-muted" data-i18n="lots.lot_no">批号</label>
+                                    <input type="text" class="form-control form-control-sm" id="itemLotNo" maxlength="64"
+                                           placeholder="Lot / 批号">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="small text-muted" data-i18n="lots.qty">数量</label>
+                                    <input type="number" class="form-control form-control-sm" id="itemLotQty"
+                                           step="0.01" min="0" placeholder="0">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary w-100" onclick="saveItemLot()">
+                                        <i class="fas fa-plus me-1"></i><span data-i18n="lots.add">新增批次</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="mt-3 fw-bold">
+                                <span data-i18n="lots.total">合计</span>
+                                <span id="itemLotsTotal">0</span> /
+                                <span data-i18n="lots.required">申请</span>
+                                <span id="itemLotsRequired">0</span>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 出库消耗登记弹窗（线卷全库存管理，1 组折叠面板，文档 4.4） -->
             <div class="modal fade" id="outboundModal" tabindex="-1" data-bs-backdrop="static">
                 <div class="modal-dialog modal-xl">
@@ -386,7 +445,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="{{ url_for('static', filename='js/coil.js') }}?v=20260907a"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017a"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -541,8 +600,6 @@ function renderItems(items) {
     tbody.innerHTML = '';
     items.forEach(function (item, i) {
         const tr = document.createElement('tr');
-        const hasBatch = !!(item.batch_no && String(item.batch_no).trim());
-        const coilDisabled = hasBatch ? '' : 'disabled';
         const coilIsAB = isABPart(item.part_number);
         // 已录卷标判定：coilState.existingCoils（coil.js 维护）中该 item 存在未删除记录即已录（绿底优先）
         const hasCoil = !!(typeof coilState !== 'undefined' && coilState && coilState.existingCoils &&
@@ -553,15 +610,35 @@ function renderItems(items) {
         if (hasCoil) {
             coilBtnCls = 'btn-success';   // 已录，绿底
             coilBtnTitle = '维护卷标（已录入）';
-        } else if (coilIsAB) {
-            coilBtnCls = 'btn-warning';   // A/B 必录，黄底（保持）
-            coilBtnTitle = '维护卷标（A/B 开头必须录入）';
         } else {
-            coilBtnCls = 'btn-outline-info';
-            coilBtnTitle = '维护卷标（可选）';
+            coilBtnCls = 'btn-warning';   // A/B 必录，黄底
+            coilBtnTitle = '维护卷标（A/B 开头必须录入）';
         }
         // 纯图标按钮（紧凑，不撑高行）：A/B 黄色高亮，必填信息用 title 提示
         const coilBtnInner = '<i class="fas fa-tags"></i>';
+
+        // 批次单元格按物料类型分流：
+        //  A/B 料 → FIFO 魔法按钮 + 只读建议批号（不再提供批次号输入框与保存按钮）
+        //  其他料 → 不渲染卷标按钮，改为「维护批次」按钮（多条「批号+数量」）
+        let batchCell;
+        if (coilIsAB) {
+            batchCell = `
+                <div class="d-flex gap-1 align-items-center">
+                    <button class="btn btn-sm btn-outline-info" onclick="autoFillBatch(${item.id}, ${REQUEST_ID}, '${escapeHtml(item.part_number)}', ${item.quantity})" title="按FIFO提示应发批号（自动保存提示记录）"><i class="fas fa-magic"></i></button>
+                    <span class="text-muted small text-truncate" id="batch_hint_${item.id}" style="max-width:130px" title="建议批号（FIFO）">${escapeHtml(item.batch_no || '-')}</span>
+                    <button class="btn btn-sm ${coilBtnCls}" id="coil_btn_${item.id}" data-part="${escapeHtml(item.part_number)}"
+                            onclick="openCoilModalByItem(${item.id}, '${escapeHtml(item.part_number)}', ${REQUEST_ID})"
+                            title="${coilBtnTitle}">${coilBtnInner}</button>
+                </div>`;
+        } else {
+            batchCell = `
+                <div class="d-flex gap-1 align-items-center">
+                    <button class="btn btn-sm btn-outline-primary" onclick="openItemLotsModal(${item.id}, '${escapeHtml(item.part_number)}', ${item.quantity}, ${REQUEST_ID})" title="维护批次（批号+数量，可多条）"><i class="fas fa-layer-group"></i></button>
+                    <span class="text-muted small" id="lot_summary_${item.id}">-</span>
+                    <span class="d-none" id="lot_old_batch_${item.id}" data-old="${escapeHtml(item.batch_no || '')}"></span>
+                </div>`;
+        }
+
         tr.innerHTML = `
             <td class="text-center">${i + 1}</td>
             <td><strong>${escapeHtml(item.job_order)}</strong></td>
@@ -572,16 +649,7 @@ function renderItems(items) {
             <td class="text-end">${item.stock_qty != null ? item.stock_qty : '-'}</td>
             <td>${escapeHtml(item.stock_loc || '-')}</td>
             <td>${item.replenish_reason || '-'}${item.replenish_reason_other ? ' (' + escapeHtml(item.replenish_reason_other) + ')' : ''}</td>
-            <td>
-                <div class="d-flex gap-1 align-items-center">
-                    <input type="text" class="form-control form-control-sm" id="batch_no_${item.id}" value="${escapeHtml(item.batch_no || '')}" placeholder="批次号" style="min-width:120px">
-                    <button class="btn btn-sm btn-outline-info" onclick="autoFillBatch(${item.id}, ${REQUEST_ID}, '${escapeHtml(item.part_number)}', ${item.quantity})" title="自动按FIFO填充批次"><i class="fas fa-magic"></i></button>
-                    <button class="btn btn-sm btn-outline-success" onclick="saveItemBatchNo(${item.id}, ${REQUEST_ID})" title="保存"><i class="fas fa-save"></i></button>
-                    <button class="btn btn-sm ${coilBtnCls}" id="coil_btn_${item.id}" data-part="${escapeHtml(item.part_number)}"
-                            onclick="openCoilModalByItem(${item.id}, '${escapeHtml(item.part_number)}', ${REQUEST_ID})"
-                            title="${coilBtnTitle}" ${coilDisabled}>${coilBtnInner}</button>
-                </div>
-            </td>
+            <td>${batchCell}</td>
             <td>
                 <div class="d-flex gap-1 align-items-center">
                     <input type="text" class="form-control form-control-sm" id="short_reason_${item.id}" value="${escapeHtml(item.short_reason || '')}" placeholder="缺料原因" style="min-width:120px">
@@ -591,6 +659,9 @@ function renderItems(items) {
             <td class="text-center" id="short_status_${item.id}">${item.short_reason ? '<i class="fas fa-check text-success"></i>' : '-'}</td>
         `;
         tbody.appendChild(tr);
+
+        // 非 A/B 行：惰性加载批次摘要（失败静默，不打断明细渲染）
+        if (!coilIsAB) refreshLotSummary(item.id, REQUEST_ID);
     });
 }
 
@@ -613,11 +684,19 @@ function autoFillBatch(itemId, requestId, partNumber, qtyNeeded) {
                 return;
             }
             var batchStr = alloc.map(function (l) { return l.lot + '(' + l.qty_take + ')'; }).join(', ');
-            document.getElementById('batch_no_' + itemId).value = batchStr;
+            // A/B 行仅只读提示：优先写 #batch_hint_*；历史页面若仍有输入框则回退写入
+            var hintEl = document.getElementById('batch_hint_' + itemId);
+            if (hintEl) {
+                hintEl.textContent = batchStr;
+                hintEl.title = '建议批号（FIFO）: ' + batchStr;
+            } else {
+                var legacyInput = document.getElementById('batch_no_' + itemId);
+                if (legacyInput) legacyInput.value = batchStr;
+            }
             apiPut('/api/requests/' + requestId + '/items/' + itemId + '/batch', {batch_no: batchStr},
                 function (resp2) {
                     var avail = resp.data.total_available;
-                    showToast('success', '已按FIFO填充: ' + batchStr + ' (可用:' + avail + ')');
+                    showToast('success', '已按FIFO提示: ' + batchStr + ' (可用:' + avail + ')');
                     enableCoilBtn(itemId);
                 },
                 function (err2) {
@@ -630,20 +709,178 @@ function autoFillBatch(itemId, requestId, partNumber, qtyNeeded) {
         });
 }
 
-/* ========== 按行保存批次号 ========== */
-function saveItemBatchNo(itemId, requestId) {
-    var input = document.getElementById('batch_no_' + itemId);
-    if (!input) return;
-    var batchNo = input.value.trim();
+/* ========== 非 A/B 料：批次分配（多条「批号 + 数量」） ========== */
+var _lotCtx = null;        // {itemId, partNumber, qty, requestId}
+var _lotData = [];         // 当前行批次列表 [{id, lot_no, qty}]
+var _lotTotals = {total: 0, required: 0, short: false};
+var _editingLotId = null;  // 行内编辑中的批次 id
 
-    apiPut('/api/requests/' + requestId + '/items/' + itemId + '/batch', {batch_no: batchNo},
+function openItemLotsModal(itemId, partNumber, qty, requestId) {
+    _lotCtx = {itemId: itemId, partNumber: partNumber, qty: qty, requestId: requestId};
+    _lotData = [];
+    _editingLotId = null;
+    document.getElementById('itemLotsTitle').textContent =
+        '- ' + partNumber + '（申请 ' + qty + '）';
+    document.getElementById('itemLotsBody').innerHTML =
+        '<tr><td colspan="3" class="text-center text-muted">加载中...</td></tr>';
+    document.getElementById('itemLotNo').value = '';
+    document.getElementById('itemLotQty').value = '';
+    document.getElementById('itemLotsShortAlert').classList.add('d-none');
+    // 历史 batch_no 仅灰字展示，不删除、不参与校验
+    var oldBatchEl = document.getElementById('itemLotsOldBatch');
+    var rowHint = document.getElementById('lot_old_batch_' + itemId);
+    var oldBatch = rowHint ? rowHint.getAttribute('data-old') : '';
+    if (oldBatch) {
+        oldBatchEl.textContent = __('lots.old_batch') + ': ' + oldBatch;
+        oldBatchEl.classList.remove('d-none');
+    } else {
+        oldBatchEl.classList.add('d-none');
+    }
+    loadItemLots();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('itemLotsModal')).show();
+}
+
+function loadItemLots() {
+    if (!_lotCtx) return;
+    apiGet('/api/requests/' + _lotCtx.requestId + '/items/' + _lotCtx.itemId + '/lots',
         function (resp) {
-            showToast('success', '批次号已保存');
-            enableCoilBtn(itemId);
+            _lotData = resp.data || [];
+            _lotTotals = {
+                total: resp.total_qty != null ? resp.total_qty : 0,
+                required: resp.item_quantity != null ? resp.item_quantity : _lotCtx.qty,
+                short: !!resp.short
+            };
+            renderLotRows();
         },
         function (err) {
-            showToast('error', err.message || '保存失败');
+            document.getElementById('itemLotsBody').innerHTML =
+                '<tr><td colspan="3" class="text-center text-danger">' +
+                escapeHtml(err.message || '加载失败') + '</td></tr>';
         }
+    );
+}
+
+function renderLotRows() {
+    var tbody = document.getElementById('itemLotsBody');
+    if (!tbody) return;
+    if (_lotData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">' +
+            __('lots.empty') + '</td></tr>';
+    } else {
+        tbody.innerHTML = _lotData.map(function (lot) {
+            if (_editingLotId === lot.id) {
+                return '<tr>' +
+                    '<td><input type="text" class="form-control form-control-sm" id="lot_edit_no_' + lot.id + '" value="' + escapeHtml(lot.lot_no) + '"></td>' +
+                    '<td><input type="number" step="0.01" min="0" class="form-control form-control-sm" id="lot_edit_qty_' + lot.id + '" value="' + lot.qty + '"></td>' +
+                    '<td class="text-nowrap">' +
+                    '<button class="btn btn-sm btn-success" onclick="saveItemLot(' + lot.id + ')" title="保存"><i class="fas fa-save"></i></button> ' +
+                    '<button class="btn btn-sm btn-secondary" onclick="cancelEditItemLot()" title="取消"><i class="fas fa-times"></i></button>' +
+                    '</td></tr>';
+            }
+            return '<tr>' +
+                '<td>' + escapeHtml(lot.lot_no) + '</td>' +
+                '<td class="text-end">' + lot.qty + '</td>' +
+                '<td class="text-nowrap">' +
+                '<button class="btn btn-sm btn-outline-primary" onclick="editItemLot(' + lot.id + ', \'' + escapeHtml(lot.lot_no).replace(/'/g, '&#39;') + '\', ' + lot.qty + ')" title="编辑"><i class="fas fa-edit"></i></button> ' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="deleteItemLot(' + lot.id + ')" title="删除"><i class="fas fa-trash"></i></button>' +
+                '</td></tr>';
+        }).join('');
+    }
+
+    document.getElementById('itemLotsTotal').textContent = _lotTotals.total;
+    document.getElementById('itemLotsRequired').textContent = _lotTotals.required;
+    var alertEl = document.getElementById('itemLotsShortAlert');
+    if (_lotTotals.short) alertEl.classList.remove('d-none');
+    else alertEl.classList.add('d-none');
+}
+
+function saveItemLot(lotId) {
+    if (!_lotCtx) return;
+    var lotNoEl = lotId ? document.getElementById('lot_edit_no_' + lotId)
+                        : document.getElementById('itemLotNo');
+    var qtyEl = lotId ? document.getElementById('lot_edit_qty_' + lotId)
+                      : document.getElementById('itemLotQty');
+    if (!lotNoEl || !qtyEl) return;
+    var lotNo = lotNoEl.value.trim();
+    var qty = qtyEl.value.trim();
+    if (!lotNo) {
+        showToast('error', __('lots.lot_required'));
+        return;
+    }
+    if (qty === '' || isNaN(parseFloat(qty)) || parseFloat(qty) <= 0) {
+        showToast('error', __('lots.qty_invalid'));
+        return;
+    }
+
+    var url = '/api/requests/' + _lotCtx.requestId + '/items/' + _lotCtx.itemId + '/lots' +
+              (lotId ? '/' + lotId : '');
+    var payload = {lot_no: lotNo, qty: parseFloat(qty)};
+    var done = function (resp) {
+        _editingLotId = null;
+        if (!lotId) {
+            document.getElementById('itemLotNo').value = '';
+            document.getElementById('itemLotQty').value = '';
+        }
+        _lotData = resp.data || [];
+        _lotTotals = {
+            total: resp.total_qty != null ? resp.total_qty : 0,
+            required: resp.item_quantity != null ? resp.item_quantity : _lotCtx.qty,
+            short: !!resp.short
+        };
+        renderLotRows();
+        refreshLotSummary(_lotCtx.itemId, _lotCtx.requestId);
+        showToast('success', resp.message || '已保存');
+        if (resp.short) {
+            showToast('warning', __('lots.short_alert_toast'));
+        }
+    };
+    var fail = function (err) { showToast('error', err.message || '保存失败'); };
+    if (lotId) apiPut(url, payload, done, fail);
+    else apiPost(url, payload, done, fail);
+}
+
+function editItemLot(id, lotNo, qty) {
+    _editingLotId = id;
+    renderLotRows();
+}
+
+function cancelEditItemLot() {
+    _editingLotId = null;
+    renderLotRows();
+}
+
+function deleteItemLot(id) {
+    if (!_lotCtx) return;
+    if (!confirm(__('lots.confirm_delete'))) return;
+    apiDelete('/api/requests/' + _lotCtx.requestId + '/items/' + _lotCtx.itemId + '/lots/' + id,
+        function (resp) {
+            _lotData = resp.data || [];
+            _lotTotals = {
+                total: resp.total_qty != null ? resp.total_qty : 0,
+                required: resp.item_quantity != null ? resp.item_quantity : _lotCtx.qty,
+                short: !!resp.short
+            };
+            renderLotRows();
+            refreshLotSummary(_lotCtx.itemId, _lotCtx.requestId);
+            showToast('success', resp.message || '已删除');
+        },
+        function (err) { showToast('error', err.message || '删除失败'); }
+    );
+}
+
+/* 明细行批次摘要：N 批 / 合计 X */
+function refreshLotSummary(itemId, requestId) {
+    var el = document.getElementById('lot_summary_' + itemId);
+    if (!el) return;
+    apiGet('/api/requests/' + requestId + '/items/' + itemId + '/lots',
+        function (resp) {
+            var n = (resp.data || []).length;
+            var total = resp.total_qty != null ? resp.total_qty : 0;
+            el.textContent = n === 0 ? '-' : (n + ' ' + __('detail.lot_summary') + ' ' + total);
+            el.className = 'small ' + (resp.short && n > 0 ? 'text-warning' : 'text-muted');
+            el.title = resp.short ? __('lots.short_alert') : '';
+        },
+        function () { /* 静默：摘要失败不影响明细展示 */ }
     );
 }
 

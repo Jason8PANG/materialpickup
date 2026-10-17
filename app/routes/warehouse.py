@@ -444,6 +444,220 @@ def update_item_batch_no(request_id, item_id):
     return jsonify({'success': True, 'message': '批次号已保存'})
 
 
+# ========== 明细行批次分配（非 A/B 料：多条「批号 + 数量」） ==========
+
+def _check_request_item(cursor, request_id, item_id, user):
+    """校验单据存在 + 站点匹配 + 明细行归属；返回 (req, item, err)。
+
+    err 为 (Response, status) 元组，调用方直接 `return err[0], err[1]`。
+    """
+    cursor.execute(
+        "SELECT * FROM kr_material_request WHERE id = %s AND is_deleted = 0",
+        (request_id,)
+    )
+    req = cursor.fetchone()
+    if not req:
+        return None, None, (jsonify({'success': False, 'message': '单据不存在'}), 404)
+
+    site_filter, site_params = get_site_filter(user)
+    if site_filter and req['siteref'] != site_params[0]:
+        return None, None, (jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403)
+
+    cursor.execute(
+        "SELECT id, request_id, part_number, quantity FROM kr_request_item "
+        "WHERE id = %s AND request_id = %s",
+        (item_id, request_id)
+    )
+    item = cursor.fetchone()
+    if not item:
+        return None, None, (jsonify({'success': False, 'message': '明细行不存在'}), 404)
+    return req, item, None
+
+
+def _parse_lot_payload(data):
+    """校验批号/数量，返回 (lot_no, qty, err_response)"""
+    lot_no = (data.get('lot_no') or '').strip()
+    if not lot_no:
+        return None, None, jsonify({'success': False, 'message': '批号不能为空'})
+    if len(lot_no) > 64:
+        return None, None, jsonify({'success': False, 'message': '批号长度不能超过 64 个字符'})
+
+    raw_qty = data.get('qty')
+    if raw_qty is None or str(raw_qty).strip() == '':
+        return None, None, jsonify({'success': False, 'message': '数量不能为空'})
+    try:
+        qty = float(raw_qty)
+    except (TypeError, ValueError):
+        return None, None, jsonify({'success': False, 'message': '数量必须为数字'})
+    if qty <= 0:
+        return None, None, jsonify({'success': False, 'message': '数量必须大于 0'})
+    if qty > 9999999999.99:
+        return None, None, jsonify({'success': False, 'message': '数量超出允许范围'})
+    return lot_no, round(qty, 2), None
+
+
+def _lots_payload(cursor, request_id, item_id, item):
+    """读取某明细行的批次列表并计算合计/缺量提示"""
+    cursor.execute(
+        "SELECT id, lot_no, qty FROM kr_request_item_lot "
+        "WHERE request_id = %s AND item_id = %s ORDER BY id",
+        (request_id, item_id)
+    )
+    rows = cursor.fetchall()
+    data = [{'id': r['id'], 'lot_no': r['lot_no'], 'qty': float(r['qty'])} for r in rows]
+    total_qty = round(sum(r['qty'] for r in data), 2)
+    item_quantity = float(item['quantity'] or 0)
+    return {
+        'success': True,
+        'data': data,
+        'total_qty': total_qty,
+        'item_quantity': item_quantity,
+        # 数量合计不足仅提示，不阻断保存
+        'short': total_qty < item_quantity,
+    }
+
+
+@warehouse_bp.route('/api/requests/<int:request_id>/items/<int:item_id>/lots', methods=['GET'])
+def list_item_lots(request_id, item_id):
+    """查询明细行批次分配列表"""
+    user, err_resp, err_code = check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        req, item, err = _check_request_item(cursor, request_id, item_id, user)
+        if err:
+            cursor.close()
+            return err[0], err[1]
+        payload = _lots_payload(cursor, request_id, item_id, item)
+        cursor.close()
+    return jsonify(payload)
+
+
+@warehouse_bp.route('/api/requests/<int:request_id>/items/<int:item_id>/lots', methods=['POST'])
+def create_item_lot(request_id, item_id):
+    """新增一条批次分配"""
+    user, err_resp, err_code = check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json() or {}
+    lot_no, qty, bad = _parse_lot_payload(data)
+    if bad:
+        return bad, 400
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        req, item, err = _check_request_item(cursor, request_id, item_id, user)
+        if err:
+            cursor.close()
+            return err[0], err[1]
+
+        cursor.execute(
+            "INSERT INTO kr_request_item_lot (request_id, item_id, lot_no, qty, siteref) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (request_id, item_id, lot_no, qty, req['siteref'])
+        )
+        new_id = cursor.lastrowid
+        add_log(cursor, request_id, user['username'], 'ITEM_LOT_ADD',
+                f"明细行 {item_id} 批次 {lot_no} 数量 {qty}", request.remote_addr)
+        db.commit()
+
+        payload = _lots_payload(cursor, request_id, item_id, item)
+        cursor.close()
+    payload['message'] = '批次已添加'
+    payload['id'] = new_id
+    return jsonify(payload)
+
+
+@warehouse_bp.route('/api/requests/<int:request_id>/items/<int:item_id>/lots/<int:lot_id>',
+                    methods=['PUT'])
+def update_item_lot(request_id, item_id, lot_id):
+    """修改一条批次分配（批号/数量均可选）"""
+    user, err_resp, err_code = check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json() or {}
+    lot_no, qty, bad = _parse_lot_payload(data)
+    if bad:
+        return bad, 400
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        req, item, err = _check_request_item(cursor, request_id, item_id, user)
+        if err:
+            cursor.close()
+            return err[0], err[1]
+
+        cursor.execute(
+            "SELECT id FROM kr_request_item_lot "
+            "WHERE id = %s AND request_id = %s AND item_id = %s",
+            (lot_id, request_id, item_id)
+        )
+        if not cursor.fetchone():
+            cursor.close()
+            return jsonify({'success': False, 'message': '批次记录不存在'}), 404
+
+        cursor.execute(
+            "UPDATE kr_request_item_lot SET lot_no = %s, qty = %s "
+            "WHERE id = %s AND request_id = %s AND item_id = %s",
+            (lot_no, qty, lot_id, request_id, item_id)
+        )
+
+        add_log(cursor, request_id, user['username'], 'ITEM_LOT_EDIT',
+                f"明细行 {item_id} 批次 #{lot_id} 改为 {lot_no} 数量 {qty}",
+                request.remote_addr)
+        db.commit()
+
+        payload = _lots_payload(cursor, request_id, item_id, item)
+        cursor.close()
+    payload['message'] = '批次已更新'
+    return jsonify(payload)
+
+
+@warehouse_bp.route('/api/requests/<int:request_id>/items/<int:item_id>/lots/<int:lot_id>',
+                    methods=['DELETE'])
+def delete_item_lot(request_id, item_id, lot_id):
+    """删除一条批次分配"""
+    user, err_resp, err_code = check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        req, item, err = _check_request_item(cursor, request_id, item_id, user)
+        if err:
+            cursor.close()
+            return err[0], err[1]
+
+        cursor.execute(
+            "SELECT lot_no, qty FROM kr_request_item_lot "
+            "WHERE id = %s AND request_id = %s AND item_id = %s",
+            (lot_id, request_id, item_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            return jsonify({'success': False, 'message': '批次记录不存在'}), 404
+
+        cursor.execute(
+            "DELETE FROM kr_request_item_lot "
+            "WHERE id = %s AND request_id = %s AND item_id = %s",
+            (lot_id, request_id, item_id)
+        )
+        add_log(cursor, request_id, user['username'], 'ITEM_LOT_DEL',
+                f"明细行 {item_id} 删除批次 {row['lot_no']} 数量 {row['qty']}",
+                request.remote_addr)
+        db.commit()
+
+        payload = _lots_payload(cursor, request_id, item_id, item)
+        cursor.close()
+    payload['message'] = '批次已删除'
+    return jsonify(payload)
+
+
 @warehouse_bp.route('/api/requests/pending', methods=['GET'])
 def pending_requests():
     """查询未完成单据（仓库用）"""
