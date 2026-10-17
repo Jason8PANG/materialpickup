@@ -84,6 +84,13 @@ class Config:
                          '410': os.environ.get('CSI_WAREHOUSE_410', 'M1M1')}
     CSI_ALERT_EMAIL = os.environ.get('CSI_ALERT_EMAIL', 'jason.pang@nai-group.com')
     CSI_SYNC_INTERVAL = int(os.environ.get('CSI_SYNC_INTERVAL', '60'))
+    # 同步器调优（一般无需改动）
+    CSI_SYNC_BATCH_SIZE = int(os.environ.get('CSI_SYNC_BATCH_SIZE', '20'))       # 单轮最多处理行数
+    CSI_SYNC_STALE_SECONDS = int(os.environ.get('CSI_SYNC_STALE_SECONDS', '45'))  # 行被判定为「轮询超时」的秒数
+    CSI_SYNC_POLL_INTERVAL = int(os.environ.get('CSI_SYNC_POLL_INTERVAL', '5'))   # 平台异步队列轮询间隔
+    CSI_SYNC_POLL_ATTEMPTS = int(os.environ.get('CSI_SYNC_POLL_ATTEMPTS', '4'))   # 单轮最多轮询次数
+    CSI_SYNC_MAX_RETRY = int(os.environ.get('CSI_SYNC_MAX_RETRY', '3'))           # 连续失败次数上限（达到即转人工）
+    CSI_SYNC_HTTP_TIMEOUT = int(os.environ.get('CSI_SYNC_HTTP_TIMEOUT', '20'))    # 单次 HTTP 超时
 
     # 站点配置
     SITE_CONFIG = {

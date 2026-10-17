@@ -292,9 +292,36 @@ class CSIClient:
                 'qty_on_hand': float(r.get('QtyOnHand', 0) or 0),
                 'lot_status': str(r.get('LotStatus', '') or ''),
                 'whse': str(r.get('Whse', '') or ''),
+                'loc': str(r.get('Loc', '') or ''),
             }
         except Exception as e:
             logger.error(f"[CSI] get_lot_info error: {e}")
+            return None
+
+    def get_lot_location(self, item: str, lot: str) -> str | None:
+        """
+        查询 Lot 当前所在库位（Loc），供 CSI 库位转移同步器补 from_location。
+        优先取 SLLots.Loc；未返回时回退 ue_NAI_SLLotLocs（按 Lot 查有余额的库位，取数量最大者）。
+        返回库位字符串或 None（查不到/查询失败）。
+        """
+        info = self.get_lot_info(item, lot)
+        if info and info.get('loc'):
+            return info['loc']
+
+        try:
+            filter_str = f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0"
+            records = self._get_ido("ue_NAI_SLLotLocs", filter_str=filter_str)
+            best_qty, best_loc = None, None
+            for r in records:
+                qty = float(r.get("QtyOnHand", 0) or 0)
+                loc = str(r.get("Loc", "") or "").strip()
+                if qty <= 0 or not loc:
+                    continue
+                if best_qty is None or qty > best_qty:
+                    best_qty, best_loc = qty, loc
+            return best_loc
+        except Exception as e:
+            logger.error(f"[CSI] get_lot_location error: {e}")
             return None
 
     def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:

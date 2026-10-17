@@ -1,6 +1,27 @@
 from flask import Flask
 from app.config import Config
 
+# 模块级标志：防止 Flask debug reload / 多次 create_app 重复起线程
+_CSI_SYNC_THREAD_STARTED = False
+
+
+def _start_csi_sync_thread():
+    """CSI 库位转移同步器：CSI_SYNC_ENABLED=true 时以守护线程常驻。
+
+    注意：gunicorn -w 4 时每个 worker 都会起一条线程，重复提交由
+    kr_csi_interface 的条件 UPDATE 抢占（status→SUBMITTING）保证不会发生。
+    """
+    global _CSI_SYNC_THREAD_STARTED
+    if _CSI_SYNC_THREAD_STARTED or not Config.CSI_SYNC_ENABLED:
+        return
+    _CSI_SYNC_THREAD_STARTED = True
+    try:
+        import threading
+        from app.csi_sync_worker import main as csi_sync_main
+        threading.Thread(target=csi_sync_main, name='csi-sync', daemon=True).start()
+    except Exception as e:  # 同步器起不来不影响 Web 服务
+        print(f'[CSI 同步] 启动后台线程失败: {e}')
+
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -57,5 +78,8 @@ def create_app(config_class=Config):
     @app.errorhandler(404)
     def handle_404(e):
         return jsonify({'success': False, 'message': '接口不存在'}), 404
+
+    # CSI 库位转移同步器（常驻守护线程，CSI_SYNC_ENABLED=false 时不启动）
+    _start_csi_sync_thread()
 
     return app
