@@ -32,8 +32,11 @@ COIL_STATUS_LABELS = {
 }
 
 # 盘点差异调整 → CSI 杂项交易
-COUNT_ADJUST_API_POSITIVE = 'sl-misc-issue'    # diff_converted > 0：盘亏，库存减少
-COUNT_ADJUST_API_NEGATIVE = 'sl-misc-receipt'  # diff_converted < 0：盘盈，库存增加
+# diff_converted = (实际盘点 - 账面剩余) / 换算系数
+#   > 0：盘盈，库存增加 → 杂项接收
+#   < 0：盘亏，库存减少 → 杂项发出
+COUNT_ADJUST_API_POSITIVE = 'sl-misc-receipt'  # diff_converted > 0：盘盈，库存增加
+COUNT_ADJUST_API_NEGATIVE = 'sl-misc-issue'    # diff_converted < 0：盘亏，库存减少
 COUNT_ADJUST_REASON_CODE = 'CC'
 COUNT_ADJUST_ACCOUNT = '505100'
 CSI_DOC_MAX_LEN = 12   # documentnumber 列 VARCHAR(12)，接口硬限制
