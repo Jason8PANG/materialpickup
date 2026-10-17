@@ -257,7 +257,7 @@ function renderCoilRows() {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (coilState.rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">暂无录入行，点击「添加一行」开始录入</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无录入行，点击「添加一行」开始录入</td></tr>';
         return;
     }
     coilState.rows.forEach(function (row, idx) {
@@ -282,12 +282,14 @@ function renderCoilRows() {
                 <input type="text" class="form-control form-control-sm coil-lot-input" data-idx="${idx}"
                        value="${escapeHtml(row.lot_no || '')}" placeholder="Lot" maxlength="64"
                        onblur="validateLotForRow(${idx})">
-                <div class="text-muted small mt-1" id="coil_loc_${idx}">${escapeHtml(__('coils.loc'))}：${escapeHtml(lotLoc || '-')}</div>
             </td>
             <td>
                 <input type="number" class="form-control form-control-sm coil-length-input" data-idx="${idx}"
                        value="${row.length}" min="0" step="0.01" placeholder="${__('coils.length_placeholder')}${unit && unit !== '-' ? ' (' + escapeHtml(unit) + ')' : ''}"
                        onblur="validateLotForRow(${idx})">
+            </td>
+            <td style="width:12%">
+                <div class="form-control form-control-sm bg-light text-muted text-truncate" id="coil_loc_${idx}" title="${escapeHtml(lotLoc || '-')}">${escapeHtml(lotLoc || '-')}</div>
             </td>
             <td class="text-center align-middle">
                 <input type="checkbox" class="form-check-input coil-initial-input" data-idx="${idx}"
@@ -349,7 +351,7 @@ function validateLotForRow(idx) {
 function setLotLocHint(idx, loc) {
     // 录入行「库位」只读提示：无值统一显示 '-'
     const el = document.getElementById('coil_loc_' + idx);
-    if (el) el.textContent = __('coils.loc') + '：' + (loc || '-');
+    if (el) { el.textContent = loc || '-'; el.title = loc || '-'; }
 }
 
 function setLotWarning(lotInput) {
