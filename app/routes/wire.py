@@ -499,7 +499,7 @@ def api_count_adjust():
         cur.close()
     return jsonify({'success': True,
                     'message': f'盘点单 {count_no} 共 {len(items)} 卷，{inserted} 卷有差异：'
-                               f'写入消耗记录 {inserted} 条、CSI 杂项交易 {csi_inserted} 条已入队'
+                               f'已生成 CSI 库存调整交易 {csi_inserted} 条'
                                f'（无差异的 {len(items) - inserted} 卷不产生交易）',
                     'total_items': len(items),
                     'consumption_rows': inserted, 'csi_rows': csi_inserted})
