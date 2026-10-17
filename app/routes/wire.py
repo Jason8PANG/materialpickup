@@ -37,7 +37,7 @@ COIL_STATUS_LABELS = {
 #   < 0：盘亏，库存减少 → 杂项发出
 COUNT_ADJUST_API_POSITIVE = 'sl-misc-receipt'  # diff_converted > 0：盘盈，库存增加
 COUNT_ADJUST_API_NEGATIVE = 'sl-misc-issue'    # diff_converted < 0：盘亏，库存减少
-COUNT_ADJUST_REASON_CODE = 'CC'
+COUNT_ADJUST_REASON_CODE = 'P1'
 COUNT_ADJUST_ACCOUNT = '505100'
 CSI_DOC_MAX_LEN = 12   # documentnumber 列 VARCHAR(12)，接口硬限制
 
@@ -415,66 +415,46 @@ def api_count_adjust_preview():
         cur.close()
 
     siteref = str(count.get('siteref') or user.get('siteref') or '')
-    client = CSIClient(siteref)
-    cost_cache = {}          # part_number -> unit_cost|None，同一物料只查一次
     items = []
     diff_items = 0
-    pl_plus_amount = 0.0
-    pl_minus_amount = 0.0
-    unpriced_items = 0
+    plus_count = 0
+    minus_count = 0
 
     for it in rows:
         raw_diff = it.get('diff_converted')
         diff_converted = float(raw_diff) if raw_diff is not None else None
         api_name = None
-        unit_cost = None
-        amount = None
         if diff_converted:
             api_name = (COUNT_ADJUST_API_POSITIVE if diff_converted > 0
                         else COUNT_ADJUST_API_NEGATIVE)
             diff_items += 1
-            part_number = (it.get('part_number') or '').strip()
-            if part_number and part_number not in cost_cache:
-                try:
-                    cost_cache[part_number] = client.get_item_cost(part_number)
-                except Exception as e:
-                    logger.warning('[盘点差异调整] 获取 CSI 成本失败 item=%s: %s', part_number, e)
-                    cost_cache[part_number] = None
-            unit_cost = cost_cache.get(part_number) if part_number else None
-            if unit_cost is None:
-                unpriced_items += 1
+            if diff_converted > 0:
+                plus_count += 1
             else:
-                amount = round(abs(diff_converted) * float(unit_cost), 2)
-                if diff_converted > 0:
-                    pl_plus_amount += amount
-                else:
-                    pl_minus_amount += amount
+                minus_count += 1
 
         items.append({
             'coil_id': it.get('coil_id'),
             'part_number': it.get('part_number'),
             'lot_no': it.get('lot_no'),
             'unit': it.get('unit'),
+            'original_qty': float(it['original_qty']) if it.get('original_qty') is not None else None,
+            'used_mm': float(it['used_mm']) if it.get('used_mm') is not None else None,
+            'remain_mm': float(it['remain_mm']) if it.get('remain_mm') is not None else None,
+            'actual_mm': float(it['actual_mm']) if it.get('actual_mm') is not None else None,
             'diff_mm': float(it['diff_mm']) if it.get('diff_mm') is not None else None,
             'diff_converted': diff_converted,
             'api_name': api_name,
-            'unit_cost': (round(float(unit_cost), 4) if unit_cost is not None else None),
-            'amount': amount,
         })
 
-    pl_plus_amount = round(pl_plus_amount, 2)
-    pl_minus_amount = round(pl_minus_amount, 2)
     return jsonify({'success': True, 'data': {
         'count_no': count_no,
         'status': count['status'],
         'siteref': siteref,
         'total_items': len(rows),
         'diff_items': diff_items,
-        'pl_plus_amount': pl_plus_amount,
-        'pl_minus_amount': pl_minus_amount,
-        'net_amount': round(pl_plus_amount - pl_minus_amount, 2),
-        'unpriced_items': unpriced_items,
-        'currency_hint': 'CSI 成本货币',
+        'plus_count': plus_count,
+        'minus_count': minus_count,
         'items': items,
     }})
 
