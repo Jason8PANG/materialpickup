@@ -11,20 +11,32 @@
 import csv
 import io
 import io as _io
+import logging
+import uuid
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request, session, render_template, Response
+from pymysql.err import IntegrityError
 
 from app.config import Config
 from app.models import get_db_connection, get_site_filter
+from app.services.csi_service import CSIClient
 from app.utils import WhereBuilder, is_en
 
 wire_bp = Blueprint('wire', __name__)
+logger = logging.getLogger(__name__)
 
 COIL_STATUS_LABELS = {
     'in_stock': '在库', 'in_shop': '在车间',
     'issued': '已出库', 'scrapped': '报废', 'counting': '盘点中',
 }
+
+# 盘点差异调整 → CSI 杂项交易
+COUNT_ADJUST_API_POSITIVE = 'sl-misc-issue'    # diff_converted > 0：盘亏，库存减少
+COUNT_ADJUST_API_NEGATIVE = 'sl-misc-receipt'  # diff_converted < 0：盘盈，库存增加
+COUNT_ADJUST_REASON_CODE = 'CC'
+COUNT_ADJUST_ACCOUNT = '505100'
+CSI_DOC_MAX_LEN = 12   # documentnumber 列 VARCHAR(12)，接口硬限制
 
 
 def _check_login():
@@ -326,11 +338,35 @@ def adjust_page():
     return render_template('wire_adjust.html')
 
 
+def _resolve_adjust_location(cur, siteref, coil_id, part_number, lot_no):
+    """盘点差异调整的 CSI 库位：优先卷标库位，取不到回退 CSI 实时库位查询。
+
+    返回库位字符串，均为空时返回 None（杂项收发必须带库位，由调用方报错回滚）。
+    """
+    cur.execute("SELECT loc FROM kr_wire_coil WHERE coil_id = %s ORDER BY is_deleted LIMIT 1",
+                (coil_id,))
+    row = cur.fetchone() or {}
+    loc = str(row.get('loc') or '').strip()
+    if loc:
+        return loc
+    try:
+        loc = str(CSIClient(siteref).get_lot_location(part_number, lot_no) or '').strip()
+    except Exception as e:
+        logger.warning('[盘点差异调整] CSI 库位查询失败 item=%s lot=%s: %s', part_number, lot_no, e)
+        loc = ''
+    return loc or None
+
+
 @wire_bp.route('/api/wire/adjust', methods=['POST'])
 def api_count_adjust():
-    """仓库人员输入盘点单号 → 将盘点差异写入卷标消耗表（consume_type='count_adjust'）。
+    """仓库人员输入盘点单号 → 将盘点差异写入卷标消耗表（consume_type='count_adjust'），
+    同时为每条有差异的明细写入 CSI 杂项收发交易（kr_csi_interface）。
+
     消耗数量 = 差异数量(diff_mm)，可正可负；工单号 = 盘点单号。
-    同一盘点单号只允许执行一次（防重复）。"""
+    CSI 交易：diff_converted > 0 → sl-misc-issue；< 0 → sl-misc-receipt；
+    单号 = 盘点单号 + 3 位行号（如 INV260001001，≤12 位）。
+    同一盘点单号只允许执行一次（防重复）；消耗记录与接口记录同事务提交。
+    """
     user, err = _check_login()
     if err:
         return err
@@ -373,45 +409,116 @@ def api_count_adjust():
 
         now = datetime.now()
         operator = user.get('username')
+        siteref = str(count.get('siteref') or user.get('siteref') or '')
+        warehouse = Config.CSI_WAREHOUSE_MAP.get(siteref)
+        if not warehouse:
+            cur.close()
+            return jsonify({'success': False,
+                            'message': f'站点 {siteref} 未配置 CSI 仓库映射，无法生成杂项交易'}), 400
+
         inserted = 0
-        for it in items:
-            diff_mm = it.get('diff_mm')
-            if diff_mm is None or float(diff_mm) == 0:
-                continue  # 无差异不写消耗
-            # 正确语义：count_adjust = 账面剩余R - 盘点实际A = -diff（取反）
-            # 剩余 = 卷长 - 消耗 - (-diff) = R + diff = A（精确等于盘点实际值）
-            # 若直接写 diff 会导致剩余 = 2R - A（A=0 时翻倍）
-            adjust_mm = -float(diff_mm)
-            adjust_converted = it.get('diff_converted')
-            if adjust_converted is not None:
-                adjust_converted = -float(adjust_converted)
-            cur.execute(
-                    """INSERT INTO kr_wire_coil_consumption
-                       (coil_id, job_order, part_number, consume_type, out_length, unit,
-                        converted_length, converted_unit, operator, remark, created_at, is_manual, siteref)
-                       VALUES (%s, %s, %s, 'count_adjust', %s, %s, %s, %s, %s, %s, %s, 1, %s)""",
-                    (it['coil_id'], count_no, it.get('part_number'),
-                     adjust_mm, it.get('unit'),
-                     adjust_converted, it.get('unit'),
-                     operator, f'盘点差异调整（{count_no}）', now,
-                     count.get('siteref') or user.get('siteref'))
+        csi_inserted = 0
+        line_no = 0
+        try:
+            for it in items:
+                diff_mm = it.get('diff_mm')
+                if diff_mm is None or float(diff_mm) == 0:
+                    continue  # 无差异不写消耗
+                # 正确语义：count_adjust = 账面剩余R - 盘点实际A = -diff（取反）
+                # 剩余 = 卷长 - 消耗 - (-diff) = R + diff = A（精确等于盘点实际值）
+                # 若直接写 diff 会导致剩余 = 2R - A（A=0 时翻倍）
+                adjust_mm = -float(diff_mm)
+                adjust_converted = it.get('diff_converted')
+                if adjust_converted is not None:
+                    adjust_converted = -float(adjust_converted)
+                cur.execute(
+                        """INSERT INTO kr_wire_coil_consumption
+                           (coil_id, job_order, part_number, consume_type, out_length, unit,
+                            converted_length, converted_unit, operator, remark, created_at, is_manual, siteref)
+                           VALUES (%s, %s, %s, 'count_adjust', %s, %s, %s, %s, %s, %s, %s, 1, %s)""",
+                        (it['coil_id'], count_no, it.get('part_number'),
+                         adjust_mm, it.get('unit'),
+                         adjust_converted, it.get('unit'),
+                         operator, f'盘点差异调整（{count_no}）', now,
+                         count.get('siteref') or user.get('siteref'))
+                    )
+                inserted += 1
+
+                # ---- CSI 杂项收发交易（与消耗记录同事务）----
+                # diff_converted 为空（计量单位无换算系数）时无法折算，跳过该卷
+                diff_converted = it.get('diff_converted')
+                if diff_converted is None:
+                    continue
+                diff_converted = float(diff_converted)
+                quantity = round(abs(diff_converted), 4)
+                if quantity <= 0:
+                    continue
+                api_name = (COUNT_ADJUST_API_POSITIVE if diff_converted > 0
+                            else COUNT_ADJUST_API_NEGATIVE)
+                line_no += 1
+                documentnumber = f'{count_no}{line_no:03d}'
+                if len(documentnumber) > CSI_DOC_MAX_LEN:
+                    raise ValueError(
+                        f'CSI 单据号 {documentnumber} 长度 {len(documentnumber)} 位，'
+                        f'超过接口上限 {CSI_DOC_MAX_LEN} 位（盘点单 {count_no}）'
+                    )
+                to_location = _resolve_adjust_location(
+                    cur, siteref, it['coil_id'], it.get('part_number'), it.get('lot_no'))
+                if not to_location:
+                    raise ValueError(
+                        f'无法确定 CSI 库位：卷标 {it["coil_id"]}'
+                        f'（物料 {it.get("part_number")} / Lot {it.get("lot_no")}）'
+                    )
+                traceid = f'{documentnumber}-{it["coil_id"]}-{uuid.uuid4().hex[:12]}'
+                cur.execute(
+                    """INSERT INTO kr_csi_interface
+                       (request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity,
+                        um, warehouse, from_location, to_location, reasoncode, account,
+                        unitcode1, unitcode2, documentnumber, line_seq, direction,
+                        is_sync, status, retry_count, traceid, createdate, createby)
+                       VALUES (NULL, %s, %s, NULL, %s, %s, %s, %s, %s,
+                               %s, %s, NULL, %s, %s, %s,
+                               NULL, NULL, %s, %s, 'F',
+                               0, 'PENDING', 0, %s, %s, %s)""",
+                    (it['id'], it['coil_id'], api_name, int(siteref),
+                     it.get('part_number'), it.get('lot_no'), quantity,
+                     it.get('unit'), warehouse, to_location, COUNT_ADJUST_REASON_CODE,
+                     COUNT_ADJUST_ACCOUNT, documentnumber, line_no,
+                     traceid, now, operator)
                 )
-            inserted += 1
-        db.commit()
+                csi_inserted += 1
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.exception('[盘点差异调整] 盘点单 %s 执行失败，已回滚：%s', count_no, e)
+            cur.close()
+            return jsonify({'success': False, 'message': f'差异调整失败，已回滚：{e}'}), 500
+        cur.close()
     return jsonify({'success': True,
-                    'message': f'盘点单 {count_no} 差异调整已执行（{inserted} 卷写入消耗记录）'})
+                    'message': f'盘点单 {count_no} 差异调整已执行（{inserted} 卷写入消耗记录，'
+                               f'{csi_inserted} 条 CSI 杂项交易已入队）',
+                    'consumption_rows': inserted, 'csi_rows': csi_inserted})
 
 
 # ================================================================== #
 #  线材库存盘点
 # ================================================================== #
 def _gen_count_no(cur):
-    prefix = datetime.now().strftime('INV%Y%m%d')
+    """生成盘点单号：INV + 年份后两位 + 4 位年度流水（如 INV260001，共 9 位）。
+
+    流水号取该年度已有单号的最大后缀 + 1（年度内递增，不按日重置、不复用）。
+    """
+    prefix = datetime.now().strftime('INV%y')
     cur.execute(
-        "SELECT COUNT(*) AS cnt FROM kr_inventory_count WHERE count_no LIKE %s",
+        "SELECT count_no FROM kr_inventory_count WHERE count_no LIKE %s",
         (prefix + '%',)
     )
-    return f"{prefix}{cur.fetchone()['cnt'] + 1:03d}"
+    max_seq = 0
+    for r in cur.fetchall():
+        suffix = (r.get('count_no') or '')[len(prefix):]
+        if len(suffix) == 4 and suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+    return f'{prefix}{max_seq + 1:04d}'
 
 
 def _calc_item_metrics(coil, used_mm):
@@ -485,13 +592,25 @@ def api_create_count():
                             'message': f'卷标 {names} 不在线边仓（状态非在车间），仅线边仓物料可盘点'}), 400
 
         # 禁止重复选择同一卷标
-        count_no = _gen_count_no(cur)
-        cur.execute(
-            "INSERT INTO kr_inventory_count (count_no, status, siteref, created_by, note) "
-            "VALUES (%s, 'pending', %s, %s, %s)",
-            (count_no, user.get('siteref') or '410', user.get('username'), note or None)
-        )
-        count_id = cur.lastrowid
+        # 单号唯一键冲突时重新取号重试（并发建单：两个请求可能算出同一年度流水）
+        count_no = count_id = None
+        for _attempt in range(5):
+            count_no = _gen_count_no(cur)
+            try:
+                cur.execute(
+                    "INSERT INTO kr_inventory_count (count_no, status, siteref, created_by, note) "
+                    "VALUES (%s, 'pending', %s, %s, %s)",
+                    (count_no, user.get('siteref') or '410', user.get('username'), note or None)
+                )
+            except IntegrityError:
+                db.rollback()
+                count_no = count_id = None
+                continue
+            count_id = cur.lastrowid
+            break
+        if not count_id:
+            cur.close()
+            return jsonify({'success': False, 'message': '盘点单号生成失败，请重试'}), 500
         inserted = 0
         for cid in coil_ids:
             coil = coil_map.get(cid)
