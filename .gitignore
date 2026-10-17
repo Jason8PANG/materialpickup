@@ -33,3 +33,6 @@ Thumbs.db
 *.bak
 *.zip
 *.tar.gz
+
+# 数据修正备份（含业务数据，勿入库）
+scripts/backups/
