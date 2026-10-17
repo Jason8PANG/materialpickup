@@ -320,12 +320,12 @@
                                 <div class="col-md-5">
                                     <label class="small text-muted" data-i18n="lots.lot_no">批号</label>
                                     <input type="text" class="form-control form-control-sm" id="itemLotNo" maxlength="64"
-                                           placeholder="Lot / 批号">
+                                           placeholder="Lot / 批号" onblur="validateNewItemLotInputs()">
                                 </div>
                                 <div class="col-md-4">
                                     <label class="small text-muted" data-i18n="lots.qty">数量</label>
                                     <input type="number" class="form-control form-control-sm" id="itemLotQty"
-                                           step="0.01" min="0" placeholder="0">
+                                           step="0.01" min="0" placeholder="0" onblur="validateNewItemLotInputs()">
                                 </div>
                                 <div class="col-md-3">
                                     <button class="btn btn-sm btn-primary w-100" onclick="saveItemLot()">
@@ -445,7 +445,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017b"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017c"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -633,7 +633,7 @@ function renderItems(items) {
         } else {
             batchCell = `
                 <div class="d-flex gap-1 align-items-center">
-                    <button class="btn btn-sm btn-outline-primary" onclick="openItemLotsModal(${item.id}, '${escapeHtml(item.part_number)}', ${item.quantity}, ${REQUEST_ID})" title="维护批次（批号+数量，可多条）"><i class="fas fa-layer-group"></i></button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openItemLotsModal(${item.id}, '${escapeHtml(item.part_number)}', ${item.quantity}, ${REQUEST_ID}, '${escapeHtml(item.unit || '').replace(/'/g, '&#39;')}')" title="维护批次（批号+数量，可多条）"><i class="fas fa-layer-group"></i></button>
                     <button class="btn btn-sm btn-outline-secondary" disabled title="非 A/B 料无需维护卷标"><i class="fas fa-tags"></i></button>
                     <span class="text-muted small" id="lot_summary_${item.id}">-</span>
                     <span class="d-none" id="lot_old_batch_${item.id}" data-old="${escapeHtml(item.batch_no || '')}"></span>
@@ -711,13 +711,14 @@ function autoFillBatch(itemId, requestId, partNumber, qtyNeeded) {
 }
 
 /* ========== 非 A/B 料：批次分配（多条「批号 + 数量」） ========== */
-var _lotCtx = null;        // {itemId, partNumber, qty, requestId}
+var _lotCtx = null;        // {itemId, partNumber, qty, requestId, unit}
 var _lotData = [];         // 当前行批次列表 [{id, lot_no, qty}]
 var _lotTotals = {total: 0, required: 0, short: false};
 var _editingLotId = null;  // 行内编辑中的批次 id
+var _lotPending = {};      // 进行中的校验请求：key -> [回调]
 
-function openItemLotsModal(itemId, partNumber, qty, requestId) {
-    _lotCtx = {itemId: itemId, partNumber: partNumber, qty: qty, requestId: requestId};
+function openItemLotsModal(itemId, partNumber, qty, requestId, unit) {
+    _lotCtx = {itemId: itemId, partNumber: partNumber, qty: qty, requestId: requestId, unit: unit || ''};
     _lotData = [];
     _editingLotId = null;
     document.getElementById('itemLotsTitle').textContent =
@@ -726,6 +727,8 @@ function openItemLotsModal(itemId, partNumber, qty, requestId) {
         '<tr><td colspan="3" class="text-center text-muted">加载中...</td></tr>';
     document.getElementById('itemLotNo').value = '';
     document.getElementById('itemLotQty').value = '';
+    clearLotValidateState(document.getElementById('itemLotNo'));
+    clearLotValidateState(document.getElementById('itemLotQty'));
     document.getElementById('itemLotsShortAlert').classList.add('d-none');
     // 历史 batch_no 仅灰字展示，不删除、不参与校验
     var oldBatchEl = document.getElementById('itemLotsOldBatch');
@@ -771,8 +774,8 @@ function renderLotRows() {
         tbody.innerHTML = _lotData.map(function (lot) {
             if (_editingLotId === lot.id) {
                 return '<tr>' +
-                    '<td><input type="text" class="form-control form-control-sm" id="lot_edit_no_' + lot.id + '" value="' + escapeHtml(lot.lot_no) + '"></td>' +
-                    '<td><input type="number" step="0.01" min="0" class="form-control form-control-sm" id="lot_edit_qty_' + lot.id + '" value="' + lot.qty + '"></td>' +
+                    '<td><input type="text" class="form-control form-control-sm" id="lot_edit_no_' + lot.id + '" value="' + escapeHtml(lot.lot_no) + '" onblur="validateEditItemLotInputs(' + lot.id + ')"></td>' +
+                    '<td><input type="number" step="0.01" min="0" class="form-control form-control-sm" id="lot_edit_qty_' + lot.id + '" value="' + lot.qty + '" onblur="validateEditItemLotInputs(' + lot.id + ')"></td>' +
                     '<td class="text-nowrap">' +
                     '<button class="btn btn-sm btn-success" onclick="saveItemLot(' + lot.id + ')" title="保存"><i class="fas fa-save"></i></button> ' +
                     '<button class="btn btn-sm btn-secondary" onclick="cancelEditItemLot()" title="取消"><i class="fas fa-times"></i></button>' +
@@ -795,6 +798,79 @@ function renderLotRows() {
     else alertEl.classList.add('d-none');
 }
 
+/* 批号有效性 + 发放数量 ≤ Lot on-hand 校验（复用卷标 /api/coils/validate-lot） */
+function clearLotValidateState(el) {
+    if (!el) return;
+    el.classList.remove('is-valid', 'is-invalid');
+    delete el.dataset.vkey;
+}
+
+function _lotValidateKey(lotNo, qty) {
+    return [(_lotCtx && _lotCtx.partNumber) || '', lotNo, parseFloat(qty), (_lotCtx && _lotCtx.unit) || ''].join('|');
+}
+
+/* onDone(ok)；opts: {force: 跳过上次通过缓存, silentSuccess: 通过时不弹 toast} */
+function validateItemLot(lotNo, qty, onDone, lotEl, qtyEl, opts) {
+    opts = opts || {};
+    if (!_lotCtx) { if (onDone) onDone(false); return; }
+    var key = _lotValidateKey(lotNo, qty);
+    if (!opts.force && lotEl && lotEl.dataset.vkey === key && lotEl.classList.contains('is-valid')) {
+        if (onDone) onDone(true);
+        return;
+    }
+    var apply = function (ok, resp, err) {
+        [lotEl, qtyEl].forEach(function (el) {
+            if (!el) return;
+            el.classList.remove('is-valid', 'is-invalid');
+            el.classList.add(ok ? 'is-valid' : 'is-invalid');
+            if (ok) el.dataset.vkey = key;
+            else delete el.dataset.vkey;
+        });
+        if (ok) {
+            if (!opts.silentSuccess) showToast('success', resp.message || __('lots.validate_ok'));
+        } else {
+            showToast('error', (err && err.message) || __('lots.validate_fail'));
+        }
+        if (onDone) onDone(ok);
+    };
+    // 同一批号+数量已有请求在飞：复用同一次结果，避免失焦与保存各发一次 CSI 查询
+    if (_lotPending[key]) { _lotPending[key].push(apply); return; }
+    _lotPending[key] = [apply];
+    var settle = function (ok, resp, err) {
+        var list = _lotPending[key] || [];
+        delete _lotPending[key];
+        list.forEach(function (fn) { fn(ok, resp, err); });
+    };
+    apiPost('/api/coils/validate-lot', {
+        part_number: _lotCtx.partNumber,
+        lot_no: lotNo,
+        length: parseFloat(qty),
+        unit: _lotCtx.unit || ''
+    }, function (resp) { settle(true, resp); }, function (err) { settle(false, null, err); });
+}
+
+/* 新增行失焦：批号与数量都填了才校验（仅提示红/绿框，不打断输入） */
+function validateNewItemLotInputs() {
+    var lotEl = document.getElementById('itemLotNo');
+    var qtyEl = document.getElementById('itemLotQty');
+    if (!lotEl || !qtyEl) return;
+    var lotNo = lotEl.value.trim();
+    var qty = qtyEl.value.trim();
+    if (!lotNo || qty === '' || isNaN(parseFloat(qty)) || parseFloat(qty) <= 0) return;
+    validateItemLot(lotNo, qty, null, lotEl, qtyEl);
+}
+
+/* 编辑行失焦：校验编辑后的新批号/数量 */
+function validateEditItemLotInputs(lotId) {
+    var lotEl = document.getElementById('lot_edit_no_' + lotId);
+    var qtyEl = document.getElementById('lot_edit_qty_' + lotId);
+    if (!lotEl || !qtyEl) return;
+    var lotNo = lotEl.value.trim();
+    var qty = qtyEl.value.trim();
+    if (!lotNo || qty === '' || isNaN(parseFloat(qty)) || parseFloat(qty) <= 0) return;
+    validateItemLot(lotNo, qty, null, lotEl, qtyEl);
+}
+
 function saveItemLot(lotId) {
     if (!_lotCtx) return;
     var lotNoEl = lotId ? document.getElementById('lot_edit_no_' + lotId)
@@ -813,14 +889,25 @@ function saveItemLot(lotId) {
         return;
     }
 
+    // 保存前强制校验：批号必须在 SLLots 中存在且数量不超过 DerQtyOnHand，
+    // 校验失败/接口异常一律阻断保存，避免错误批号或超发数量落库。
+    validateItemLot(lotNo, parseFloat(qty), function (ok) {
+        if (!ok) return;
+        doSaveItemLot(lotId, lotNo, parseFloat(qty));
+    }, lotNoEl, qtyEl, {force: true, silentSuccess: true});
+}
+
+function doSaveItemLot(lotId, lotNo, qty) {
     var url = '/api/requests/' + _lotCtx.requestId + '/items/' + _lotCtx.itemId + '/lots' +
               (lotId ? '/' + lotId : '');
-    var payload = {lot_no: lotNo, qty: parseFloat(qty)};
+    var payload = {lot_no: lotNo, qty: qty};
     var done = function (resp) {
         _editingLotId = null;
         if (!lotId) {
             document.getElementById('itemLotNo').value = '';
             document.getElementById('itemLotQty').value = '';
+            clearLotValidateState(document.getElementById('itemLotNo'));
+            clearLotValidateState(document.getElementById('itemLotQty'));
         }
         _lotData = resp.data || [];
         _lotTotals = {
