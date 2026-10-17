@@ -1,8 +1,10 @@
 """CSI 库位转移接口表（kr_csi_interface）入队
 
-两个方向：
+三个入口：
   - 完成备料 enqueue_qty_move()：仓库库位 → Floor-Core（正向）
   - 回到备料 enqueue_reverse_qty_move()：Floor-Core → 仓库库位（反向，from/to 对调）
+  - 退料复核 enqueue_return_qty_move()：Floor-Core → 退回库位（正向，单卷一条，
+    单号 = 退料单号 + 单内行号）
 
 完成备料时把需同步给宝鼎 Syteline（Infor CSI）的库位转移数据写入接口表，
 由常驻同步器（另一进程）每分钟提交 sl-qty-move 接口。
@@ -410,3 +412,94 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
     logger.info('回到备料：生成反向库位转移 %s 笔（request_id=%s, 作废未过账 %s 行）',
                 inserted, request_id, cancelled)
     return {'forward_count': len(forwards), 'inserted': inserted, 'cancelled': cancelled}
+
+
+# ====================================================================== #
+#  退料移库（退料复核确认）
+# ====================================================================== #
+def enqueue_return_qty_move(cursor, req, coil_id, remain_length, to_location, username, now=None):
+    """退料复核确认：写入一条「车间 → 退回库位」的正向移库交易。
+
+    与完成备料的方向相反（完成备料是 仓库 → Floor-Core），退料是物料从车间
+    退回仓库库位，故 from_location 固定为 Config.CSI_TO_LOCATION（Floor-Core），
+    to_location 为界面所选退回库位。
+
+    单号规则：{退料单号}{单内行号:02d}，例如 1000000005 → 100000000501。
+    行号 = 该卷标明细行在本退料单内的序号（按 id 升序计数，1..N），
+    同一退料单多卷标依次 1、2、3…；接口表列宽 VARCHAR(12)，超长直接抛错。
+
+    参数：
+      cursor       - 退料复核事务内的游标（不在此提交/回滚）
+      req          - kr_material_request 行（需 id）
+      coil_id      - 卷标号
+      remain_length- 已算出的剩余长度（quantity）
+      to_location  - 界面所选退回库位
+      username     - 操作人（createby）
+      now          - 操作时间
+    返回：写入行数（恒为 1；失败抛异常，由调用方 rollback）
+    """
+    return_id = req['id']
+    now = now or datetime.now()
+
+    # 卷标主数据：siteref/part_number/lot_no/unit 均以卷标为准
+    cursor.execute(
+        "SELECT siteref, part_number, lot_no, unit FROM kr_wire_coil "
+        "WHERE coil_id = %s AND is_deleted = 0",
+        (coil_id,)
+    )
+    coil = cursor.fetchone()
+    if not coil:
+        raise ValueError(f'卷标 {coil_id} 不存在，无法写入移库交易')
+
+    siteref = str(coil.get('siteref') or '').strip()
+    warehouse = Config.CSI_WAREHOUSE_MAP.get(siteref)
+    if not warehouse:
+        raise ValueError(f'站点 {siteref or "(空)"} 未配置 CSI 仓库映射，无法写入移库交易')
+
+    # 单内行号：先定位本卷标的明细行 id，再数该单内 id <= 它的明细条数
+    cursor.execute(
+        "SELECT id FROM kr_return_item WHERE request_id = %s AND coil_id = %s",
+        (return_id, coil_id)
+    )
+    item = cursor.fetchone()
+    if not item:
+        raise ValueError(f'卷标 {coil_id} 不在退料单 {return_id} 清单中')
+    item_id = item['id']
+    cursor.execute(
+        "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s AND id <= %s",
+        (return_id, item_id)
+    )
+    line_no = int((cursor.fetchone() or {}).get('n') or 0)
+    if line_no <= 0:
+        raise ValueError(f'无法确定卷标 {coil_id} 在退料单 {return_id} 中的行号')
+
+    documentnumber = f'{return_id}{line_no:02d}'
+    if len(documentnumber) > MAX_DOC_LEN:
+        raise ValueError(
+            f'移库单号 {documentnumber} 长度 {len(documentnumber)} 位，'
+            f'超过接口上限 {MAX_DOC_LEN} 位（退料单号过长）'
+        )
+    traceid = f'RT{return_id}{line_no:02d}-{coil_id}-{uuid.uuid4().hex[:12]}'
+
+    cursor.execute(
+        "INSERT INTO kr_csi_interface "
+        "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, job, "
+        " warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2, "
+        " documentnumber, line_seq, direction, is_sync, status, retry_count, traceid, "
+        " createdate, createby) "
+        "VALUES (%s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, NULL, "
+        " %s, %s, %s, %s, NULL, NULL, NULL, "
+        " %s, %s, 'F', 0, 'PENDING', 0, %s, "
+        " %s, %s)",
+        (
+            return_id, item_id, coil_id,
+            API_QTY_MOVE, int(siteref), coil.get('part_number'), coil.get('lot_no'),
+            _num(remain_length), coil.get('unit'),
+            warehouse, Config.CSI_TO_LOCATION, to_location, Config.CSI_REASON_CODE,
+            documentnumber, line_no, traceid, now, username,
+        )
+    )
+    logger.info('退料复核：写入移库交易 request_id=%s coil_id=%s doc=%s %s→%s qty=%s',
+                return_id, coil_id, documentnumber,
+                Config.CSI_TO_LOCATION, to_location, remain_length)
+    return 1

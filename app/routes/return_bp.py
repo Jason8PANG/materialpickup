@@ -10,6 +10,7 @@
 剩余长度 = 卷标原始长度(coil_length) - 已消耗长度(consumption 表 out_length 汇总，
 口径 = consumption 剪线消耗 + count_adjust 盘点调整；issue 出库 / scrap 报废不计入)
 """
+import logging
 import re
 from datetime import datetime
 
@@ -17,6 +18,9 @@ from flask import Blueprint, request, jsonify, session, render_template
 
 from app.config import Config
 from app.models import get_db_connection, get_site_filter
+from app.services.csi_interface import enqueue_return_qty_move
+
+logger = logging.getLogger(__name__)
 
 return_bp = Blueprint('return', __name__)
 
@@ -486,34 +490,49 @@ def review_coil_confirm(coil_id):
 
         remain = _coil_remain_length(cur, coil_id)
         now = datetime.now()
-        cur.execute(
-            "UPDATE kr_wire_coil SET status = 'in_stock', coil_length = %s "
-            "WHERE coil_id = %s AND status = 'in_shop'",
-            (remain, coil_id)
-        )
-        cur.execute(
-            "UPDATE kr_return_item SET review_status = 'confirmed', location = %s, "
-            "reviewed_by = %s, reviewed_at = %s WHERE request_id = %s AND coil_id = %s",
-            (location, user['username'], now, return_id, coil_id)
-        )
-        cur.execute(
-            "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
-            "VALUES (%s, %s, 'RETURN_REVIEW_CONFIRM', %s, %s, %s)",
-            (return_id, user['username'], f"复核退回卷标 {coil_id} → 库位 {location}",
-             request.remote_addr, now)
-        )
-
-        # 闭环：该退料单已无未复核明细 → 主表确认
-        cur.execute(
-            "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s AND review_status IS NULL",
-            (return_id,)
-        )
-        if cur.fetchone()['n'] == 0:
+        # 卷标退回 + 逐卷库位 + CSI 移库交易必须同一事务：
+        # 任一步失败整体回滚，避免「退了但没记账」的半状态。
+        try:
             cur.execute(
-                "UPDATE kr_material_request SET status = 'confirmed', confirmed_by = %s, confirm_time = %s WHERE id = %s",
-                (user['username'], now, return_id)
+                "UPDATE kr_wire_coil SET status = 'in_stock', coil_length = %s "
+                "WHERE coil_id = %s AND status = 'in_shop'",
+                (remain, coil_id)
             )
-        db.commit()
+            cur.execute(
+                "UPDATE kr_return_item SET review_status = 'confirmed', location = %s, "
+                "reviewed_by = %s, reviewed_at = %s WHERE request_id = %s AND coil_id = %s",
+                (location, user['username'], now, return_id, coil_id)
+            )
+            # 移库交易：Floor-Core → 所选退回库位，单号 = 退料单号 + 单内行号
+            enqueue_return_qty_move(
+                cur, req, coil_id, remain, location, user['username'], now
+            )
+            cur.execute(
+                "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
+                "VALUES (%s, %s, 'RETURN_REVIEW_CONFIRM', %s, %s, %s)",
+                (return_id, user['username'], f"复核退回卷标 {coil_id} → 库位 {location}",
+                 request.remote_addr, now)
+            )
+
+            # 闭环：该退料单已无未复核明细 → 主表确认
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s AND review_status IS NULL",
+                (return_id,)
+            )
+            if cur.fetchone()['n'] == 0:
+                cur.execute(
+                    "UPDATE kr_material_request SET status = 'confirmed', confirmed_by = %s, confirm_time = %s WHERE id = %s",
+                    (user['username'], now, return_id)
+                )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            cur.close()
+            logger.exception('退料复核确认失败（已回滚）: return_id=%s coil_id=%s', return_id, coil_id)
+            return jsonify({
+                'success': False,
+                'message': f'退料成功但移库交易写入失败，请重试/联系管理员: {e}'
+            }), 500
         cur.close()
 
     return jsonify({'success': True, 'message': f'卷标 {coil_id} 已退回至 {location}'})
