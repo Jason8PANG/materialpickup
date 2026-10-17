@@ -97,6 +97,22 @@ def _misc_row(**over):
     return base
 
 
+def _job_issue_row(**over):
+    """外部工单发料写入的行（api_name=sl-job-issue）"""
+    base = {
+        'id': 3, 'request_id': None, 'item_id': None, 'coil_id': None, 'lot_id': None,
+        'api_name': w.API_JOB_ISSUE, 'siteRef': 310, 'item': 'B052552',
+        'lot': '202505090000036', 'quantity': 68, 'um': 'EA', 'job': 'J000029867',
+        'warehouse': 'C1M1', 'from_location': None, 'to_location': 'Floor-Core',
+        'reasoncode': None, 'account': None, 'unitcode1': None, 'unitcode2': None,
+        'documentnumber': 'JOB00001', 'line_seq': None, 'direction': 'F',
+        'status': 'PENDING', 'retry_count': 0,
+        'traceid': 'JIJ000029867-B052552-0f1e2d3c4b5a', 'is_sync': 0, 'last_poll_at': None,
+    }
+    base.update(over)
+    return base
+
+
 def _resp(code=200, payload=None, text=''):
     r = MagicMock()
     r.status_code = code
@@ -630,6 +646,132 @@ class TestMiscReceiptAndIssue:
             stats = _run(repo)
         assert repo.row(2)['is_sync'] == 1
         assert stats['success'] == 1
+
+
+# ====================================================================== #
+#  5c. 工单发料（外部 API）：sl-job-issue
+# ====================================================================== #
+class TestJobIssue:
+    def test_payload_and_url(self):
+        """QUEUED → SUCCESS；payload 为工单发料契约（无 reasonCode/account/from/to）"""
+        repo = FakeRepo([_job_issue_row()])
+        responses = [
+            _resp(200, _queued('QUEUED')),
+            _resp(200, _ok('SUCCESS', {'Success': True, 'Message': 'ok'})),
+        ]
+        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            stats = _run(repo)
+
+        assert post.call_count == 2
+        assert post.call_args.args[0].endswith('/api/cmd/sl-job-issue')
+        assert post.call_args.kwargs['json'] == {
+            'traceId': 'JIJ000029867-B052552-0f1e2d3c4b5a',
+            'site': '310',
+            'documentNumber': 'JOB00001',
+            'job': 'J000029867',
+            'item': 'B052552',
+            'quantity': 68,
+            'lot': '202505090000036',
+            'warehouse': 'C1M1',
+            'location': 'Floor-Core',
+        }
+        # 目标库位已给（Floor-Core）→ 不需要实时查 Lot 库位
+        client_cls.return_value.get_lot_location.assert_not_called()
+        row = repo.row(3)
+        assert row['is_sync'] == 1 and row['status'] == 'SUCCESS'
+        assert row['errormessage'] is None
+        assert stats['success'] == 1
+
+    def test_job_with_suffix_split(self):
+        """job 带 -0001 后缀 → payload 拆成 job + suffix"""
+        repo = FakeRepo([_job_issue_row(job='J000029867-0001', documentnumber='JOB00002')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            _run(repo)
+
+        body = post.call_args.kwargs['json']
+        assert body['job'] == 'J000029867'
+        assert body['suffix'] == '0001'
+        # 接口行保持原始工单号（含后缀），便于追溯
+        assert repo.row(3)['job'] == 'J000029867-0001'
+
+    def test_job_without_suffix_has_no_suffix_key(self):
+        body = w._build_payload(_job_issue_row())
+        assert 'suffix' not in body
+
+    def test_location_empty_looked_up_and_written_back(self):
+        """to_location 为空 → 实时查 Lot 库位兜底并写回"""
+        repo = FakeRepo([_job_issue_row(to_location=None)])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'C-09-09'
+            _run(repo)
+
+        client_cls.return_value.get_lot_location.assert_called_once_with('B052552', '202505090000036')
+        assert post.call_args.kwargs['json']['location'] == 'C-09-09'
+        assert repo.row(3)['to_location'] == 'C-09-09'
+        assert repo.row(3)['is_sync'] == 1
+
+    def test_location_lookup_failure_counts_as_retry(self):
+        """库位补不到 → 不发请求、retry_count+1"""
+        repo = FakeRepo([_job_issue_row(to_location='')])
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = None
+            _run(repo)
+
+        post.assert_not_called()
+        row = repo.row(3)
+        assert row['retry_count'] == 1
+        assert '库位' in row['errormessage']
+        assert row['is_sync'] == 0
+
+    def test_missing_job_blocks_request(self):
+        """job 为空 → 不发请求、retry_count+1"""
+        repo = FakeRepo([_job_issue_row(job=None)])
+        with patch('app.csi_sync_worker.requests.post') as post:
+            _run(repo)
+
+        post.assert_not_called()
+        row = repo.row(3)
+        assert row['retry_count'] == 1
+        assert 'job' in row['errormessage']
+        assert row['is_sync'] == 0
+
+    def test_failed_keeps_document_and_swaps_trace(self):
+        """平台 FAILED → 单号不变、只换 traceId"""
+        repo = FakeRepo([_job_issue_row()])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _failed('工单已关闭'))):
+            _run(repo)
+
+        row = repo.row(3)
+        assert row['retry_count'] == 1
+        assert row['documentnumber'] == 'JOB00001'
+        assert row['traceid'] != 'JIJ000029867-B052552-0f1e2d3c4b5a'
+        assert '工单已关闭' in row['errormessage']
+        assert row['is_sync'] == 0 and row['status'] == 'PENDING'
+
+    def test_manual_fail_email_has_job(self):
+        """连续 3 次失败 → 转人工，邮件带接口名与工单号"""
+        repo = FakeRepo([_job_issue_row(retry_count=2)])
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('工单不存在'))), \
+             patch('app.csi_sync_worker.send_email') as mail:
+            stats = _run(repo)
+
+        row = repo.row(3)
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert stats['manual'] == 1
+        _to, subject, body = mail.call_args.args
+        assert 'sl-job-issue' in subject
+        assert 'J000029867' in body
+        assert 'JOB00001' in body
+
+    def test_supported_apis_contains_job_issue(self):
+        assert w.API_JOB_ISSUE in w.SUPPORTED_APIS
+        assert w._row_api(_job_issue_row()) == 'sl-job-issue'
 
 
 # ====================================================================== #

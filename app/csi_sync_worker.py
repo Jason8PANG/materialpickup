@@ -8,6 +8,7 @@
   sl-qty-move      库位转移（领用/退料），字段 fromLocation/toLocation/reasonCode
   sl-misc-receipt  杂项收入（盘盈），字段 location/reasonCode/account/lot
   sl-misc-issue    杂项发出（盘亏），字段同上
+  sl-job-issue     工单发料（外部系统提交），字段 job/suffix/location，无 reasonCode/account
 
 运行方式：
   - 常驻：CSI_SYNC_ENABLED=true 时由 create_app() 启动后台守护线程（见 app/__init__.py）
@@ -45,8 +46,9 @@ logger = logging.getLogger(__name__)
 API_QTY_MOVE = 'sl-qty-move'
 API_MISC_RECEIPT = 'sl-misc-receipt'   # 杂项收入（盘盈）
 API_MISC_ISSUE = 'sl-misc-issue'       # 杂项发出（盘亏）
+API_JOB_ISSUE = 'sl-job-issue'         # 工单发料
 MISC_APIS = (API_MISC_RECEIPT, API_MISC_ISSUE)
-SUPPORTED_APIS = (API_QTY_MOVE, API_MISC_RECEIPT, API_MISC_ISSUE)
+SUPPORTED_APIS = (API_QTY_MOVE, API_MISC_RECEIPT, API_MISC_ISSUE, API_JOB_ISSUE)
 
 # 可被抢占处理的状态（PENDING=新行/待重试，QUEUED=平台已入队，SUBMITTING=上次中断）
 CLAIMABLE_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING')
@@ -115,12 +117,13 @@ class _Repo:
         既覆盖两类的语义，又避免刚被别的线程抢占（last_poll_at=NOW()）的行被重复取出。
         """
         limit = limit or _batch_limit()
+        placeholders = ', '.join(['%s'] * len(SUPPORTED_APIS))
         sql = (
             "SELECT id, request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, "
-            "       warehouse, from_location, to_location, reasoncode, account, unitcode1, "
+            "       job, warehouse, from_location, to_location, reasoncode, account, unitcode1, "
             "       documentnumber, status, retry_count, traceid "
             "FROM kr_csi_interface "
-            "WHERE api_name IN (%s, %s, %s) AND is_sync = 0 "
+            f"WHERE api_name IN ({placeholders}) AND is_sync = 0 "
             "  AND status IN ('PENDING','QUEUED','SUBMITTING') "
             "  AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL %s SECOND) "
             "ORDER BY id LIMIT %s"
@@ -220,12 +223,45 @@ def _quantity(value):
     return int(qty) if qty.is_integer() else qty
 
 
+def _split_job(job):
+    """工单号拆后缀：'J000029867-0001' → ('J000029867', '0001')。
+
+    CSI 契约要求 job / suffix 分开传；后缀按「最后一个 - 之后的纯数字，1~4 位」识别，
+    不符合该形态时原样作为 job 提交（由平台判定，失败走重试/转人工）。
+    """
+    job = (job or '').strip()
+    if '-' in job:
+        base, suffix = job.rsplit('-', 1)
+        if base and suffix.isdigit() and 1 <= len(suffix) <= 4:
+            return base.strip(), suffix
+    return job, None
+
+
 def _build_payload(row):
     """按行 api_name 组装请求体。
 
     sl-qty-move：库位转移契约（fromLocation/toLocation/reasonCode，无 account/location）
     sl-misc-*：杂项收发契约（location=实际库位、account、lot，无 from/to）
+    sl-job-issue：工单发料契约（job/suffix + location=目标库位，无 reasonCode/account/from/to）
     """
+    api = _row_api(row)
+    if api == API_JOB_ISSUE:
+        job, suffix = _split_job(row.get('job'))
+        payload = {
+            'traceId': row.get('traceid'),
+            'site': str(row.get('siteRef') or '').strip(),
+            'documentNumber': row.get('documentnumber'),
+            'job': job,
+            'item': (row.get('item') or '').strip(),
+            'quantity': _quantity(row.get('quantity')),
+            'lot': (row.get('lot') or '').strip(),
+            'warehouse': (row.get('warehouse') or '').strip(),
+            'location': (row.get('to_location') or '').strip(),
+        }
+        if suffix:
+            payload['suffix'] = suffix
+        return payload
+
     payload = {
         'traceId': row.get('traceid'),
         'site': str(row.get('siteRef') or '').strip(),
@@ -234,7 +270,7 @@ def _build_payload(row):
         'quantity': _quantity(row.get('quantity')),
         'warehouse': (row.get('warehouse') or '').strip(),
     }
-    if _row_api(row) in MISC_APIS:
+    if api in MISC_APIS:
         payload['location'] = (row.get('to_location') or '').strip()
         payload['reasonCode'] = (row.get('reasoncode') or '').strip()
         payload['account'] = (row.get('account') or '').strip()
@@ -472,6 +508,7 @@ _API_LABELS = {
     API_QTY_MOVE: '库位转移',
     API_MISC_RECEIPT: '盘盈杂项收入',
     API_MISC_ISSUE: '盘亏杂项发出',
+    API_JOB_ISSUE: '工单发料',
 }
 
 
@@ -488,7 +525,8 @@ def _send_failure_alert(row, retry, reason):
 
     cells = [
         ('接口', api),
-        ('申请单号', request_id if request_id not in (None, '') else '（盘点差异调整）'),
+        ('申请单号', request_id if request_id not in (None, '') else
+         ('（外部工单发料）' if api == API_JOB_ISSUE else '（盘点差异调整）')),
         ('站点', row.get('siteRef')),
         ('物料号', row.get('item')),
         ('批号', row.get('lot')),
@@ -498,7 +536,10 @@ def _send_failure_alert(row, retry, reason):
         ('traceId', row.get('traceid')),
         ('失败次数', retry),
     ]
-    if api in MISC_APIS:
+    if api == API_JOB_ISSUE:
+        cells.append(('工单号', row.get('job')))
+        cells.append(('仓库 / 库位', f"{row.get('warehouse') or ''} / {row.get('to_location') or ''}"))
+    elif api in MISC_APIS:
         cells.append(('仓库 / 库位', f"{row.get('warehouse') or ''} / {row.get('to_location') or ''}"))
         cells.append(('原因码 / 科目', f"{row.get('reasoncode') or ''} / {row.get('account') or ''}"))
     else:
@@ -543,8 +584,23 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None):
     # 1. 库位校正：以 CSI 实时查询为准（同轮同 (item, lot) 只查一次），
     #    查询失败才用行内本地快照兜底；两者都空 → 无库位可用，计失败。
     #    sl-qty-move 校正 from_location；sl-misc-* 的 location 存于 to_location。
-    live = _live_location(row, loc_cache)
-    if api in MISC_APIS:
+    #    sl-job-issue 的目标库位是「发往库位」（默认 Floor-Core），行内有值就直用，
+    #    只有为空时才实时查 Lot 现库位兜底，不用实时库位覆盖行内目标库位。
+    live = None
+    if api == API_JOB_ISSUE:
+        loc = (row.get('to_location') or '').strip()
+        if not loc:
+            loc = _live_location(row, loc_cache) or ''
+            if loc:
+                row['to_location'] = loc
+                repo.update(row_id, to_location=loc)
+                logger.info('CSI 同步：工单发料补库位 id=%s doc=%s item=%s lot=%s → %s',
+                            row_id, row.get('documentnumber'), row.get('item'), row.get('lot'), loc)
+        if not loc:
+            _fail(repo, row, '工单发料缺少库位（to_location 为空且 CSI 无该批次库位）', stats)
+            return
+    elif api in MISC_APIS:
+        live = _live_location(row, loc_cache)
         old_loc = (row.get('to_location') or '').strip()
         loc = live or old_loc
         if not loc:
@@ -557,6 +613,7 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None):
                         row_id, api, row.get('request_id'), row.get('documentnumber'),
                         row.get('item'), row.get('lot'), old_loc or '(空)', loc)
     else:
+        live = _live_location(row, loc_cache)
         old_loc = (row.get('from_location') or '').strip()
         loc = live or old_loc
         if not loc:
@@ -594,6 +651,10 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None):
     # misc 接口 account 必填，不做默认值猜测
     if api in MISC_APIS and not (row.get('account') or '').strip():
         _fail(repo, row, f'{api} 缺少 account（必填），请在接口表补齐后重投', stats)
+        return
+    # 工单发料 job 必填
+    if api == API_JOB_ISSUE and not (row.get('job') or '').strip():
+        _fail(repo, row, f'{api} 缺少 job（工单号，必填）', stats)
         return
 
     # 3. 提交并轮询

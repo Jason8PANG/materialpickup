@@ -16,8 +16,10 @@ Base：/api/external/
   POST /api/external/cutting-check              首末件检查登记（公差校验+force）
   GET  /api/external/cutting-ref?job_order=&part_number=  裁剪参数查询
   POST /api/external/minpack-request            创建最小包装申请单（X-API-Key + X-Site-Ref）
+  POST /api/external/job-issue                  工单发料（写 kr_csi_interface，由同步器提交 sl-job-issue）
 """
 import re
+import uuid
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -995,3 +997,121 @@ def ext_create_minpack_request():
         'id': request_id,
         'message': '最小包装申请已创建，仓库将开始备料',
     })
+
+
+# ================================================================== #
+#  工单发料（sl-job-issue，外部系统免登录，写 CSI 接口表）
+# ================================================================== #
+JOB_ISSUE_API = 'sl-job-issue'
+MAX_DOC_LEN = 12                      # documentnumber 列 VARCHAR(12)，CSI 硬限制
+JOB_ISSUE_ACTIVE_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'SUCCESS')
+
+
+def _job_issue_traceid(job, item):
+    """JI{job}-{item}-{uuid12}，整体不超过 128（超长时截断物料号，保留唯一后缀）"""
+    tail = '-' + uuid.uuid4().hex[:12]
+    head = f'JI{job}-{item}'
+    return head[:128 - len(tail)] + tail
+
+
+@external_bp.route('/api/external/job-issue', methods=['POST'])
+def ext_create_job_issue():
+    """外部系统提交工单发料：写入 kr_csi_interface，由同步器提交 sl-job-issue。
+
+    鉴权：X-API-Key + X-Site-Ref（310/410，复用 _resolve_site）。
+    入参 JSON：job/item/lot/unit/submitter 必填，quantity 必须为数字且 > 0，
+              documentNumber 可选（≤12 位；为空取工单号前 12 位）。
+    落库：warehouse 按站点映射（Config.CSI_WAREHOUSE_MAP），
+          to_location 固定 Config.CSI_TO_LOCATION（同步器作为 location 提交）。
+    幂等：同 (站点, documentNumber, job, item, lot) 已有生效记录 → 200 duplicated，不重复入队。
+    """
+    err = _check_api_key()
+    if err:
+        return jsonify({'success': False, 'message': 'API Key 无效'}), 401
+
+    site, site_err = _resolve_site()
+    if site_err:
+        return jsonify({'success': False, 'message': site_err}), 400
+    warehouse = Config.CSI_WAREHOUSE_MAP.get(site)
+    if not warehouse:
+        return jsonify({'success': False, 'message': f'站点 {site} 未配置 CSI 仓库映射'}), 400
+
+    b = request.get_json(silent=True) or {}
+    job = str(b.get('job') or '').strip()
+    item = str(b.get('item') or '').strip()
+    lot = str(b.get('lot') or '').strip()
+    unit = str(b.get('unit') or '').strip()
+    submitter = str(b.get('submitter') or '').strip()
+
+    missing = [k for k, v in (('job', job), ('item', item), ('lot', lot),
+                              ('unit', unit), ('submitter', submitter)) if not v]
+    if missing:
+        return jsonify({'success': False, 'message': '缺少必填项：' + '、'.join(missing)}), 400
+
+    qty_raw = b.get('quantity')
+    if isinstance(qty_raw, bool) or qty_raw is None or qty_raw == '':
+        return jsonify({'success': False, 'message': 'quantity 必须为数字且大于0'}), 400
+    try:
+        quantity = float(qty_raw)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'quantity 必须为数字且大于0'}), 400
+    if quantity <= 0:
+        return jsonify({'success': False, 'message': 'quantity 必须为数字且大于0'}), 400
+    quantity = int(quantity) if quantity.is_integer() else quantity
+
+    doc_no = str(b.get('documentNumber') or '').strip()
+    if doc_no and len(doc_no) > MAX_DOC_LEN:
+        return jsonify({'success': False,
+                        'message': f'documentNumber 超过 CSI 长度 {MAX_DOC_LEN}'}), 400
+    if not doc_no:
+        doc_no = job[:MAX_DOC_LEN]
+
+    now = datetime.now()
+    traceid = _job_issue_traceid(job, item)
+    active_ph = ','.join(['%s'] * len(JOB_ISSUE_ACTIVE_STATUS))
+
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                "SELECT id FROM kr_csi_interface "
+                "WHERE api_name = %s AND siteRef = %s AND documentnumber = %s "
+                "  AND job = %s AND item = %s AND lot = %s "
+                f"  AND (is_sync IN (0, 1) OR status IN ({active_ph})) "
+                "ORDER BY id DESC LIMIT 1",
+                (JOB_ISSUE_API, int(site), doc_no, job, item, lot) + JOB_ISSUE_ACTIVE_STATUS
+            )
+            existing = cur.fetchone()
+            if existing:
+                cur.close()
+                return jsonify({
+                    'success': True,
+                    'duplicated': True,
+                    'id': existing['id'],
+                    'message': '已存在相同发料记录，未重复入队',
+                }), 200
+
+            cur.execute(
+                "INSERT INTO kr_csi_interface "
+                "(api_name, siteRef, item, lot, quantity, um, job, warehouse, from_location, to_location, "
+                " reasoncode, account, unitcode1, unitcode2, documentnumber, line_seq, direction, "
+                " is_sync, status, retry_count, traceid, request_id, item_id, coil_id, lot_id, "
+                " createdate, createby) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, "
+                " NULL, NULL, NULL, NULL, %s, NULL, 'F', 0, 'PENDING', 0, %s, "
+                " NULL, NULL, NULL, NULL, %s, %s)",
+                (JOB_ISSUE_API, int(site), item, lot, quantity, unit, job, warehouse,
+                 Config.CSI_TO_LOCATION, doc_no, traceid, now, submitter)
+            )
+            new_id = cur.lastrowid
+            db.commit()
+            cur.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'写入 CSI 接口表失败: {e}'}), 500
+
+    return jsonify({
+        'success': True,
+        'id': new_id,
+        'documentnumber': doc_no,
+        'message': '已入队',
+    }), 201
