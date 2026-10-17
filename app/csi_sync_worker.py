@@ -181,15 +181,22 @@ class _Repo:
 #  单号 / traceId 生成
 # ====================================================================== #
 def _retry_trace_id(row):
-    """重试只换 traceId，单据号原样沿用。
+    """重试只换 traceId，单据号原样沿用（长度 < 128）。
 
-    格式：{documentNumber}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128。
-    平台幂等键为 traceId + site + documentNumber：换 traceId 即可视为新请求，
-    换单号反而可能撞上平台锁死的失败单号（409）。
+    按接口类型生成不同格式，避免工单发料（无 coil_id/lot_id）拼出 LNone：
+      sl-job-issue : JI{job}-{item}-{uuid12}
+      其它（移库/杂项）: {documentNumber}-{coil_id 或 lot 或 L{lot_id}}-{uuid12}
     """
-    key = row.get('coil_id') or f"L{row.get('lot_id')}"
+    uid = uuid.uuid4().hex[:12]
+    if _row_api(row) == API_JOB_ISSUE:
+        job = (row.get('job') or '').strip()
+        item = (row.get('item') or '').strip()
+        return f'JI{job}-{item}-{uid}'
+    key = (row.get('coil_id')
+           or (row.get('lot') or '').strip()
+           or (f"L{row.get('lot_id')}" if row.get('lot_id') else 'X'))
     base = (row.get('documentnumber') or f"MP{row.get('request_id')}").strip()
-    return f'{base}-{key}-{uuid.uuid4().hex[:12]}'
+    return f'{base}-{key}-{uid}'
 
 
 # ====================================================================== #
