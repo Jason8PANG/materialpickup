@@ -25,6 +25,7 @@ import pymysql  # noqa: E402
 
 from app import csi_sync_worker as w  # noqa: E402
 from app.config import Config  # noqa: E402
+from app.services.csi_service import BF_MSG_ALREADY_ZERO, BF_MSG_CLEARED  # noqa: E402
 
 # 在 conftest 的 autouse monkeypatch 生效前捕获真实 connect（真实库用例专用）
 _REAL_CONNECT = pymysql.connect
@@ -158,6 +159,8 @@ def _no_real_csi(monkeypatch):
     """
     client = MagicMock()
     client.get_lot_location.return_value = None
+    # 工单物料 Backflush 默认视为「已为 0」：不阻断提交，也不会真的写 ERP
+    client.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
     monkeypatch.setattr(w, 'CSIClient', MagicMock(return_value=client))
     return client
 
@@ -661,6 +664,7 @@ class TestJobIssue:
         ]
         with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             stats = _run(repo)
 
         assert post.call_count == 2
@@ -707,6 +711,7 @@ class TestJobIssue:
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'C-09-09'
+            client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             _run(repo)
 
         client_cls.return_value.get_lot_location.assert_called_once_with('B052552', '202505090000036')
@@ -720,6 +725,7 @@ class TestJobIssue:
         with patch('app.csi_sync_worker.requests.post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = None
+            client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             _run(repo)
 
         post.assert_not_called()
@@ -772,6 +778,135 @@ class TestJobIssue:
     def test_supported_apis_contains_job_issue(self):
         assert w.API_JOB_ISSUE in w.SUPPORTED_APIS
         assert w._row_api(_job_issue_row()) == 'sl-job-issue'
+
+
+# ====================================================================== #
+#  5d. 工单发料前置：先取消工单物料 Backflush（倒冲）
+# ====================================================================== #
+class TestJobIssueBackflush:
+    def test_backflush_cleared_then_submits(self, _no_real_csi, caplog):
+        """Backflush=1 → 先清 0（IDO update），清成功后才提交发料并记 1->0 日志"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.return_value = (True, BF_MSG_CLEARED)
+        repo = FakeRepo([_job_issue_row()])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             caplog.at_level('INFO', logger='app.csi_sync_worker'):
+            stats = _run(repo)
+
+        client.clear_job_matl_backflush.assert_called_once_with('J000029867', 0, 'B052552')
+        # 清 0 之后才发料，且 payload 未被 Backflush 逻辑改动
+        assert post.call_args.kwargs['json'] == {
+            'traceId': 'JIJ000029867-B052552-0f1e2d3c4b5a',
+            'site': '310',
+            'documentNumber': 'JOB00001',
+            'job': 'J000029867',
+            'item': 'B052552',
+            'quantity': 68,
+            'lot': '202505090000036',
+            'warehouse': 'C1M1',
+            'location': 'Floor-Core',
+        }
+        assert '工单 J000029867 物料 B052552 Backflush 1->0' in caplog.text
+        assert repo.row(3)['is_sync'] == 1 and stats['success'] == 1
+
+    def test_backflush_already_zero_submits_without_update(self, _no_real_csi):
+        """Backflush 已为 0 → 直接提交（CSIClient 内部不会再写库）"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
+        repo = FakeRepo([_job_issue_row()])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            stats = _run(repo)
+
+        client.clear_job_matl_backflush.assert_called_once()
+        assert post.call_count == 1
+        assert repo.row(3)['is_sync'] == 1 and stats['success'] == 1
+
+    def test_backflush_lookup_failure_blocks_submission(self, _no_real_csi):
+        """查不到工单物料 → 不提交，走失败流程（原因含「取消 Backflush 失败」）"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.return_value = (
+            False, '未找到工单物料 J000029867-0000 / B052552（或查询失败）')
+        repo = FakeRepo([_job_issue_row()])
+        with patch('app.csi_sync_worker.requests.post') as post:
+            stats = _run(repo)
+
+        post.assert_not_called()
+        row = repo.row(3)
+        assert row['retry_count'] == 1
+        assert row['errormessage'].startswith('取消 Backflush 失败')
+        assert '未找到工单物料' in row['errormessage']
+        assert row['is_sync'] == 0 and stats['retried'] == 1
+
+    def test_backflush_update_failure_blocks_submission(self, _no_real_csi):
+        """IDO update 非 2xx → 不提交（避免与倒冲冲突）"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.return_value = (
+            False, '更新工单物料 J000029867-0000 / B052552 失败：HTTP 500')
+        repo = FakeRepo([_job_issue_row()])
+        with patch('app.csi_sync_worker.requests.post') as post:
+            _run(repo)
+
+        post.assert_not_called()
+        row = repo.row(3)
+        assert row['retry_count'] == 1
+        assert row['errormessage'].startswith('取消 Backflush 失败')
+        assert 'HTTP 500' in row['errormessage']
+
+    def test_backflush_exception_blocks_submission(self, _no_real_csi):
+        """CSIClient 抛异常 → 不放行，计一次失败"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.side_effect = RuntimeError('ido down')
+        repo = FakeRepo([_job_issue_row()])
+        with patch('app.csi_sync_worker.requests.post') as post:
+            _run(repo)
+
+        post.assert_not_called()
+        assert repo.row(3)['retry_count'] == 1
+        assert 'ido down' in repo.row(3)['errormessage']
+
+    def test_same_job_matl_processed_once_per_round(self, _no_real_csi):
+        """同一轮同 (job, suffix, item) 只检查/清除一次，三行都正常提交"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.return_value = (True, BF_MSG_CLEARED)
+        rows = [
+            _job_issue_row(id=3, documentnumber='JOB00001'),
+            _job_issue_row(id=4, documentnumber='JOB00002'),
+            _job_issue_row(id=5, documentnumber='JOB00003'),
+        ]
+        repo = FakeRepo(rows)
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            stats = _run(repo)
+
+        assert post.call_count == 3
+        assert client.clear_job_matl_backflush.call_count == 1
+        assert stats['success'] == 3
+
+    def test_suffix_split_passed_to_backflush(self, _no_real_csi):
+        """job 带 -0005 → 调用时拆成 job + int(suffix)"""
+        client = _no_real_csi
+        client.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
+        repo = FakeRepo([_job_issue_row(job='J000004862-0005', item='F010013',
+                                        documentnumber='JOB00009')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))):
+            _run(repo)
+
+        client.clear_job_matl_backflush.assert_called_once_with('J000004862', 5, 'F010013')
+
+    def test_qty_move_and_misc_untouched(self, _no_real_csi):
+        """回归：qty-move / misc 行不触发 Backflush 检查"""
+        client = _no_real_csi
+        repo = FakeRepo([_row(), _misc_row()])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            stats = _run(repo)
+
+        client.clear_job_matl_backflush.assert_not_called()
+        assert post.call_count == 2
+        assert stats['success'] == 2
 
 
 # ====================================================================== #

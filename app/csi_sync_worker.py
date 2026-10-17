@@ -10,6 +10,9 @@
   sl-misc-issue    杂项发出（盘亏），字段同上
   sl-job-issue     工单发料（外部系统提交），字段 job/suffix/location，无 reasonCode/account
 
+工单发料前置条件：工单物料若勾了 Backflush（倒冲=1），先经 IDO 改成 0 再提交，
+清不掉则按失败流程重试/转人工（不清 0 手工发料会与倒冲冲突）。
+
 运行方式：
   - 常驻：CSI_SYNC_ENABLED=true 时由 create_app() 启动后台守护线程（见 app/__init__.py）
   - 单轮调试：python -m app.csi_sync_worker
@@ -38,7 +41,7 @@ import requests
 
 from app.config import Config
 from app.models import get_db
-from app.services.csi_service import CSIClient
+from app.services.csi_service import BF_MSG_CLEARED, CSIClient
 from app.services.email_service import send_email
 
 logger = logging.getLogger(__name__)
@@ -472,6 +475,46 @@ def _same_loc(a, b):
 
 
 # ====================================================================== #
+#  工单物料 Backflush（倒冲）前置处理
+# ====================================================================== #
+def _ensure_job_backflush_cleared(row, cache=None):
+    """工单发料前把工单物料的 Backflush 清 0（倒冲物料无法手工发料）。
+
+    返回 (ok, msg)：ok=False 时调用方不得提交发料（避免和倒冲冲突）。
+    同一轮内同 (job, suffix, item) 只处理一次，结果（含失败）一并缓存；
+    跨轮再查一次是可接受的——届时会返回「已为 0，无需修改」，不再写库。
+    """
+    job_full = (row.get('job') or '').strip()
+    job, suffix = _split_job(job_full)
+    item = (row.get('item') or '').strip()
+    try:
+        suffix_val = int(suffix) if suffix else 0
+    except (TypeError, ValueError):
+        suffix_val = 0
+
+    key = (job, suffix_val, item)
+    if cache is not None and key in cache:
+        return cache[key]
+
+    siteref = str(row.get('siteRef') or '').strip() or '410'
+    try:
+        ok, msg = CSIClient(siteref).clear_job_matl_backflush(job, suffix_val, item)
+    except Exception as e:                      # 任何异常都不放行，避免倒冲冲突
+        ok, msg = False, f'调用 CSI 异常：{e}'
+        logger.exception('CSI 同步：取消工单物料 Backflush 异常 job=%s item=%s: %s',
+                         job_full, item, e)
+
+    if ok and msg == BF_MSG_CLEARED:
+        logger.info('工单 %s 物料 %s Backflush 1->0（已取消倒冲，继续发料）', job_full, item)
+    elif not ok:
+        logger.warning('工单 %s 物料 %s 取消 Backflush 失败：%s', job_full, item, msg)
+
+    if cache is not None:
+        cache[key] = (ok, msg)
+    return ok, msg
+
+
+# ====================================================================== #
 #  失败处理 / 告警邮件
 # ====================================================================== #
 def _fail(repo, row, reason, stats):
@@ -579,7 +622,7 @@ def _send_failure_alert(row, retry, reason):
 # ====================================================================== #
 #  单行处理
 # ====================================================================== #
-def _process_row(repo, row, stats, sleep_func, loc_cache=None):
+def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
     row_id = row.get('id')
     api = _row_api(row)
 
@@ -664,7 +707,14 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None):
         _fail(repo, row, f'{api} 缺少 job（工单号，必填）', stats)
         return
 
-    # 3. 提交并轮询
+    # 3. 工单发料：先把工单物料的 Backflush（倒冲）清 0，否则手工发料会被倒冲冲突挡住
+    if api == API_JOB_ISSUE:
+        ok, msg = _ensure_job_backflush_cleared(row, bf_cache)
+        if not ok:
+            _fail(repo, row, f'取消 Backflush 失败：{msg}', stats)
+            return
+
+    # 4. 提交并轮询
     result = _submit_and_poll(_build_payload(row), api_name=api, sleep_func=sleep_func)
     kind = result['kind']
 
@@ -708,6 +758,8 @@ def run_once(repo=None, sleep_func=None):
              'retried': 0, 'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0}
     # 同一轮内同 (item, lot) 只查一次 CSI 库位
     loc_cache = {}
+    # 同一轮内同 (job, suffix, item) 只处理一次 Backflush 检查/清除
+    bf_cache = {}
 
     conn = None
     own = repo is None
@@ -720,7 +772,7 @@ def run_once(repo=None, sleep_func=None):
         stats['scanned'] = len(rows)
         for row in rows:
             try:
-                _process_row(repo, row, stats, sleep_func, loc_cache=loc_cache)
+                _process_row(repo, row, stats, sleep_func, loc_cache=loc_cache, bf_cache=bf_cache)
             except Exception as e:
                 # 单行异常不得中断整轮
                 stats['errors'] += 1

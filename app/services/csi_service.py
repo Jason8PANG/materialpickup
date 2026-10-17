@@ -10,6 +10,21 @@ from app.config import Config
 
 logger = logging.getLogger(__name__)
 
+# clear_job_matl_backflush 的返回说明（同步器据 BF_MSG_CLEARED 判定「本次确实把 1 写成了 0」）
+BF_MSG_CLEARED = 'Backflush 已置为 0'
+BF_MSG_ALREADY_ZERO = 'Backflush 已为 0，无需修改'
+
+
+def _to_bool(value) -> bool:
+    """IDO 布尔字段统一判定：'1'/'0'/1/0/True/'true'/'Y' → bool"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'y', 'yes')
+    return False
+
 
 class CSIClient:
     """
@@ -248,6 +263,99 @@ class CSIClient:
         except Exception as e:
             logger.error(f"[CSI] get_item_backflush error: {e}")
             return None
+
+    def get_job_matl_backflush(self, job: str, suffix, item: str) -> dict | None:
+        """
+        查询工单物料（SLJobMatls）的 Backflush 标记——工单物料级，不是物料主档级。
+        返回 {'backflush': bool, 'item_id': _ItemId} ；查不到/异常返回 None。
+        """
+        try:
+            suffix_val = int(suffix) if suffix not in (None, '') else 0
+        except (TypeError, ValueError):
+            return None
+        try:
+            filter_str = (
+                f"Job = N'{job}' And Suffix = {suffix_val} And Item = N'{item}'"
+            )
+            props = ["Job", "Suffix", "Item", "Backflush"]
+            records = self._get_ido("SLJobMatls", properties=props, filter_str=filter_str)
+            if not records:
+                return None
+            row = records[0]
+            return {
+                'backflush': _to_bool(row.get('Backflush')),
+                'item_id': row.get('_ItemId'),
+            }
+        except Exception as e:
+            logger.error(f"[CSI] get_job_matl_backflush error job={job} suffix={suffix} item={item}: {e}")
+            return None
+
+    def clear_job_matl_backflush(self, job: str, suffix, item: str) -> tuple[bool, str]:
+        """
+        取消工单物料的 Backflush（倒冲）标记，改为手动发料。
+        返回 (是否可继续发料, 说明)。已为 0 也算成功（不写库）。
+        """
+        try:
+            suffix_val = int(suffix) if suffix not in (None, '') else 0
+        except (TypeError, ValueError):
+            suffix_val = 0
+        tag = f"{job}-{suffix_val:04d}"
+
+        info = self.get_job_matl_backflush(job, suffix_val, item)
+        if info is None:
+            msg = f'未找到工单物料 {tag} / {item}（或查询失败）'
+            logger.warning(f"[CSI] 取消 Backflush 失败：{msg}")
+            return False, msg
+
+        if not info.get('backflush'):
+            logger.info(f"[CSI] 工单 {tag} 物料 {item} Backflush 已为 0，无需修改")
+            return True, BF_MSG_ALREADY_ZERO
+
+        item_id = info.get('item_id')
+        if not item_id:
+            msg = f'工单物料 {tag} / {item} 缺少 _ItemId，无法更新'
+            logger.error(f"[CSI] 取消 Backflush 失败：{msg}")
+            return False, msg
+
+        url = f"{self._ido_base}/ido/update/SLJobMatls"
+        payload = {"Changes": [{
+            "Action": 2,
+            "_ItemId": item_id,
+            "Properties": [
+                {"IsNull": False, "Modified": True, "Name": "Backflush", "Value": 0},
+                {"IsNull": False, "Modified": False, "Name": "Job", "Value": job},
+                {"IsNull": False, "Modified": False, "Name": "Suffix", "Value": suffix_val},
+                {"IsNull": False, "Modified": False, "Name": "Item", "Value": item},
+            ],
+            "UpdateLocking": 1,
+        }]}
+        params = {"refresh": "true"}
+
+        try:
+            token = self._ensure_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-Infor-MongooseConfig": self._company,
+            }
+            resp = httpx.post(url, headers=headers, params=params,
+                              json=payload, timeout=60, verify=False)
+            if resp.status_code == 401:
+                logger.info("[CSI] 401 token expired, refreshing...")
+                token = self._fetch_token()[0]
+                self._token = token
+                headers["Authorization"] = f"Bearer {token}"
+                resp = httpx.post(url, headers=headers, params=params,
+                                  json=payload, timeout=60, verify=False)
+            resp.raise_for_status()
+        except Exception as e:
+            msg = f'更新工单物料 {tag} / {item} 失败：{e}'
+            logger.error(f"[CSI] 取消 Backflush 失败：{msg}")
+            return False, msg
+
+        logger.info(f"[CSI] 工单 {tag} 物料 {item} Backflush 1->0（已取消倒冲）")
+        return True, BF_MSG_CLEARED
 
     def get_item_unit(self, item: str) -> str | None:
         """
