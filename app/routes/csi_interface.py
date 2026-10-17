@@ -1,9 +1,12 @@
-"""同步接口查询（kr_csi_interface）：条件筛选列表 + Excel 导出。
+"""同步接口查询（kr_csi_interface）：条件筛选列表 + Excel 导出 + 失败重发。
 
 数据来源：备料完成写入 CSI 接口表，由 app/csi_sync_worker.py 轮询同步。
 权限：登录即可查看；站点范围受会话 available_sites 限制（admin 可跨站）。
+重发（POST /api/csi-interface/<id>/resend）：仅 warehouse/admin，且只对失败/终止态开放。
 """
 import io
+import logging
+import time
 from datetime import datetime
 from decimal import Decimal
 
@@ -12,10 +15,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from app.models import get_db_connection
+from app import csi_sync_worker as sync_worker
+from app.models import get_db, get_db_connection
 from app.utils import WhereBuilder
 
 csi_interface_bp = Blueprint('csi_interface', __name__)
+logger = logging.getLogger(__name__)
 
 # 导出上限：超出截断（文件名标注）
 EXPORT_MAX_ROWS = 50000
@@ -208,6 +213,153 @@ def api_list():
     }
     return jsonify({'success': True, 'data': rows, 'total': summary['total'],
                     'page': page, 'size': size, 'summary': summary})
+
+
+# ====================================================================== #
+#  重新发送（失败/终止态 → 重生成 traceId → 立即提交一次）
+# ====================================================================== #
+# 可重发的「终止态」：与管理端筛选项保持一致（FAILED 为平台显式返回的失败状态）
+RESEND_FAILED_STATUS = ('FAILED_MANUAL', 'NOOP', 'CANCELLED', 'FAILED')
+
+
+def _empty_stats():
+    """与 csi_sync_worker.run_once 同构的统计字典（_process_row/_fail 会累加）"""
+    return {'scanned': 0, 'claimed': 0, 'success': 0, 'queued': 0, 'retried': 0,
+            'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0}
+
+
+def _fetch_row(conn, row_id):
+    """按 id 读整行（含 api_name/job/coil_id 等 _retry_trace_id 需要的字段）"""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM kr_csi_interface WHERE id = %s", (row_id,))
+        return cur.fetchone()
+    finally:
+        cur.close()
+
+
+def _check_site_scope(user, row):
+    """非 admin 只能重发本站记录（与列表的站点隔离口径一致）"""
+    if (user or {}).get('role') == 'admin':
+        return None
+    site = str((user or {}).get('siteref') or '')
+    row_site = str(row.get('siteref') or row.get('siteRef') or '')
+    if site and row_site and site != row_site:
+        return jsonify({'success': False, 'message': '无权操作该站点的记录'}), 403
+    return None
+
+
+def _resend_data(row_id, trace, api_name, status, message, error):
+    return {'row_id': row_id, 'traceid': trace, 'status': status,
+            'api_name': api_name, 'message': message, 'error': error}
+
+
+@csi_interface_bp.route('/api/csi-interface/<int:row_id>/resend', methods=['POST'])
+def api_resend(row_id):
+    """失败记录重发：重生成 traceId → 重置为待同步 → 立即同步提交一次并返回结果。
+
+    只对失败/终止态开放（is_sync=2 或 status ∈ RESEND_FAILED_STATUS）：
+      - is_sync=1（SUCCESS/REVERSED）已成功过账，禁止重发（400）；
+      - 其余（PENDING/QUEUED/SUBMITTING）正在同步中（400）。
+
+    提交复用 csi_sync_worker 的 _Repo / _process_row，不复制一套提交逻辑。
+    单次耗时可达 20~30 秒（内部 5s×4 轮询），前端必须 loading。
+    """
+    user, err = _check_login()
+    if err:
+        return err
+    if (user or {}).get('role') not in ('warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    operator = user.get('username') or user.get('display_name') or 'system'
+    conn = get_db()
+    try:
+        repo = sync_worker._Repo(conn)
+        row = _fetch_row(conn, row_id)
+        if not row:
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+        scope_err = _check_site_scope(user, row)
+        if scope_err:
+            return scope_err
+
+        is_sync = row.get('is_sync')
+        status = str(row.get('status') or '').upper()
+        api_name = sync_worker._row_api(row)
+        if is_sync == 1:
+            return jsonify({'success': False, 'message': '该记录已成功过账，不允许重发'}), 400
+        if not (is_sync == 2 or status in RESEND_FAILED_STATUS):
+            return jsonify({'success': False, 'message': '该记录正在同步中，请稍后再试'}), 400
+
+        trace = sync_worker._retry_trace_id(row)
+        repo.update(row_id, is_sync=0, status='PENDING', retry_count=0,
+                    errormessage=None, submitted_at=None, last_poll_at=None,
+                    traceid=trace, updateby=operator)
+        logger.info('CSI 重发：重置为待同步 id=%s api=%s trace=%s 操作人=%s',
+                    row_id, api_name, trace, operator)
+
+        # 重新读取，确保 _process_row 用的是最新 traceId / 库位快照
+        row = _fetch_row(conn, row_id)
+        stats = _empty_stats()
+        try:
+            # claim 在 _process_row 内部完成（条件 UPDATE），此处不再预抢占，
+            # 否则第二次 claim 必然失败、行会被跳过。
+            sync_worker._process_row(repo, row, stats, time.sleep, {})
+        except Exception as e:  # 兜底：任何异常都要给前端可读提示，且不留下 SUBMITTING
+            logger.exception('CSI 重发：处理行异常 id=%s: %s', row_id, e)
+            message = f'提交异常：{e}'[:sync_worker.MAX_ERR_LEN]
+            try:
+                repo.update(row_id, is_sync=2, status='FAILED_MANUAL',
+                            errormessage=message, last_poll_at=None)
+            except Exception:
+                logger.exception('CSI 重发：异常回写失败 id=%s', row_id)
+            return jsonify({
+                'success': False, 'message': message,
+                'data': _resend_data(row_id, trace, api_name, 'FAILED_MANUAL', message, message),
+            })
+
+        if stats.get('skipped'):
+            message = '该记录正在同步中，请稍后再试'
+            return jsonify({
+                'success': False, 'message': message,
+                'data': _resend_data(row_id, trace, api_name, 'SUBMITTING', message, message),
+            })
+
+        # 平台明确失败但未达同步器重试上限时（_fail 走「换 traceId 待重投」分支），
+        # 手工重发是一次用户显式操作：直接置为终止态，保证记录保持可重发，
+        # 避免用户看到失败却无法再次点击（自动重投仍由后台同步器负责其它行）。
+        if stats.get('retried'):
+            repo.update(row_id, is_sync=2, status='FAILED_MANUAL', last_poll_at=None)
+
+        latest = _fetch_row(conn, row_id) or row
+        final_status = str(latest.get('status') or '')
+        final_is_sync = latest.get('is_sync')
+        final_trace = latest.get('traceid') or trace
+        db_error = (latest.get('errormessage') or '').strip()
+
+        if final_status.upper() == 'SUCCESS' and final_is_sync == 1:
+            message = '重新发送成功'
+            return jsonify({
+                'success': True, 'message': message,
+                'data': _resend_data(row_id, final_trace, api_name, final_status, message, None),
+            })
+
+        if final_is_sync == 2:
+            error = db_error or '平台返回失败'
+            message = f'重新发送失败：{error}'
+        else:
+            error = db_error or '平台未返回终态'
+            message = (f'提交已发出但未拿到终态（{final_status}）：{error}，'
+                       f'记录保持待同步，后台同步器会继续轮询')
+        return jsonify({
+            'success': False, 'message': message,
+            'data': _resend_data(row_id, final_trace, api_name, final_status, message, error),
+        })
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 EXPORT_HEADERS = [

@@ -112,10 +112,11 @@
                         <th data-i18n="csi.col_updated">更新时间</th>
                         <th data-i18n="csi.col_updateby">更新人</th>
                         <th data-i18n="csi.col_job">job</th>
+                        <th data-i18n="csi.col_action">操作</th>
                     </tr>
                 </thead>
                 <tbody id="csiBody">
-                    <tr><td colspan="33" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                    <tr><td colspan="34" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -198,9 +199,55 @@ function csiStatusBadge(status) {
     return '<span class="badge ' + cls + '">' + csiEsc(label) + '</span>';
 }
 
+// 失败/终止态才可重发（与后端 RESEND_FAILED_STATUS 保持一致）
+var CSI_RESEND_STATUSES = ['FAILED_MANUAL', 'NOOP', 'CANCELLED', 'FAILED'];
+
+function csiCanResend(r) {
+    if (r.is_sync === 2) return true;
+    return CSI_RESEND_STATUSES.indexOf(String(r.status || '').toUpperCase()) >= 0;
+}
+
+function csiActionCell(r) {
+    if (!csiCanResend(r)) return '<td class="text-center">-</td>';
+    return '<td class="text-center">' +
+        '<button type="button" class="btn btn-outline-warning btn-sm csi-resend-btn" data-id="' +
+        csiEsc(r.id) + '"><i class="fas fa-redo me-1"></i>' +
+        csiEsc(__('csi.resend')) + '</button></td>';
+}
+
+// 重发：确认 → loading（单次最长约 30 秒）→ 结果 toast（失败可再次点击重试）
+function csiResend(btn) {
+    var rowId = btn.getAttribute('data-id');
+    if (!rowId) return;
+    if (!window.confirm(__('csi.resend_confirm'))) return;
+
+    var cell = btn.parentNode;
+    var originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' +
+        csiEsc(__('csi.resending'));
+    var hint = document.createElement('div');
+    hint.className = 'small text-muted mt-1';
+    hint.textContent = __('csi.resending_hint');
+    cell.appendChild(hint);
+
+    apiPost('/api/csi-interface/' + rowId + '/resend', {}, function (resp) {
+        var d = resp.data || {};
+        showToast('success', d.message || __('csi.resend_ok'));
+        loadCsi();
+    }, function (resp) {
+        var d = resp.data || {};
+        showToast('error', d.error || resp.message || __('csi.resend_failed'));
+        // 失败：恢复按钮，允许再次点击重试
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+        if (hint.parentNode) hint.parentNode.removeChild(hint);
+    });
+}
+
 function loadCsi() {
     var tb = document.getElementById('csiBody');
-    tb.innerHTML = '<tr><td colspan="33" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="34" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
         var summary = resp.summary || {};
@@ -210,7 +257,7 @@ function loadCsi() {
             ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
             ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
         if (!resp.data || resp.data.length === 0) {
-            tb.innerHTML = '<tr><td colspan="33" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="34" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
         } else {
             tb.innerHTML = resp.data.map(function (r) {
                 var trace = csiEsc(r.traceid);
@@ -251,6 +298,7 @@ function loadCsi() {
                     '<td>' + csiVal(r.updatedate) + '</td>' +
                     '<td>' + csiVal(r.updateby) + '</td>' +
                     '<td>' + csiVal(r.job) + '</td>' +
+                    csiActionCell(r) +
                     '</tr>';
             }).join('');
         }
@@ -299,6 +347,12 @@ function resetFilters() {
 
 document.getElementById('exportBtn').addEventListener('click', function () {
     window.location.href = '/api/csi-interface/export?' + buildCsiQuery(false);
+});
+// 操作列按钮走事件委托（表格行是动态渲染的）
+document.getElementById('csiBody').addEventListener('click', function (e) {
+    var target = e.target;
+    var btn = target && target.closest ? target.closest('.csi-resend-btn') : null;
+    if (btn) csiResend(btn);
 });
 document.addEventListener('DOMContentLoaded', function () {
     loadCsi();
