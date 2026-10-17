@@ -367,6 +367,118 @@ def _resolve_adjust_location(cur, siteref, coil_id, part_number, lot_no):
     return loc or None
 
 
+@wire_bp.route('/api/wire/adjust/preview', methods=['GET'])
+def api_count_adjust_preview():
+    """盘点差异调整预览（只读，不写库）。
+
+    返回汇总（总卷数、差异笔数、盘盈/盘亏金额、净影响）与明细。
+    调整金额 = |diff_converted| × CSI 单位成本（DerUnitCost），同一物料只查一次；
+    查不到成本的明细 unit_cost/amount 为 None，计入 unpriced_items，不阻断预览。
+    """
+    user, err = _check_login()
+    if err:
+        return err
+    if user['role'] not in ('warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '仅仓库/管理员可预览盘点差异调整'}), 403
+    count_no = (request.args.get('count_no') or '').strip().upper()
+    if not count_no:
+        return jsonify({'success': False, 'message': '请输入盘点单号'}), 400
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM kr_inventory_count WHERE count_no = %s", (count_no,))
+        count = cur.fetchone()
+        if not count:
+            cur.close()
+            return jsonify({'success': False, 'message': f'盘点单 {count_no} 不存在'}), 404
+        if count['status'] == 'completed':
+            cur.close()
+            return jsonify({'success': False, 'message': f'盘点单 {count_no} 已执行过差异调整'}), 400
+        if count['status'] != 'pending_adjust':
+            cur.close()
+            return jsonify({'success': False,
+                            'message': f'盘点单 {count_no} 未完成盘点（当前状态：{count["status"]}），无法预览差异调整'}), 400
+        # 防重复：已存在调整消耗记录（历史单可能状态仍为 pending_adjust）
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_wire_coil_consumption "
+            "WHERE consume_type = 'count_adjust' AND job_order = %s",
+            (count_no,)
+        )
+        if cur.fetchone()['n'] > 0:
+            cur.close()
+            return jsonify({'success': False, 'message': f'盘点单 {count_no} 已执行过差异调整，请勿重复执行'}), 400
+        cur.execute(
+            "SELECT * FROM kr_inventory_count_item WHERE count_id = %s ORDER BY id",
+            (count['id'],)
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+    siteref = str(count.get('siteref') or user.get('siteref') or '')
+    client = CSIClient(siteref)
+    cost_cache = {}          # part_number -> unit_cost|None，同一物料只查一次
+    items = []
+    diff_items = 0
+    pl_plus_amount = 0.0
+    pl_minus_amount = 0.0
+    unpriced_items = 0
+
+    for it in rows:
+        raw_diff = it.get('diff_converted')
+        diff_converted = float(raw_diff) if raw_diff is not None else None
+        api_name = None
+        unit_cost = None
+        amount = None
+        if diff_converted:
+            api_name = (COUNT_ADJUST_API_POSITIVE if diff_converted > 0
+                        else COUNT_ADJUST_API_NEGATIVE)
+            diff_items += 1
+            part_number = (it.get('part_number') or '').strip()
+            if part_number and part_number not in cost_cache:
+                try:
+                    cost_cache[part_number] = client.get_item_cost(part_number)
+                except Exception as e:
+                    logger.warning('[盘点差异调整] 获取 CSI 成本失败 item=%s: %s', part_number, e)
+                    cost_cache[part_number] = None
+            unit_cost = cost_cache.get(part_number) if part_number else None
+            if unit_cost is None:
+                unpriced_items += 1
+            else:
+                amount = round(abs(diff_converted) * float(unit_cost), 2)
+                if diff_converted > 0:
+                    pl_plus_amount += amount
+                else:
+                    pl_minus_amount += amount
+
+        items.append({
+            'coil_id': it.get('coil_id'),
+            'part_number': it.get('part_number'),
+            'lot_no': it.get('lot_no'),
+            'unit': it.get('unit'),
+            'diff_mm': float(it['diff_mm']) if it.get('diff_mm') is not None else None,
+            'diff_converted': diff_converted,
+            'api_name': api_name,
+            'unit_cost': (round(float(unit_cost), 4) if unit_cost is not None else None),
+            'amount': amount,
+        })
+
+    pl_plus_amount = round(pl_plus_amount, 2)
+    pl_minus_amount = round(pl_minus_amount, 2)
+    return jsonify({'success': True, 'data': {
+        'count_no': count_no,
+        'status': count['status'],
+        'siteref': siteref,
+        'total_items': len(rows),
+        'diff_items': diff_items,
+        'pl_plus_amount': pl_plus_amount,
+        'pl_minus_amount': pl_minus_amount,
+        'net_amount': round(pl_plus_amount - pl_minus_amount, 2),
+        'unpriced_items': unpriced_items,
+        'currency_hint': 'CSI 成本货币',
+        'items': items,
+    }})
+
+
 @wire_bp.route('/api/wire/adjust', methods=['POST'])
 def api_count_adjust():
     """仓库人员输入盘点单号 → 将盘点差异写入卷标消耗表（consume_type='count_adjust'），
@@ -386,6 +498,9 @@ def api_count_adjust():
     count_no = (data.get('count_no') or '').strip().upper()
     if not count_no:
         return jsonify({'success': False, 'message': '请输入盘点单号'}), 400
+    # 防绕过：必须由前端确认弹窗显式确认本次调整影响 ERP 库存金额
+    if data.get('confirm') is not True:
+        return jsonify({'success': False, 'message': '请先确认本次调整将影响 ERP 库存金额'}), 400
 
     with get_db_connection() as db:
         cur = db.cursor()

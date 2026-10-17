@@ -2,21 +2,114 @@
 {% block title %}盘点差异调整 - 物料领取看板{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-8 col-lg-6">
+    <div class="col-12 col-xl-10">
         <div class="card shadow-sm">
             <div class="card-header bg-white py-3">
                 <h5 class="mb-0"><i class="fas fa-exchange-alt me-2 text-info"></i>盘点差异调整</h5>
             </div>
             <div class="card-body">
                 <div class="alert alert-info py-2 small">
-                    输入已完成的盘点单号，点击执行：将盘点差异写入卷标消耗表（工单号 = 盘点单号，消耗数量 = 差异数量，可正可负）。
-                    同一盘点单号仅可执行一次。
+                    输入已完成盘点的盘点单号先<b>预览</b>：系统按差异数量 × CSI 单位成本估算调整金额。
+                    确认无误后点击「执行调整」，并在弹窗中勾选确认——本次调整将直接写入 CSI 杂项收发交易，
+                    影响 ERP 库存金额。同一盘点单号仅可执行一次。
                 </div>
-                <div class="input-group mb-3">
-                    <input type="text" class="form-control" id="countNoInput" placeholder="盘点单号，如 INV20260828001" autocomplete="off">
-                    <button class="btn btn-primary" id="execBtn" onclick="execAdjust()"><i class="fas fa-play me-1"></i>执行</button>
+                <div class="input-group mb-2">
+                    <input type="text" class="form-control" id="countNoInput" placeholder="盘点单号，如 INV260002" autocomplete="off">
+                    <button class="btn btn-outline-primary" id="previewBtn" onclick="loadPreview()">
+                        <i class="fas fa-search me-1"></i><span id="previewBtnText">预览</span>
+                    </button>
+                    <button class="btn btn-danger" id="execBtn" onclick="openConfirm()" disabled>
+                        <i class="fas fa-play me-1"></i>执行调整
+                    </button>
                 </div>
-                <div id="resultBox"></div>
+                <div id="statusBox" class="mb-2"></div>
+
+                <div id="previewArea" class="d-none">
+                    <div class="row g-2 mb-3">
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 h-100 bg-light">
+                                <div class="text-muted small">盘点单号</div>
+                                <div class="fw-bold" id="sumCountNo">-</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 h-100 bg-light">
+                                <div class="text-muted small">站点 / 总卷数 / 差异笔数</div>
+                                <div class="fw-bold" id="sumBasic">-</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 h-100 bg-light">
+                                <div class="text-muted small">盘盈金额</div>
+                                <div class="fw-bold fs-5 text-primary" id="sumPlus">0.00</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 h-100 bg-light">
+                                <div class="text-muted small">盘亏金额</div>
+                                <div class="fw-bold fs-5 text-warning" id="sumMinus">0.00</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="border rounded p-3 mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <div>
+                            <span class="text-muted me-2">净影响（ERP 库存金额）</span>
+                            <span class="fw-bold fs-3" id="sumNet">0.00</span>
+                            <span class="text-muted small ms-1" id="sumCurrency"></span>
+                        </div>
+                        <div class="text-muted small">调整金额 = |差异数量| × CSI 单位成本（DerUnitCost）</div>
+                    </div>
+                    <div id="unpricedAlert" class="alert alert-warning py-2 small d-none"></div>
+                    <div id="noDiffAlert" class="alert alert-warning py-2 small d-none">本盘点单无差异，无需调整</div>
+
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>物料号</th>
+                                    <th>Lot</th>
+                                    <th class="text-end">差异数量</th>
+                                    <th>接口类型</th>
+                                    <th class="text-end">单价</th>
+                                    <th class="text-end">金额</th>
+                                </tr>
+                            </thead>
+                            <tbody id="itemBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-exclamation-triangle text-warning me-2"></i>确认执行盘点差异调整</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">盘点单号：<span class="fw-bold" id="modalCountNo">-</span></p>
+                <p class="mb-3">净影响金额：
+                    <span class="fw-bold fs-4" id="modalNet">0.00</span>
+                    <span class="text-muted small" id="modalCurrency"></span>
+                </p>
+                <div class="alert alert-danger py-2 small mb-3">
+                    ⚠️ 本次调整将直接影响 ERP 库存金额，且不可自动撤销。请确认盘点数据与预览金额无误后再执行。
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="confirmCheck">
+                    <label class="form-check-label" for="confirmCheck">
+                        我已确认，本次调整将影响 ERP 库存金额
+                    </label>
+                </div>
+                <div id="modalError" class="text-danger small mt-2 d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-danger" id="confirmExecBtn" onclick="execAdjust()" disabled>确认执行</button>
             </div>
         </div>
     </div>
@@ -24,25 +117,168 @@
 {% endblock %}
 {% block scripts %}
 <script>
-function execAdjust() {
-    const countNo = document.getElementById('countNoInput').value.trim();
-    if (!countNo) { alert('请输入盘点单号'); return; }
-    const btn = document.getElementById('execBtn');
-    btn.disabled = true;
-    fetch('/api/wire/adjust', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({count_no: countNo})
-    }).then(r => r.json()).then(resp => {
-        document.getElementById('resultBox').innerHTML =
-            `<div class="alert ${resp.success ? 'alert-success' : 'alert-danger'} py-2">${resp.message}</div>`;
-        btn.disabled = false;
-    }).catch(() => {
-        document.getElementById('resultBox').innerHTML = '<div class="alert alert-danger py-2">执行失败，请检查服务</div>';
-        btn.disabled = false;
+let currentPreview = null;
+let confirmModal = null;
+
+function esc(v) {
+    if (v === null || v === undefined) return '';
+    return String(v).replace(/[&<>"']/g, function (c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
     });
 }
+function money(v) {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toFixed(2);
+}
+function signed(v) {
+    if (v === null || v === undefined) return '—';
+    return (v > 0 ? '+' : '') + Number(v).toFixed(2);
+}
+function apiLabel(api) {
+    if (api === 'sl-misc-receipt') return '<span class="badge bg-primary-subtle text-primary-emphasis">杂项接收</span>';
+    if (api === 'sl-misc-issue') return '<span class="badge bg-warning-subtle text-warning-emphasis">杂项发出</span>';
+    return '<span class="text-muted">—</span>';
+}
+function showStatus(type, msg) {
+    document.getElementById('statusBox').innerHTML =
+        `<div class="alert alert-${type} py-2 mb-0">${esc(msg)}</div>`;
+}
+function clearStatus() {
+    document.getElementById('statusBox').innerHTML = '';
+}
+
+function resetPreview() {
+    currentPreview = null;
+    document.getElementById('previewArea').classList.add('d-none');
+    document.getElementById('execBtn').disabled = true;
+}
+
+function setPreviewLoading(loading) {
+    const btn = document.getElementById('previewBtn');
+    btn.disabled = loading;
+    document.getElementById('previewBtnText').textContent = loading ? '正在获取 CSI 成本…' : '预览';
+}
+
+function loadPreview() {
+    const countNo = document.getElementById('countNoInput').value.trim();
+    if (!countNo) { showStatus('danger', '请输入盘点单号'); return; }
+    clearStatus();
+    resetPreview();
+    setPreviewLoading(true);
+
+    fetch('/api/wire/adjust/preview?count_no=' + encodeURIComponent(countNo))
+        .then(r => r.json().then(body => ({ok: r.ok, body: body})))
+        .then(({ok, body}) => {
+            if (!body.success) {
+                showStatus('danger', body.message || '预览失败');
+                return;
+            }
+            currentPreview = body.data;
+            renderPreview(body.data);
+        })
+        .catch(() => showStatus('danger', '预览失败，请检查服务'))
+        .finally(() => setPreviewLoading(false));
+}
+
+function renderPreview(d) {
+    document.getElementById('previewArea').classList.remove('d-none');
+    document.getElementById('sumCountNo').textContent = d.count_no;
+    document.getElementById('sumBasic').textContent =
+        `${d.siteref || '-'} / ${d.total_items} 卷 / ${d.diff_items} 笔`;
+    document.getElementById('sumPlus').textContent = money(d.pl_plus_amount);
+    document.getElementById('sumMinus').textContent = money(d.pl_minus_amount);
+
+    const net = document.getElementById('sumNet');
+    net.textContent = signed(d.net_amount);
+    net.className = 'fw-bold fs-3 ' + (d.net_amount >= 0 ? 'text-primary' : 'text-warning');
+    document.getElementById('sumCurrency').textContent = d.currency_hint || '';
+
+    const unpriced = document.getElementById('unpricedAlert');
+    if (d.unpriced_items > 0) {
+        unpriced.textContent = `有 ${d.unpriced_items} 条差异明细未取到 CSI 单位成本，金额为空且未计入汇总。`;
+        unpriced.classList.remove('d-none');
+    } else {
+        unpriced.classList.add('d-none');
+    }
+
+    const noDiff = document.getElementById('noDiffAlert');
+    if (d.diff_items === 0) {
+        noDiff.classList.remove('d-none');
+        document.getElementById('execBtn').disabled = true;
+    } else {
+        noDiff.classList.add('d-none');
+        document.getElementById('execBtn').disabled = false;
+    }
+
+    document.getElementById('itemBody').innerHTML = (d.items || []).map(it => `
+        <tr>
+            <td>${esc(it.part_number)}</td>
+            <td class="small">${esc(it.lot_no)}</td>
+            <td class="text-end ${it.diff_converted > 0 ? 'text-primary' : (it.diff_converted < 0 ? 'text-warning' : 'text-muted')}">
+                ${it.diff_converted === null ? '—' : signed(it.diff_converted)} ${esc(it.unit || '')}
+            </td>
+            <td>${apiLabel(it.api_name)}</td>
+            <td class="text-end">${money(it.unit_cost)}</td>
+            <td class="text-end">${money(it.amount)}</td>
+        </tr>
+    `).join('');
+}
+
+function openConfirm() {
+    if (!currentPreview || currentPreview.diff_items === 0) return;
+    document.getElementById('modalCountNo').textContent = currentPreview.count_no;
+    const net = document.getElementById('modalNet');
+    net.textContent = signed(currentPreview.net_amount);
+    net.className = 'fw-bold fs-4 ' + (currentPreview.net_amount >= 0 ? 'text-primary' : 'text-warning');
+    document.getElementById('modalCurrency').textContent = currentPreview.currency_hint || '';
+    document.getElementById('confirmCheck').checked = false;
+    document.getElementById('confirmExecBtn').disabled = true;
+    document.getElementById('confirmExecBtn').textContent = '确认执行';
+    document.getElementById('modalError').classList.add('d-none');
+    confirmModal = confirmModal || new bootstrap.Modal(document.getElementById('confirmModal'));
+    confirmModal.show();
+}
+
+document.getElementById('confirmCheck').addEventListener('change', function () {
+    document.getElementById('confirmExecBtn').disabled = !this.checked;
+});
+
+function execAdjust() {
+    if (!currentPreview) return;
+    if (!document.getElementById('confirmCheck').checked) return;
+    const countNo = currentPreview.count_no;
+    const btn = document.getElementById('confirmExecBtn');
+    const errBox = document.getElementById('modalError');
+    btn.disabled = true;
+    btn.textContent = '执行中…';
+    errBox.classList.add('d-none');
+
+    fetch('/api/wire/adjust', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({count_no: countNo, confirm: true})
+    }).then(r => r.json()).then(resp => {
+        if (resp.success) {
+            if (confirmModal) confirmModal.hide();
+            resetPreview();
+            document.getElementById('countNoInput').value = '';
+            showStatus('success', resp.message);
+        } else {
+            errBox.textContent = resp.message || '执行失败';
+            errBox.classList.remove('d-none');
+            btn.disabled = false;
+            btn.textContent = '确认执行';
+        }
+    }).catch(() => {
+        errBox.textContent = '执行失败，请检查服务';
+        errBox.classList.remove('d-none');
+        btn.disabled = false;
+        btn.textContent = '确认执行';
+    });
+}
+
 document.getElementById('countNoInput').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') execAdjust();
+    if (e.key === 'Enter') loadPreview();
 });
 </script>
 {% endblock %}
