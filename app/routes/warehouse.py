@@ -1,9 +1,13 @@
+import logging
+
 from flask import Blueprint, request, jsonify, session
 from datetime import datetime
 from app.models import get_db_connection, get_site_filter
+from app.services.csi_interface import enqueue_qty_move
 from app.utils import WhereBuilder, is_en
 
 warehouse_bp = Blueprint('warehouse', __name__)
+logger = logging.getLogger(__name__)
 
 
 def add_log(cursor, request_id, operator, action, detail, ip):
@@ -140,6 +144,17 @@ def complete_prep(request_id):
                     }), 400
 
         now = datetime.now()
+        # 写入 CSI 库位转移接口表：与状态更新同事务，失败整体回滚
+        try:
+            enqueue_qty_move(cursor, req, user['username'], now)
+        except Exception:
+            db.rollback()
+            cursor.close()
+            logger.exception('完成备料：写入 CSI 接口表失败 request_id=%s', request_id)
+            return jsonify({'success': False,
+                            'message': 'Failed to queue CSI location transfer, prep not completed'
+                                       if is_en() else '写入 CSI 库位转移接口失败，备料未完成'}), 500
+
         cursor.execute(
             "UPDATE kr_material_request SET status = 'ready_pickup' WHERE id = %s",
             (request_id,)

@@ -70,6 +70,21 @@ class Config:
         f'https://mingle-ionapi.inforcloudsuite.com/{CSI_TENANT}/CSI/IDORequestService'
     )
 
+    # ============================================================ #
+    #  CSI 库位转移同步（完成备料 → kr_csi_interface → 宝鼎 Syteline）
+    # ============================================================ #
+    # 说明：上面的 CSI_API_BASE 属于 Infor CSI REST（工单/库存实时查询），
+    #       宝鼎 Syteline 走独立网关，故单列 CSI_SYTELINE_API_BASE，避免覆盖。
+    CSI_SYNC_ENABLED = os.environ.get('CSI_SYNC_ENABLED', 'false').lower() == 'true'
+    CSI_SYTELINE_API_BASE = os.environ.get('CSI_SYTELINE_API_BASE', 'http://bdsytelineapi/api/cmd/')
+    CSI_SYTELINE_TOKEN = os.environ.get('CSI_SYTELINE_TOKEN', '')      # slt_xxx
+    CSI_TO_LOCATION = os.environ.get('CSI_TO_LOCATION', 'Floor-Core')
+    CSI_REASON_CODE = os.environ.get('CSI_REASON_CODE', 'C1N')
+    CSI_WAREHOUSE_MAP = {'310': os.environ.get('CSI_WAREHOUSE_310', 'C1M1'),
+                         '410': os.environ.get('CSI_WAREHOUSE_410', 'M1M1')}
+    CSI_ALERT_EMAIL = os.environ.get('CSI_ALERT_EMAIL', 'jason.pang@nai-group.com')
+    CSI_SYNC_INTERVAL = int(os.environ.get('CSI_SYNC_INTERVAL', '60'))
+
     # 站点配置
     SITE_CONFIG = {
         '310': '苏州工厂 (Suzhou Plant 1)',
