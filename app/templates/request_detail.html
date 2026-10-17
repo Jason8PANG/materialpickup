@@ -266,7 +266,7 @@
                                     <thead class="table-light">
                                         <tr>
                                             <th style="width:40px" class="text-center" title="选择该行" data-i18n="coils.select">选</th>
-                                            <th data-i18n="coils.coil_id">卷标ID</th><th>Lot</th><th data-i18n="coils.part">物料</th><th data-i18n="coils.length">长度</th><th data-i18n="coils.unit">单位</th><th data-i18n="coils.status">状态</th>
+                                            <th data-i18n="coils.coil_id">卷标ID</th><th>Lot</th><th data-i18n="coils.loc">库位</th><th data-i18n="coils.part">物料</th><th data-i18n="coils.length">长度</th><th data-i18n="coils.unit">单位</th><th data-i18n="coils.status">状态</th>
                                             <th style="width:66px" class="text-center" title="期初半卷：勾选后标签右上角打印「始」角标">期初半卷</th>
                                             <th style="width:66px" class="text-center" title="保存Lot/长度修改">保存</th>
                                             <th style="width:66px" class="text-center" data-i18n="coils.print">打印</th>
@@ -306,6 +306,7 @@
                                     <thead class="table-light">
                                         <tr>
                                             <th data-i18n="lots.lot_no">批号</th>
+                                            <th data-i18n="lots.loc">库位</th>
                                             <th style="width:140px" class="text-end" data-i18n="lots.qty">数量</th>
                                             <th style="width:110px" class="text-center" data-i18n="lots.actions">操作</th>
                                         </tr>
@@ -321,6 +322,7 @@
                                     <label class="small text-muted" data-i18n="lots.lot_no">批号</label>
                                     <input type="text" class="form-control form-control-sm" id="itemLotNo" maxlength="64"
                                            placeholder="Lot / 批号" onblur="validateNewItemLotNo()">
+                                    <div class="small text-muted mt-1" id="itemLotLocHint"></div>
                                 </div>
                                 <div class="col-md-4">
                                     <label class="small text-muted" data-i18n="lots.qty">数量</label>
@@ -445,7 +447,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017d"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017f"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -725,11 +727,12 @@ function openItemLotsModal(itemId, partNumber, qty, requestId, unit) {
     document.getElementById('itemLotsTitle').textContent =
         '- ' + partNumber + '（申请 ' + qty + '）';
     document.getElementById('itemLotsBody').innerHTML =
-        '<tr><td colspan="3" class="text-center text-muted">加载中...</td></tr>';
+        '<tr><td colspan="4" class="text-center text-muted">加载中...</td></tr>';
     document.getElementById('itemLotNo').value = '';
     document.getElementById('itemLotQty').value = '';
     clearLotValidateState(document.getElementById('itemLotNo'));
     clearLotValidateState(document.getElementById('itemLotQty'));
+    updateNewLotLocHint('');
     document.getElementById('itemLotsShortAlert').classList.add('d-none');
     // 历史 batch_no 仅灰字展示，不删除、不参与校验
     var oldBatchEl = document.getElementById('itemLotsOldBatch');
@@ -759,7 +762,7 @@ function loadItemLots() {
         },
         function (err) {
             document.getElementById('itemLotsBody').innerHTML =
-                '<tr><td colspan="3" class="text-center text-danger">' +
+                '<tr><td colspan="4" class="text-center text-danger">' +
                 escapeHtml(err.message || '加载失败') + '</td></tr>';
         }
     );
@@ -769,13 +772,14 @@ function renderLotRows() {
     var tbody = document.getElementById('itemLotsBody');
     if (!tbody) return;
     if (_lotData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">' +
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">' +
             __('lots.empty') + '</td></tr>';
     } else {
         tbody.innerHTML = _lotData.map(function (lot) {
             if (_editingLotId === lot.id) {
                 return '<tr>' +
                     '<td><input type="text" class="form-control form-control-sm" id="lot_edit_no_' + lot.id + '" value="' + escapeHtml(lot.lot_no) + '" onblur="validateEditItemLotNo(' + lot.id + ')"></td>' +
+                    '<td>' + escapeHtml(lot.loc || '-') + '</td>' +
                     '<td><input type="number" step="0.01" min="0" class="form-control form-control-sm" id="lot_edit_qty_' + lot.id + '" value="' + lot.qty + '" onblur="validateEditItemQty(' + lot.id + ')"></td>' +
                     '<td class="text-nowrap">' +
                     '<button class="btn btn-sm btn-success" onclick="saveItemLot(' + lot.id + ')" title="保存"><i class="fas fa-save"></i></button> ' +
@@ -784,6 +788,7 @@ function renderLotRows() {
             }
             return '<tr>' +
                 '<td>' + escapeHtml(lot.lot_no) + '</td>' +
+                '<td>' + escapeHtml(lot.loc || '-') + '</td>' +
                 '<td class="text-end">' + lot.qty + '</td>' +
                 '<td class="text-nowrap">' +
                 '<button class="btn btn-sm btn-outline-primary" onclick="editItemLot(' + lot.id + ', \'' + escapeHtml(lot.lot_no).replace(/'/g, '&#39;') + '\', ' + lot.qty + ')" title="编辑"><i class="fas fa-edit"></i></button> ' +
@@ -803,6 +808,7 @@ function renderLotRows() {
    两段式：Lot 失焦即校验批号，数量失焦后再与缓存可用量比较，
    不必等批号与数量都填完才发请求。 */
 var _lotOnhand = {};   // 'partNumber|lotNo' -> DerQtyOnHand（仅缓存校验通过的批号）
+var _lotLocs = {};     // 'partNumber|lotNo' -> 库位（validate-lot 返回的 loc，与 _lotOnhand 同生命周期）
 
 function clearLotValidateState(el) {
     if (!el) return;
@@ -821,6 +827,15 @@ function hasLotOnhand(lotNo) {
 /* 关闭/切换弹窗时清空，避免跨行、跨批次串用可用量 */
 function clearLotOnhandCache() {
     _lotOnhand = {};
+    _lotLocs = {};
+}
+
+/* 新增批次表单：显示当前批号的库位（只读提示，便于仓库确认） */
+function updateNewLotLocHint(lotNo) {
+    var el = document.getElementById('itemLotLocHint');
+    if (!el) return;
+    var loc = lotNo ? _lotLocs[_lotKey(lotNo)] : '';
+    el.textContent = __('lots.loc') + '：' + (loc || '-');
 }
 
 /* 第一段：只校验批号是否存在，成功后缓存该批号可用量。onDone(ok) */
@@ -849,9 +864,11 @@ function validateLotNo(lotNo, lotEl, onDone, qtyEl) {
     var apply = function (ok, resp, err) {
         if (ok) {
             _lotOnhand[_lotKey(lotNo)] = (resp && resp.der_qty_on_hand != null) ? resp.der_qty_on_hand : 0;
+            _lotLocs[_lotKey(lotNo)] = (resp && resp.loc) || '';
             markValid();
         } else {
             delete _lotOnhand[_lotKey(lotNo)];
+            delete _lotLocs[_lotKey(lotNo)];
             if (lotEl) {
                 lotEl.classList.remove('is-valid');
                 lotEl.classList.add('is-invalid');
@@ -916,9 +933,10 @@ function validateNewItemLotNo() {
     if (!lotNo) {
         clearLotValidateState(lotEl);
         if (qtyEl) clearLotValidateState(qtyEl);
+        updateNewLotLocHint('');
         return;
     }
-    validateLotNo(lotNo, lotEl, null, qtyEl);
+    validateLotNo(lotNo, lotEl, function () { updateNewLotLocHint(lotNo); }, qtyEl);
 }
 
 /* 新增行失焦：数量与 Lot 可用量比较（批号为空则跳过） */
@@ -997,6 +1015,9 @@ function doSaveItemLot(lotId, lotNo, qty) {
     var url = '/api/requests/' + _lotCtx.requestId + '/items/' + _lotCtx.itemId + '/lots' +
               (lotId ? '/' + lotId : '');
     var payload = {lot_no: lotNo, qty: qty};
+    // 库位：校验通过时已缓存，有值才随保存提交（后端字段可选）
+    var lotLoc = _lotLocs[_lotKey(lotNo)];
+    if (lotLoc) payload.loc = lotLoc;
     var done = function (resp) {
         _editingLotId = null;
         if (!lotId) {
@@ -1004,6 +1025,7 @@ function doSaveItemLot(lotId, lotNo, qty) {
             document.getElementById('itemLotQty').value = '';
             clearLotValidateState(document.getElementById('itemLotNo'));
             clearLotValidateState(document.getElementById('itemLotQty'));
+            updateNewLotLocHint('');
         }
         _lotData = resp.data || [];
         _lotTotals = {

@@ -74,26 +74,44 @@
             </div>
         </div>
         <div class="table-responsive">
-            <table class="table table-sm table-bordered table-hover align-middle">
+            <table class="table table-sm table-bordered table-hover align-middle text-nowrap small">
                 <thead class="table-light">
                     <tr>
+                        <th data-i18n="csi.col_id">ID</th>
                         <th data-i18n="csi.col_request">申请单号</th>
                         <th data-i18n="csi.col_site">站点</th>
+                        <th data-i18n="csi.col_api">接口</th>
                         <th data-i18n="csi.col_item">物料号</th>
                         <th data-i18n="csi.col_lot">批次</th>
                         <th data-i18n="csi.col_qty">数量</th>
-                        <th data-i18n="csi.col_unit">单位</th>
+                        <th data-i18n="csi.col_um">单位(um)</th>
+                        <th data-i18n="csi.col_warehouse">仓库</th>
+                        <th data-i18n="csi.col_from_location">源库位</th>
+                        <th data-i18n="csi.col_to_location">目的库位</th>
+                        <th data-i18n="csi.col_reasoncode">原因码</th>
+                        <th data-i18n="csi.col_account">科目</th>
+                        <th data-i18n="csi.col_unitcode1">unitcode1</th>
+                        <th data-i18n="csi.col_unitcode2">unitcode2</th>
                         <th data-i18n="csi.col_doc">单据号</th>
                         <th data-i18n="csi.col_trace">traceId</th>
                         <th data-i18n="csi.col_sync">同步状态</th>
                         <th data-i18n="csi.col_status">状态</th>
                         <th data-i18n="csi.col_retry">重试次数</th>
                         <th data-i18n="csi.col_error">错误信息</th>
+                        <th data-i18n="csi.col_coil_id">卷标号</th>
+                        <th data-i18n="csi.col_lot_id">批记录ID</th>
+                        <th data-i18n="csi.col_item_id">明细行ID</th>
+                        <th data-i18n="csi.col_submitted">提交时间</th>
+                        <th data-i18n="csi.col_last_poll">最后轮询</th>
                         <th data-i18n="csi.col_created">创建时间</th>
+                        <th data-i18n="csi.col_createby">创建人</th>
+                        <th data-i18n="csi.col_updated">更新时间</th>
+                        <th data-i18n="csi.col_updateby">更新人</th>
+                        <th data-i18n="csi.col_job">job</th>
                     </tr>
                 </thead>
                 <tbody id="csiBody">
-                    <tr><td colspan="13" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                    <tr><td colspan="31" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -118,6 +136,12 @@ function csiEsc(v) {
     if (v === null || v === undefined) return '';
     return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 单元格取值：空值统一显示 '-'，其余转义后输出
+function csiVal(v) {
+    if (v === null || v === undefined || v === '') return '-';
+    return csiEsc(v);
 }
 
 function buildCsiQuery(withPaging) {
@@ -148,7 +172,7 @@ function csiSyncBadge(isSync, label) {
 
 function loadCsi() {
     var tb = document.getElementById('csiBody');
-    tb.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="31" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
         var summary = resp.summary || {};
@@ -158,25 +182,45 @@ function loadCsi() {
             ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
             ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
         if (!resp.data || resp.data.length === 0) {
-            tb.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="31" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
         } else {
             tb.innerHTML = resp.data.map(function (r) {
                 var trace = csiEsc(r.traceid);
                 var err = csiEsc(r.errormessage);
+                var syncCell = (r.is_sync === null || r.is_sync === undefined)
+                    ? '-' : csiSyncBadge(r.is_sync, r.is_sync_label);
                 return '<tr>' +
-                    '<td>' + csiEsc(r.request_id) + '</td>' +
-                    '<td>' + csiEsc(r.siteref) + '</td>' +
-                    '<td>' + csiEsc(r.item) + '</td>' +
-                    '<td>' + csiEsc(r.lot) + '</td>' +
-                    '<td>' + (r.quantity !== null && r.quantity !== undefined ? r.quantity : '') + '</td>' +
-                    '<td>' + csiEsc(r.unitcode1) + '</td>' +
-                    '<td>' + csiEsc(r.documentnumber) + '</td>' +
-                    '<td class="text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</td>' +
-                    '<td>' + csiSyncBadge(r.is_sync, r.is_sync_label) + '</td>' +
-                    '<td>' + csiEsc(r.status) + '</td>' +
-                    '<td>' + (r.retry_count !== null && r.retry_count !== undefined ? r.retry_count : 0) + '</td>' +
-                    '<td class="text-truncate" style="max-width:200px" title="' + err + '">' + (err || '-') + '</td>' +
-                    '<td>' + csiEsc(r.createdate) + '</td>' +
+                    '<td>' + csiVal(r.id) + '</td>' +
+                    '<td>' + csiVal(r.request_id) + '</td>' +
+                    '<td>' + csiVal(r.siteref) + '</td>' +
+                    '<td>' + csiVal(r.api_name) + '</td>' +
+                    '<td>' + csiVal(r.item) + '</td>' +
+                    '<td>' + csiVal(r.lot) + '</td>' +
+                    '<td class="text-end">' + csiVal(r.quantity) + '</td>' +
+                    '<td>' + csiVal(r.um) + '</td>' +
+                    '<td>' + csiVal(r.warehouse) + '</td>' +
+                    '<td>' + csiVal(r.from_location) + '</td>' +
+                    '<td>' + csiVal(r.to_location) + '</td>' +
+                    '<td>' + csiVal(r.reasoncode) + '</td>' +
+                    '<td>' + csiVal(r.account) + '</td>' +
+                    '<td>' + csiVal(r.unitcode1) + '</td>' +
+                    '<td>' + csiVal(r.unitcode2) + '</td>' +
+                    '<td>' + csiVal(r.documentnumber) + '</td>' +
+                    '<td><span class="d-inline-block text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</span></td>' +
+                    '<td>' + syncCell + '</td>' +
+                    '<td>' + csiVal(r.status) + '</td>' +
+                    '<td class="text-end">' + csiVal(r.retry_count) + '</td>' +
+                    '<td><span class="d-inline-block text-truncate" style="max-width:240px" title="' + err + '">' + (err || '-') + '</span></td>' +
+                    '<td>' + csiVal(r.coil_id) + '</td>' +
+                    '<td>' + csiVal(r.lot_id) + '</td>' +
+                    '<td>' + csiVal(r.item_id) + '</td>' +
+                    '<td>' + csiVal(r.submitted_at) + '</td>' +
+                    '<td>' + csiVal(r.last_poll_at) + '</td>' +
+                    '<td>' + csiVal(r.createdate) + '</td>' +
+                    '<td>' + csiVal(r.createby) + '</td>' +
+                    '<td>' + csiVal(r.updatedate) + '</td>' +
+                    '<td>' + csiVal(r.updateby) + '</td>' +
+                    '<td>' + csiVal(r.job) + '</td>' +
                     '</tr>';
             }).join('');
         }

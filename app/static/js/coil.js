@@ -21,6 +21,7 @@ let coilState = {
     batchByPart: {},    // part_number -> 去重批次号数组（明细 batch_no 拆分后）
     rows: [],           // 录入行 {part_number, coil_id, length}
     existingCoils: [],  // 已录入卷标
+    lotLocs: {},        // 'part_number|lot_no' -> 库位（validate-lot 校验通过时缓存）
     previewCoil: null,  // 当前预览的卷标
     itemId: null,       // 按行维护：当前打开的申请单行 id
     defaultPart: ''     // 按行维护：该行默认物料
@@ -60,7 +61,8 @@ function coilTotalMm(coil) {
 
 function openCoilModal(requestId, itemId, partNumber) {
     coilState = {requestId: requestId, request: null, requestItems: [], unitMap: {},
-                 batchByPart: {}, rows: [], existingCoils: [], previewCoil: null, itemId: itemId || null,
+                 batchByPart: {}, rows: [], existingCoils: [], lotLocs: {}, previewCoil: null,
+                 itemId: itemId || null,
                  defaultPart: partNumber || '', defaultLot: ''};
 
     document.getElementById('coilModalTitle').textContent = '#' + requestId;
@@ -261,6 +263,7 @@ function renderCoilRows() {
     coilState.rows.forEach(function (row, idx) {
         const isAB = isABPart(row.part_number);
         const unit = coilState.unitMap[row.part_number] || '-';
+        const lotLoc = coilState.lotLocs[row.part_number + '|' + (row.lot_no || '').trim()] || '';
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>
@@ -279,6 +282,7 @@ function renderCoilRows() {
                 <input type="text" class="form-control form-control-sm coil-lot-input" data-idx="${idx}"
                        value="${escapeHtml(row.lot_no || '')}" placeholder="Lot" maxlength="64"
                        onblur="validateLotForRow(${idx})">
+                <div class="text-muted small mt-1" id="coil_loc_${idx}">${escapeHtml(__('coils.loc'))}：${escapeHtml(lotLoc || '-')}</div>
             </td>
             <td>
                 <input type="number" class="form-control form-control-sm coil-length-input" data-idx="${idx}"
@@ -321,10 +325,15 @@ function validateLotForRow(idx) {
         if (lotInput) lotInput.classList.add('is-valid');
         if (lenInput) lenInput.classList.remove('is-invalid');
         if (lenInput) lenInput.classList.add('is-valid');
+        // 缓存 Lot 所在库位（后端 validate-lot 返回 loc，可能为 null），供保存时回传
+        coilState.lotLocs[partNumber + '|' + lotNo] = (resp && resp.loc) || '';
+        setLotLocHint(idx, coilState.lotLocs[partNumber + '|' + lotNo]);
         showToast('success', resp.message || 'Lot 验证通过');
     }, function (err) {
         // 失败：Lot 不存在 或 长度超 DerQtyOnHand
         const msg = err.message || 'Lot 验证失败';
+        delete coilState.lotLocs[partNumber + '|' + lotNo];
+        setLotLocHint(idx, '');
         if (lotInput) lotInput.classList.remove('is-valid');
         if (lotInput) lotInput.classList.add('is-invalid');
         if (lenInput) lenInput.classList.remove('is-valid');
@@ -335,6 +344,12 @@ function validateLotForRow(idx) {
     // 批次号比对（叠加检查，不影响上面 SLLots 的 is-valid/is-invalid）：
     // Lot 与申请单明细 batch_no 不一致时仅黄色 warning 提示，不阻断输入与保存
     checkLotAgainstBatch(lotInput, partNumber, lotNo);
+}
+
+function setLotLocHint(idx, loc) {
+    // 录入行「库位」只读提示：无值统一显示 '-'
+    const el = document.getElementById('coil_loc_' + idx);
+    if (el) el.textContent = __('coils.loc') + '：' + (loc || '-');
 }
 
 function setLotWarning(lotInput) {
@@ -379,16 +394,22 @@ function saveCoilRow(idx, retryCount) {
     if (!(length > 0)) { showToast('error', __('coils.length_positive')); return; }
     retryCount = retryCount || 0;
 
+    // 库位：validate-lot 校验通过时已缓存，有值才随保存提交（后端字段可选）
+    const lotNo = (row.lot_no || '').trim();
+    const item = {
+        part_number: partNumber,
+        coil_id: coilId,
+        length: length,
+        lot_no: lotNo,
+        unit: coilState.unitMap[partNumber] || '',
+        item_id: coilState.itemId,  // 按申请单行绑定
+        is_initial_half: !!row.is_initial_half  // 期初半卷：勾选后标签右上角加「始」角标
+    };
+    const lotLoc = coilState.lotLocs[partNumber + '|' + lotNo];
+    if (lotLoc) item.loc = lotLoc;
+
     apiPost('/api/requests/' + coilState.requestId + '/coils', {
-        items: [{
-            part_number: partNumber,
-            coil_id: coilId,
-            length: length,
-            lot_no: (row.lot_no || '').trim(),
-            unit: coilState.unitMap[partNumber] || '',
-            item_id: coilState.itemId,  // 按申请单行绑定
-            is_initial_half: !!row.is_initial_half  // 期初半卷：勾选后标签右上角加「始」角标
-        }]
+        items: [item]
     }, function (resp) {
         showToast('success', '卷标已保存');
         // 保存成功后：清空录入行并重置一行（自动生成新卷号，便于连续录入下一卷），刷新已录入列表
@@ -470,7 +491,7 @@ function renderExistingCoils() {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (!coilState.existingCoils || coilState.existingCoils.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
         return;
     }
     // 从后往前删除：仅最后一条（id 最大，列表末尾）允许删除
@@ -519,6 +540,7 @@ function renderExistingCoils() {
             </td>
             <td>${escapeHtml(c.coil_id)}</td>
             ${lotCell}
+            <td>${escapeHtml(c.loc || '-')}</td>
             <td>${escapeHtml(c.part_number)}</td>
             ${lenCell}
             <td>${escapeHtml(c.unit || '-')}</td>
@@ -667,14 +689,18 @@ function saveCoils(printAfter) {
         }
         seenCoil[row.coil_id] = true;
         submittedParts[row.part_number] = true;
-        items.push({
+        const lotNo = (row.lot_no || '').trim();
+        const item = {
             part_number: row.part_number,
             coil_id: row.coil_id,
             length: len,
-            lot_no: (row.lot_no || '').trim(),
+            lot_no: lotNo,
             unit: coilState.unitMap[row.part_number] || '',
             is_initial_half: !!row.is_initial_half  // 期初半卷
-        });
+        };
+        const lotLoc = coilState.lotLocs[row.part_number + '|' + lotNo];
+        if (lotLoc) item.loc = lotLoc;
+        items.push(item);
     });
 
     if (errors.length) {
