@@ -525,7 +525,17 @@ def api_count_adjust():
 
         inserted = 0
         csi_inserted = 0
-        line_no = 0
+        # 行号续接该盘点单已用过的最大行号（冲销后重调时避免与已过账单号冲突）
+        cur.execute(
+            "SELECT documentnumber FROM kr_csi_interface WHERE documentnumber LIKE %s",
+            (f'{count_no}%',)
+        )
+        used_seqs = []
+        for r in cur.fetchall():
+            suffix = (r.get('documentnumber') or '')[-3:]
+            if suffix.isdigit():
+                used_seqs.append(int(suffix))
+        line_no = max(used_seqs) if used_seqs else 0
         try:
             for it in items:
                 diff_mm = it.get('diff_mm')
