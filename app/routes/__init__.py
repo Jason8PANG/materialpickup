@@ -111,3 +111,10 @@ def cutting_specs_page():
     if not session.get('user'):
         return redirect(url_for('pages.login_page'))
     return render_template('cutting_specs.html')
+
+
+@pages.route('/csi-interface')
+def csi_interface_page():
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    return render_template('csi_interface.html')

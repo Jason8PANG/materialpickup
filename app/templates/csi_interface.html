@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}同步接口查询 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0"><i class="fas fa-sync-alt me-2 text-info"></i><span data-i18n="csi.title">同步接口查询</span></h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fSite">
+                    {% if session.user.role == 'admin' %}
+                    <option value="" data-i18n="csi.all_sites">全部站点</option>
+                    {% for site in session.user.available_sites %}
+                    <option value="{{ site }}" {% if site|string == session.user.siteref|string %}selected{% endif %}>{{ site_config.get(site, site) }}</option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="{{ session.user.siteref }}">{{ site_config.get(session.user.siteref, session.user.siteref) }}</option>
+                    {% endif %}
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fSync">
+                    <option value="" data-i18n="csi.all_sync">全部同步状态</option>
+                    <option value="0" data-i18n="csi.sync_pending">待同步</option>
+                    <option value="1" data-i18n="csi.sync_success">成功</option>
+                    <option value="2" data-i18n="csi.sync_failed">人工失败</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fStatus">
+                    <option value="" data-i18n="csi.all_status">全部状态</option>
+                    <option value="PENDING">PENDING</option>
+                    <option value="QUEUED">QUEUED</option>
+                    <option value="SUBMITTING">SUBMITTING</option>
+                    <option value="SUCCESS">SUCCESS</option>
+                    <option value="FAILED_MANUAL">FAILED_MANUAL</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fItem" data-i18n="csi.item" placeholder="物料号">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fLot" data-i18n="csi.lot" placeholder="批次">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fDoc" data-i18n="csi.documentnumber" placeholder="单据号">
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fRequestId" data-i18n="csi.request_id" placeholder="申请单号">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="date" class="form-control form-control-sm" id="fDateFrom" title="开始日期">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="date" class="form-control form-control-sm" id="fDateTo" title="结束日期">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fKeyword" data-i18n="csi.keyword" placeholder="traceId / 错误信息 / 创建人">
+            </div>
+            <div class="col-6 col-md-2">
+                <button class="btn btn-primary btn-sm w-100" onclick="search()"><i class="fas fa-search me-1"></i><span data-i18n="csi.query">查询</span></button>
+            </div>
+            <div class="col-6 col-md-2">
+                <button class="btn btn-outline-secondary btn-sm w-100" onclick="resetFilters()"><i class="fas fa-redo me-1"></i><span data-i18n="csi.reset">重置</span></button>
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-12 d-flex justify-content-between align-items-center">
+                <button class="btn btn-success btn-sm" id="exportBtn"><i class="fas fa-file-excel me-1"></i><span data-i18n="csi.export">导出 Excel</span></button>
+                <small class="text-muted" id="summaryBox"></small>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th data-i18n="csi.col_request">申请单号</th>
+                        <th data-i18n="csi.col_site">站点</th>
+                        <th data-i18n="csi.col_item">物料号</th>
+                        <th data-i18n="csi.col_lot">批次</th>
+                        <th data-i18n="csi.col_qty">数量</th>
+                        <th data-i18n="csi.col_unit">单位</th>
+                        <th data-i18n="csi.col_doc">单据号</th>
+                        <th data-i18n="csi.col_trace">traceId</th>
+                        <th data-i18n="csi.col_sync">同步状态</th>
+                        <th data-i18n="csi.col_status">状态</th>
+                        <th data-i18n="csi.col_retry">重试次数</th>
+                        <th data-i18n="csi.col_error">错误信息</th>
+                        <th data-i18n="csi.col_created">创建时间</th>
+                    </tr>
+                </thead>
+                <tbody id="csiBody">
+                    <tr><td colspan="13" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-3">
+            <small class="text-muted" id="pageInfo"></small>
+            <nav>
+                <ul class="pagination pagination-sm mb-0">
+                    <li class="page-item" id="prevLi"><a class="page-link" href="#" onclick="changePage(-1);return false;" data-i18n="csi.prev">上一页</a></li>
+                    <li class="page-item disabled"><span class="page-link" id="pageNum">1</span></li>
+                    <li class="page-item" id="nextLi"><a class="page-link" href="#" onclick="changePage(1);return false;" data-i18n="csi.next">下一页</a></li>
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+var CSI_STATE = { page: 1, size: 50, total: 0 };
+
+function csiEsc(v) {
+    if (v === null || v === undefined) return '';
+    return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function buildCsiQuery(withPaging) {
+    var p = new URLSearchParams();
+    var site = document.getElementById('fSite').value;
+    // admin 选“全部站点”时不传 siteref；普通用户 select 只有当前站
+    if (site) p.set('siteref', site);
+    if (fSync.value) p.set('is_sync', fSync.value);
+    if (fStatus.value) p.set('status', fStatus.value);
+    if (fItem.value.trim()) p.set('item', fItem.value.trim());
+    if (fLot.value.trim()) p.set('lot', fLot.value.trim());
+    if (fDoc.value.trim()) p.set('documentnumber', fDoc.value.trim());
+    if (fRequestId.value.trim()) p.set('request_id', fRequestId.value.trim());
+    if (fDateFrom.value) p.set('date_from', fDateFrom.value);
+    if (fDateTo.value) p.set('date_to', fDateTo.value);
+    if (fKeyword.value.trim()) p.set('keyword', fKeyword.value.trim());
+    if (withPaging) {
+        p.set('page', CSI_STATE.page);
+        p.set('size', CSI_STATE.size);
+    }
+    return p.toString();
+}
+
+function csiSyncBadge(isSync, label) {
+    var cls = isSync === 0 ? 'bg-warning text-dark' : isSync === 1 ? 'bg-success' : isSync === 2 ? 'bg-danger' : 'bg-secondary';
+    return '<span class="badge ' + cls + '">' + csiEsc(label) + '</span>';
+}
+
+function loadCsi() {
+    var tb = document.getElementById('csiBody');
+    tb.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
+        CSI_STATE.total = resp.total || 0;
+        var summary = resp.summary || {};
+        document.getElementById('summaryBox').innerHTML =
+            csiEsc(__('csi.summary')) + ': ' + (summary.total || 0) +
+            ' / ' + csiEsc(__('csi.sync_pending')) + ' ' + (summary.pending || 0) +
+            ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
+            ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
+        if (!resp.data || resp.data.length === 0) {
+            tb.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+        } else {
+            tb.innerHTML = resp.data.map(function (r) {
+                var trace = csiEsc(r.traceid);
+                var err = csiEsc(r.errormessage);
+                return '<tr>' +
+                    '<td>' + csiEsc(r.request_id) + '</td>' +
+                    '<td>' + csiEsc(r.siteref) + '</td>' +
+                    '<td>' + csiEsc(r.item) + '</td>' +
+                    '<td>' + csiEsc(r.lot) + '</td>' +
+                    '<td>' + (r.quantity !== null && r.quantity !== undefined ? r.quantity : '') + '</td>' +
+                    '<td>' + csiEsc(r.unitcode1) + '</td>' +
+                    '<td>' + csiEsc(r.documentnumber) + '</td>' +
+                    '<td class="text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</td>' +
+                    '<td>' + csiSyncBadge(r.is_sync, r.is_sync_label) + '</td>' +
+                    '<td>' + csiEsc(r.status) + '</td>' +
+                    '<td>' + (r.retry_count !== null && r.retry_count !== undefined ? r.retry_count : 0) + '</td>' +
+                    '<td class="text-truncate" style="max-width:200px" title="' + err + '">' + (err || '-') + '</td>' +
+                    '<td>' + csiEsc(r.createdate) + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+        renderPager();
+    }, function (resp) {
+        showToast('error', resp.message || __('csi.load_failed'));
+    });
+}
+
+function renderPager() {
+    var pages = Math.max(1, Math.ceil(CSI_STATE.total / CSI_STATE.size));
+    document.getElementById('pageNum').textContent = CSI_STATE.page + ' / ' + pages;
+    document.getElementById('pageInfo').textContent =
+        __('csi.total_label') + ' ' + CSI_STATE.total + ' ' + __('csi.records');
+    document.getElementById('prevLi').classList.toggle('disabled', CSI_STATE.page <= 1);
+    document.getElementById('nextLi').classList.toggle('disabled', CSI_STATE.page >= pages);
+}
+
+function search() {
+    CSI_STATE.page = 1;
+    loadCsi();
+}
+
+function changePage(delta) {
+    var pages = Math.max(1, Math.ceil(CSI_STATE.total / CSI_STATE.size));
+    var next = CSI_STATE.page + delta;
+    if (next < 1 || next > pages) return;
+    CSI_STATE.page = next;
+    loadCsi();
+}
+
+function resetFilters() {
+    var siteSel = document.getElementById('fSite');
+    if (siteSel.options.length && siteSel.querySelector('option[value=""]')) siteSel.value = '';
+    fSync.value = '';
+    fStatus.value = '';
+    fItem.value = '';
+    fLot.value = '';
+    fDoc.value = '';
+    fRequestId.value = '';
+    fDateFrom.value = '';
+    fDateTo.value = '';
+    fKeyword.value = '';
+    search();
+}
+
+document.getElementById('exportBtn').addEventListener('click', function () {
+    window.location.href = '/api/csi-interface/export?' + buildCsiQuery(false);
+});
+document.addEventListener('DOMContentLoaded', function () {
+    loadCsi();
+});
+</script>
+{% endblock %}
