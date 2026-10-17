@@ -1,8 +1,13 @@
-"""CSI（宝鼎 Syteline）库位转移同步器
+"""CSI（宝鼎 Syteline）交易同步器
 
-职责：扫描接口表 kr_csi_interface 的待处理行 → 提交 sl-qty-move → 轮询终态；
+职责：扫描接口表 kr_csi_interface 的待处理行 → 按行的 api_name 提交对应接口 → 轮询终态；
 失败自动重试（最多 3 次，**单据号保持不变、只更换 traceId**），
 超限发邮件告警并停止自动重试。
+
+支持的接口（按行 api_name 分派，payload 契约不同）：
+  sl-qty-move      库位转移（领用/退料），字段 fromLocation/toLocation/reasonCode
+  sl-misc-receipt  杂项收入（盘盈），字段 location/reasonCode/account/lot
+  sl-misc-issue    杂项发出（盘亏），字段同上
 
 运行方式：
   - 常驻：CSI_SYNC_ENABLED=true 时由 create_app() 启动后台守护线程（见 app/__init__.py）
@@ -34,6 +39,10 @@ from app.services.email_service import send_email
 logger = logging.getLogger(__name__)
 
 API_QTY_MOVE = 'sl-qty-move'
+API_MISC_RECEIPT = 'sl-misc-receipt'   # 杂项收入（盘盈）
+API_MISC_ISSUE = 'sl-misc-issue'       # 杂项发出（盘亏）
+MISC_APIS = (API_MISC_RECEIPT, API_MISC_ISSUE)
+SUPPORTED_APIS = (API_QTY_MOVE, API_MISC_RECEIPT, API_MISC_ISSUE)
 
 # 可被抢占处理的状态（PENDING=新行/待重试，QUEUED=平台已入队，SUBMITTING=上次中断）
 CLAIMABLE_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING')
@@ -97,17 +106,18 @@ class _Repo:
         """
         limit = limit or _batch_limit()
         sql = (
-            "SELECT id, request_id, item_id, coil_id, lot_id, siteRef, item, lot, quantity, um, "
-            "       warehouse, from_location, to_location, reasoncode, unitcode1, "
+            "SELECT id, request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, "
+            "       warehouse, from_location, to_location, reasoncode, account, unitcode1, "
             "       documentnumber, status, retry_count, traceid "
             "FROM kr_csi_interface "
-            "WHERE api_name = %s AND is_sync = 0 AND status IN ('PENDING','QUEUED','SUBMITTING') "
+            "WHERE api_name IN (%s, %s, %s) AND is_sync = 0 "
+            "  AND status IN ('PENDING','QUEUED','SUBMITTING') "
             "  AND (last_poll_at IS NULL OR last_poll_at < NOW() - INTERVAL %s SECOND) "
             "ORDER BY id LIMIT %s"
         )
         cur = self._cursor()
         try:
-            cur.execute(sql, (API_QTY_MOVE, _stale_seconds(), limit))
+            cur.execute(sql, tuple(SUPPORTED_APIS) + (_stale_seconds(), limit))
             return list(cur.fetchall())
         finally:
             cur.close()
@@ -172,8 +182,14 @@ def _retry_trace_id(row):
 # ====================================================================== #
 #  HTTP 提交与响应判定
 # ====================================================================== #
-def _submit_url():
-    return Config.CSI_SYTELINE_API_BASE.rstrip('/') + '/' + API_QTY_MOVE
+def _row_api(row):
+    """取该行的接口名；历史行未带 api_name 时按 sl-qty-move 处理（向后兼容）"""
+    api = str(row.get('api_name') or '').strip()
+    return api or API_QTY_MOVE
+
+
+def _submit_url(api_name=API_QTY_MOVE):
+    return Config.CSI_SYTELINE_API_BASE.rstrip('/') + '/' + api_name
 
 
 def _headers():
@@ -195,18 +211,31 @@ def _quantity(value):
 
 
 def _build_payload(row):
-    return {
+    """按行 api_name 组装请求体。
+
+    sl-qty-move：库位转移契约（fromLocation/toLocation/reasonCode，无 account/location）
+    sl-misc-*：杂项收发契约（location=实际库位、account、lot，无 from/to）
+    """
+    payload = {
         'traceId': row.get('traceid'),
         'site': str(row.get('siteRef') or '').strip(),
         'documentNumber': row.get('documentnumber'),
         'item': (row.get('item') or '').strip(),
         'quantity': _quantity(row.get('quantity')),
         'warehouse': (row.get('warehouse') or '').strip(),
-        'fromLocation': (row.get('from_location') or '').strip(),
-        'toLocation': (row.get('to_location') or Config.CSI_TO_LOCATION).strip(),
-        'lot': (row.get('lot') or '').strip(),
-        'reasonCode': (row.get('reasoncode') or Config.CSI_REASON_CODE).strip(),
     }
+    if _row_api(row) in MISC_APIS:
+        payload['location'] = (row.get('to_location') or '').strip()
+        payload['reasonCode'] = (row.get('reasoncode') or '').strip()
+        payload['account'] = (row.get('account') or '').strip()
+        payload['lot'] = (row.get('lot') or '').strip()
+        return payload
+
+    payload['fromLocation'] = (row.get('from_location') or '').strip()
+    payload['toLocation'] = (row.get('to_location') or Config.CSI_TO_LOCATION).strip()
+    payload['lot'] = (row.get('lot') or '').strip()
+    payload['reasonCode'] = (row.get('reasoncode') or Config.CSI_REASON_CODE).strip()
+    return payload
 
 
 def _resp_json(resp):
@@ -316,9 +345,9 @@ def _classify(resp):
             'reason': f'未知 data.status={status!r}'}
 
 
-def _submit_and_poll(payload, sleep_func=time.sleep):
+def _submit_and_poll(payload, api_name=API_QTY_MOVE, sleep_func=time.sleep):
     """提交并按 5s 间隔用同一 traceId 轮询至终态。"""
-    url = _submit_url()
+    url = _submit_url(api_name)
     headers = _headers()
     attempts = _poll_attempts()
 
@@ -343,9 +372,9 @@ def _submit_and_poll(payload, sleep_func=time.sleep):
 
 
 # ====================================================================== #
-#  from_location 补值
+#  库位补值（qty-move 补 from_location / misc 补 to_location）
 # ====================================================================== #
-def _lookup_from_location(row):
+def _lookup_lot_location(row):
     """查该 Lot 在 CSI 的实际库位；取不到返回 None"""
     siteref = str(row.get('siteRef') or '').strip() or '410'
     item = (row.get('item') or '').strip()
@@ -400,25 +429,44 @@ def _fail(repo, row, reason, stats):
     _send_failure_alert(row, retry, reason)
 
 
+_API_LABELS = {
+    API_QTY_MOVE: '库位转移',
+    API_MISC_RECEIPT: '盘盈杂项收入',
+    API_MISC_ISSUE: '盘亏杂项发出',
+}
+
+
 def _send_failure_alert(row, retry, reason):
     """发人工处理邮件；发送失败只记日志，不影响主流程"""
+    api = _row_api(row)
+    api_label = _API_LABELS.get(api, '交易')
     request_id = row.get('request_id')
-    subject = f'[物料看板] CSI同步失败需人工处理 - 单号{request_id}'
+    doc_no = (row.get('documentnumber') or '').strip()
+    # 盘点差异行的 request_id 为 NULL，用 CSI 单号标识
+    subject_key = f'单号{request_id}' if request_id not in (None, '') else f'单号{doc_no}'
+    subject = f'[物料看板] CSI同步失败需人工处理（{api}）- {subject_key}'
     now = time.strftime('%Y-%m-%d %H:%M:%S')
 
     cells = [
-        ('申请单号', request_id),
+        ('接口', api),
+        ('申请单号', request_id if request_id not in (None, '') else '（盘点差异调整）'),
         ('站点', row.get('siteRef')),
         ('物料号', row.get('item')),
         ('批号', row.get('lot')),
         ('数量', row.get('quantity')),
         ('单位', row.get('um') or row.get('unitcode1')),
-        ('失败单号', row.get('documentnumber')),
+        ('失败单号', doc_no),
         ('traceId', row.get('traceid')),
         ('失败次数', retry),
-        ('仓库 / 库位', f"{row.get('warehouse') or ''} / {row.get('from_location') or ''} → {row.get('to_location') or ''}"),
-        ('时间', now),
     ]
+    if api in MISC_APIS:
+        cells.append(('仓库 / 库位', f"{row.get('warehouse') or ''} / {row.get('to_location') or ''}"))
+        cells.append(('原因码 / 科目', f"{row.get('reasoncode') or ''} / {row.get('account') or ''}"))
+    else:
+        cells.append(('仓库 / 库位',
+                      f"{row.get('warehouse') or ''} / {row.get('from_location') or ''} → {row.get('to_location') or ''}"))
+    cells.append(('时间', now))
+
     rows_html = ''.join(
         f'<tr><td style="padding:6px 10px;border:1px solid #e8e8e8;background:#fafafa;'
         f'white-space:nowrap;">{html.escape(str(k))}</td>'
@@ -428,7 +476,7 @@ def _send_failure_alert(row, retry, reason):
 
     body = f"""
     <div style="max-width:640px;margin:0 auto;font-family:Arial,sans-serif;padding:16px;">
-      <p>CSI 库位转移（sl-qty-move）自动同步失败，已停止自动重试，请人工处理。</p>
+      <p>CSI {api_label}（{api}）自动同步失败，已停止自动重试，请人工处理。</p>
       <table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;">{rows_html}</table>
       <p style="color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
       <p>已自动重试 3 次仍失败（单据号保持不变，仅更换 traceId），已停止自动重试，请人工在宝鼎平台重新发送或核对数据。</p>
@@ -446,15 +494,26 @@ def _send_failure_alert(row, retry, reason):
 # ====================================================================== #
 def _process_row(repo, row, stats, sleep_func):
     row_id = row.get('id')
+    api = _row_api(row)
 
     if not repo.claim(row_id):
         stats['skipped'] += 1
         return
     stats['claimed'] += 1
 
-    # 1. 补 from_location：A/B 料行入队时该列为空，需查 Lot 在 CSI 的实际库位
-    if not (row.get('from_location') or '').strip():
-        loc = _lookup_from_location(row)
+    # 1. 库位补值
+    #    sl-qty-move：A/B 料行入队时 from_location 为空，需查 Lot 在 CSI 的实际库位
+    #    sl-misc-*：location 取 to_location（盘点调整入库时已定位），为空则查库位回写
+    if api in MISC_APIS:
+        if not (row.get('to_location') or '').strip():
+            loc = _lookup_lot_location(row)
+            if not loc:
+                _fail(repo, row, '无法获取 Lot 库位', stats)
+                return
+            row['to_location'] = loc
+            repo.update(row_id, to_location=loc)
+    elif not (row.get('from_location') or '').strip():
+        loc = _lookup_lot_location(row)
         if not loc:
             _fail(repo, row, '无法获取 Lot 库位', stats)
             return
@@ -472,31 +531,35 @@ def _process_row(repo, row, stats, sleep_func):
     if not (row.get('traceid') or '').strip() or not (row.get('documentnumber') or '').strip():
         _fail(repo, row, '缺少 traceId 或 documentNumber', stats)
         return
+    # misc 接口 account 必填，不做默认值猜测
+    if api in MISC_APIS and not (row.get('account') or '').strip():
+        _fail(repo, row, f'{api} 缺少 account（必填），请在接口表补齐后重投', stats)
+        return
 
     # 3. 提交并轮询
-    result = _submit_and_poll(_build_payload(row), sleep_func=sleep_func)
+    result = _submit_and_poll(_build_payload(row), api_name=api, sleep_func=sleep_func)
     kind = result['kind']
 
     if kind == 'success':
         repo.update(row_id, is_sync=1, status='SUCCESS', errormessage=None)
         stats['success'] += 1
-        logger.info('CSI 同步成功 id=%s request=%s doc=%s', row_id, row.get('request_id'),
-                    row.get('documentnumber'))
+        logger.info('CSI 同步成功 id=%s api=%s request=%s doc=%s', row_id, api,
+                    row.get('request_id'), row.get('documentnumber'))
 
     elif kind == 'pending':
         # 未到终态：保留 last_poll_at=抢占时刻，下一轮（≥45s）同 traceId 继续轮询
         repo.update(row_id, status=result.get('status') or 'QUEUED', errormessage=None)
         stats['queued'] += 1
-        logger.info('CSI 同步未到终态 id=%s request=%s status=%s，下一轮继续轮询',
-                    row_id, row.get('request_id'), result.get('status'))
+        logger.info('CSI 同步未到终态 id=%s api=%s request=%s status=%s，下一轮继续轮询',
+                    row_id, api, row.get('request_id'), result.get('status'))
 
     elif kind == 'transient':
         # 网络/服务端异常：不计 retry，保留 SUBMITTING 与抢占时的 last_poll_at=NOW()，
         # 45s 后下一轮会重新选中（避免短时间内高频重试）
         repo.update(row_id, errormessage=(result.get('reason') or '')[:MAX_ERR_LEN])
         stats['transient'] += 1
-        logger.warning('CSI 同步暂时失败（不计重试）id=%s request=%s 原因=%s',
-                       row_id, row.get('request_id'), result.get('reason'))
+        logger.warning('CSI 同步暂时失败（不计重试）id=%s api=%s request=%s 原因=%s',
+                       row_id, api, row.get('request_id'), result.get('reason'))
 
     else:  # failed
         _fail(repo, row, result.get('reason'), stats)

@@ -7,6 +7,7 @@
   3. HTTP 409 CONFLICT → 单号不变、只换 traceId
   4. 连续 3 次失败 → is_sync=2/FAILED_MANUAL + 邮件一次，之后不再被扫描，单号全程不变
   5. from_location 为空 → 查 CSI 库位补值
+  5b. sl-misc-receipt / sl-misc-issue（盘点差异调整）：按行 api_name 组装 location/account 契约
   6. 并发抢占 → 同一行只提交一次
   7. 真实库：2967/2973 两条 PENDING 行能被选中；条件 UPDATE 具备抢占语义
 
@@ -75,6 +76,22 @@ def _row(**over):
         'reasoncode': 'C1N', 'unitcode1': 'FT', 'documentnumber': 'MP2967',
         'status': 'PENDING', 'retry_count': 0, 'traceid': 'MP2967-261016004-ce830e42a267',
         'is_sync': 0, 'last_poll_at': None,
+    }
+    base.update(over)
+    return base
+
+
+def _misc_row(**over):
+    """盘点差异调整写入的杂项收发行（api_count_adjust 的落库形态）"""
+    base = {
+        'id': 2, 'request_id': None, 'item_id': 8801, 'coil_id': '261017001', 'lot_id': None,
+        'api_name': w.API_MISC_RECEIPT, 'siteRef': 410, 'item': 'A000871',
+        'lot': '202510210000006', 'quantity': 12.5, 'um': 'KG', 'warehouse': 'M1M1',
+        'from_location': None, 'to_location': 'C-03-02', 'reasoncode': 'CC',
+        'account': '505100', 'unitcode1': None, 'unitcode2': None,
+        'documentnumber': 'INV260001001', 'line_seq': 1, 'direction': 'F',
+        'status': 'PENDING', 'retry_count': 0,
+        'traceid': 'INV260001001-261017001-1a2b3c4d5e6f', 'is_sync': 0, 'last_poll_at': None,
     }
     base.update(over)
     return base
@@ -350,6 +367,170 @@ class TestFromLocation:
         assert row['retry_count'] == 1
         assert row['errormessage'] == '无法获取 Lot 库位'
         assert row['is_sync'] == 0
+
+
+# ====================================================================== #
+#  5b. 杂项收发（盘点差异调整）：sl-misc-receipt / sl-misc-issue
+# ====================================================================== #
+class TestMiscReceiptAndIssue:
+    def test_receipt_payload_and_url(self):
+        """盘盈行 → location/reasonCode/account/lot 契约，QUEUED→SUCCESS"""
+        repo = FakeRepo([_misc_row()])
+        responses = [_resp(200, _queued('QUEUED')),
+                     _resp(200, _ok('SUCCESS', {'Success': True, 'Message': 'ok'}))]
+        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post:
+            stats = _run(repo)
+
+        assert post.call_count == 2
+        assert post.call_args.args[0].endswith('/api/cmd/sl-misc-receipt')
+        # 同一 traceId 轮询
+        assert {c.kwargs['json']['traceId'] for c in post.call_args_list} == \
+               {'INV260001001-261017001-1a2b3c4d5e6f'}
+        body = post.call_args.kwargs['json']
+        assert body == {
+            'traceId': 'INV260001001-261017001-1a2b3c4d5e6f',
+            'site': '410',
+            'documentNumber': 'INV260001001',
+            'item': 'A000871',
+            'quantity': 12.5,
+            'warehouse': 'M1M1',
+            'location': 'C-03-02',
+            'reasonCode': 'CC',
+            'account': '505100',
+            'lot': '202510210000006',
+        }
+        # 不得混入库位转移字段
+        assert 'fromLocation' not in body and 'toLocation' not in body
+        assert 'unitcode1' not in body and 'um' not in body
+
+        row = repo.row(2)
+        assert row['is_sync'] == 1 and row['status'] == 'SUCCESS'
+        assert row['errormessage'] is None
+        assert stats['success'] == 1
+
+    def test_issue_payload_and_url(self):
+        """盘亏行 → sl-misc-issue 端点，其余契约相同"""
+        repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE)])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            stats = _run(repo)
+
+        assert post.call_args.args[0].endswith('/api/cmd/sl-misc-issue')
+        assert post.call_args.kwargs['json'] == {
+            'traceId': 'INV260001001-261017001-1a2b3c4d5e6f',
+            'site': '410',
+            'documentNumber': 'INV260001001',
+            'item': 'A000871',
+            'quantity': 12.5,
+            'warehouse': 'M1M1',
+            'location': 'C-03-02',
+            'reasonCode': 'CC',
+            'account': '505100',
+            'lot': '202510210000006',
+        }
+        assert repo.row(2)['is_sync'] == 1
+        assert stats['success'] == 1
+
+    def test_qty_move_regression_unchanged(self):
+        """回归：sl-qty-move 端点与字段集合保持不变（无 account/location）"""
+        repo = FakeRepo([_row()])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            _run(repo)
+
+        assert post.call_args.args[0].endswith('/api/cmd/sl-qty-move')
+        body = post.call_args.kwargs['json']
+        assert set(body) == {'traceId', 'site', 'documentNumber', 'item', 'quantity',
+                             'warehouse', 'fromLocation', 'toLocation', 'lot', 'reasonCode'}
+        assert body['fromLocation'] == 'A-01-01' and body['toLocation'] == 'Floor-Core'
+
+    def test_empty_location_looked_up_and_written_back(self):
+        """location 为空 → 查 CSI 库位补值并写回 to_location"""
+        repo = FakeRepo([_misc_row(to_location=None)])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'C-09-09'
+            _run(repo)
+
+        client_cls.return_value.get_lot_location.assert_called_once_with('A000871', '202510210000006')
+        assert post.call_args.kwargs['json']['location'] == 'C-09-09'
+        assert repo.row(2)['to_location'] == 'C-09-09'
+        assert repo.row(2)['is_sync'] == 1
+
+    def test_location_lookup_failure_counts_as_retry(self):
+        """库位补不到 → 不提交、retry_count+1"""
+        repo = FakeRepo([_misc_row(to_location='')])
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = None
+            _run(repo)
+
+        post.assert_not_called()
+        row = repo.row(2)
+        assert row['retry_count'] == 1
+        assert row['errormessage'] == '无法获取 Lot 库位'
+        assert row['is_sync'] == 0
+
+    def test_empty_account_blocks_request_then_manual_with_email(self):
+        """account 为空 → 不发请求，3 次后 FAILED_MANUAL，邮件含接口名"""
+        repo = FakeRepo([_misc_row(account=None)])
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email') as mail:
+            _run(repo)
+            assert repo.row(2)['retry_count'] == 1
+            assert repo.row(2)['is_sync'] == 0
+            assert mail.call_count == 0
+
+            _run(repo)
+            assert repo.row(2)['retry_count'] == 2
+            assert mail.call_count == 0
+
+            stats = _run(repo)
+
+        post.assert_not_called()          # account 必填，绝不发必然失败的请求
+        row = repo.row(2)
+        assert row['retry_count'] == 3
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert 'account' in row['errormessage']
+        assert stats['manual'] == 1
+
+        assert mail.call_count == 1
+        to_email, subject, body = mail.call_args.args
+        assert to_email == 'jason.pang@nai-group.com'
+        assert 'sl-misc-receipt' in subject       # 主题可辨接口
+        assert 'sl-misc-receipt' in body          # 正文含接口名
+        assert 'INV260001001' in body             # request_id 为空时用单号标识
+        assert 'account' in body
+        assert '已停止自动重试' in body
+
+        # 转人工后不再被扫描
+        assert repo.fetch_candidates() == []
+
+    def test_failed_response_retries_new_trace_same_document(self):
+        """FAILED（data.error）→ 换 traceId、单号不变"""
+        repo = FakeRepo([_misc_row()])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _failed('科目 505100 无效'))):
+            _run(repo)
+
+        row = repo.row(2)
+        assert row['retry_count'] == 1
+        assert row['documentnumber'] == 'INV260001001'
+        assert row['traceid'] != 'INV260001001-261017001-1a2b3c4d5e6f'
+        assert row['traceid'].startswith('INV260001001-261017001-')
+        assert '科目 505100 无效' in row['errormessage']
+        assert row['is_sync'] == 0 and row['status'] == 'PENDING'
+
+    def test_misc_success_with_ion_list(self):
+        """ion 为数组且全部 Success → 判定成功"""
+        repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE)])
+        ion = [{'Success': True, 'Message': 'a'}, {'Success': True, 'Message': 'b'}]
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', ion))):
+            stats = _run(repo)
+        assert repo.row(2)['is_sync'] == 1
+        assert stats['success'] == 1
 
 
 # ====================================================================== #
