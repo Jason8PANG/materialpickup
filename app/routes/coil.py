@@ -140,6 +140,7 @@ def _add_log(cursor, request_id, operator, action, detail, ip):
 
 def _coil_to_dict(row):
     d = dict(row)
+    d.setdefault('loc', None)  # Lot 所在库位（迁移前/旧数据为 NULL）
     d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status'))
     d['coil_length'] = float(d['coil_length']) if d.get('coil_length') is not None else None
     d['created_at'] = str(d['created_at']) if d.get('created_at') else None
@@ -179,8 +180,20 @@ def _gen_next_id(cursor, d: datetime) -> str:
 # 进程内单位缓存：{(siteref, part_number): (unit, fetched_at)}，TTL 30 分钟
 _unit_cache = {}
 _UNIT_TTL = 30 * 60
+# 进程内 Lot 库位缓存：{(siteref, part_number, lot_no): (loc, fetched_at)}，TTL 30 分钟
+_loc_cache = {}
+_LOC_TTL = 30 * 60
 # 进程内共享 CSIClient 实例（按 siteref）：复用 OAuth2 token，避免每次 new 重复获取
 _csi_clients = {}
+
+
+def _get_csi_client(siteref):
+    """共享 CSIClient 实例（复用 OAuth2 token）"""
+    client = _csi_clients.get(siteref)
+    if client is None:
+        client = CSIClient(siteref=siteref)
+        _csi_clients[siteref] = client
+    return client
 
 
 def _get_unit_cached(siteref: str, part_number: str):
@@ -191,16 +204,35 @@ def _get_unit_cached(siteref: str, part_number: str):
     if cached and now - cached[1] < _UNIT_TTL:
         return cached[0]
     try:
-        client = _csi_clients.get(siteref)
-        if client is None:
-            client = CSIClient(siteref=siteref)
-            _csi_clients[siteref] = client
-        unit = client.get_item_unit(part_number)
+        unit = _get_csi_client(siteref).get_item_unit(part_number)
     except Exception as e:
         print(f"[COIL] get_item_unit error for {part_number}: {e}")
         unit = None
     _unit_cache[key] = (unit, now)
     return unit
+
+
+def _get_lot_loc_cached(siteref: str, part_number: str, lot_no: str):
+    """进程内缓存 + CSI 查询 Lot 所在库位；失败返回 None（不阻断录入）
+
+    卷标/批次维护时把 Lot 实际库位持久化到 kr_wire_coil.loc / kr_request_item_lot.loc，
+    完成备料写接口表时直接作为 from_location，避免同步器再查 CSI。
+    """
+    if not part_number or not lot_no:
+        return None
+    key = (siteref, part_number, lot_no)
+    now = time.time()
+    cached = _loc_cache.get(key)
+    if cached and now - cached[1] < _LOC_TTL:
+        return cached[0]
+    try:
+        loc = _get_csi_client(siteref).get_lot_location(part_number, lot_no)
+    except Exception as e:
+        print(f"[COIL] get_lot_location error for {part_number}/{lot_no}: {e}")
+        loc = None
+    loc = (loc or '').strip() or None
+    _loc_cache[key] = (loc, now)
+    return loc
 
 
 # ================= 1. 卷号生成 =================
@@ -295,6 +327,7 @@ def validate_lot():
         'item': lot_info['item'],
         'lot_status': lot_info['lot_status'],
         'whse': lot_info['whse'],
+        'loc': lot_info.get('loc'),
         'der_qty_on_hand': der_qty,
         'unit': unit,
     }
@@ -445,6 +478,8 @@ def create_coils(request_id):
                 'unit': str(it.get('unit') or '').strip(),
                 'lot_no': str(it.get('lot_no') or '').strip() or None,
                 'item_id': item_id,
+                # Lot 所在库位：前端可选传入，未传时写库阶段查 CSI 兜底
+                'loc': str(it.get('loc') or '').strip() or None,
                 # 期初半卷：仅接受 1/true/yes 为是，其余（含字符串 "0"/false/空）为否
                 'is_initial_half': 1 if str(it.get('is_initial_half') or '').lower() in ('1', 'true', 'yes') else 0,
             })
@@ -498,6 +533,8 @@ def create_coils(request_id):
         inserted = []
         warnings = []
         now = datetime.now()
+        # 同批提交内 (part_number, lot_no) -> loc，命中即复用，只有首次未传 loc 时查 CSI
+        loc_cache = {}
         # 单位优先读申请单发起时保存的 kr_request_item.unit（不连 CSI），空则兜底查 CSI
         item_unit_map = {}
         try:
@@ -519,6 +556,15 @@ def create_coils(request_id):
                     warnings.append(f"物料 {it['part_number']} 单位获取失败，已留空（可稍后打印时确认）")
                 it['unit'] = unit or None
 
+                # 库位：请求显式传值优先；未传且 Lot 非空时查 CSI 兜底（查询失败写 NULL，不阻断）
+                loc = it.get('loc')
+                if not loc and it.get('lot_no'):
+                    loc_key = (it['part_number'], it['lot_no'])
+                    if loc_key not in loc_cache:
+                        loc_cache[loc_key] = _get_lot_loc_cached(siteref, *loc_key)
+                    loc = loc_cache[loc_key]
+                it['loc'] = loc
+
                 ok, new_id, err_msg = _insert_coil_with_retry(
                     cursor, it, request_id, siteref, operator, now
                 )
@@ -532,6 +578,8 @@ def create_coils(request_id):
                     'part_number': it['part_number'],
                     'length': it['length'],
                     'unit': it['unit'],
+                    'lot_no': it.get('lot_no'),
+                    'loc': it.get('loc'),
                     'status': 'in_stock',
                     'item_id': it.get('item_id'),
                     'is_initial_half': 1 if it.get('is_initial_half') else 0,
@@ -564,11 +612,11 @@ def _insert_coil_with_retry(cursor, it, request_id, siteref, operator, now, max_
         try:
             cursor.execute(
                 """INSERT INTO kr_wire_coil
-                   (coil_id, part_number, lot_no, coil_length, unit, status, request_id, siteref, operator, item_id, is_initial_half, remark, created_at)
-                   VALUES (%s, %s, %s, %s, %s, 'in_stock', %s, %s, %s, %s, %s, %s, %s)""",
+                   (coil_id, part_number, lot_no, coil_length, unit, status, request_id, siteref, operator, item_id, is_initial_half, loc, remark, created_at)
+                   VALUES (%s, %s, %s, %s, %s, 'in_stock', %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (it['coil_id'], it['part_number'], it.get('lot_no'), it['length'], it['unit'],
                  request_id, siteref, operator, it.get('item_id'), 1 if it.get('is_initial_half') else 0,
-                 it.get('remark'), now)
+                 it.get('loc'), it.get('remark'), now)
             )
             return True, cursor.lastrowid, None
         except IntegrityError as e:
@@ -763,7 +811,8 @@ def update_coil(coil_id):
       4. 改长度时：若该卷已有任何消耗记录（SUM(out_length)>0，单位 mm），
          须满足 新长度(原始单位) × 换算系数 ≥ 已消耗(mm)；换算系数缺失则拒绝并提示联系管理员；
          无消耗时任意 >0 长度放行。
-    参数：lot_no（空串=清空）/ coil_length（>0）可只传其一。
+    参数：lot_no（空串=清空）/ coil_length（>0）/ loc（空串=清空）可只传其一。
+    未传 loc 时：Lot 变化、或原库位为空且 Lot 非空 → 自动查 CSI Lot 库位并保存。
     """
     user, err_resp, err_code = _check_warehouse_or_admin()
     if err_resp:
@@ -788,8 +837,12 @@ def update_coil(coil_id):
         if length_new <= 0:
             return jsonify({'success': False, 'message': '长度必须大于0'}), 400
 
-    if not has_lot and not has_len:
-        return jsonify({'success': False, 'message': '没有需要修改的字段（lot_no / coil_length）'}), 400
+    # loc：可传空串清空；未传时按 Lot 变化/原库位为空自动补查
+    has_loc = data.get('loc') is not None
+    loc_new = (str(data.get('loc')).strip() or None) if has_loc else None
+
+    if not has_lot and not has_len and not has_loc:
+        return jsonify({'success': False, 'message': '没有需要修改的字段（lot_no / coil_length / loc）'}), 400
 
     try:
         with get_db_connection() as db:
@@ -846,6 +899,21 @@ def update_coil(coil_id):
                             'message': f"卷标 {coil['coil_id']} 新长度 {length_new:g}{unit} 小于已消耗长度 {used / factor:g}{unit}，无法修改"
                         }), 400
 
+            # 库位：请求显式传值优先；未传时 Lot 变化 / 原库位为空且 Lot 非空 → 补查 CSI
+            loc_update = has_loc
+            if not has_loc:
+                if has_lot and not lot_new:
+                    # Lot 被清空，库位一并清空
+                    loc_new = None
+                    loc_update = True
+                else:
+                    effective_lot = lot_new if has_lot else ((coil.get('lot_no') or '').strip() or None)
+                    old_lot = (coil.get('lot_no') or '').strip() or None
+                    lot_changed = has_lot and lot_new != old_lot
+                    if effective_lot and (lot_changed or not (coil.get('loc') or '').strip()):
+                        loc_new = _get_lot_loc_cached(req['siteref'], coil['part_number'], effective_lot)
+                        loc_update = True
+
             # 仅更新传入字段
             updates, params = [], []
             if has_lot:
@@ -854,6 +922,9 @@ def update_coil(coil_id):
             if has_len:
                 updates.append("coil_length = %s")
                 params.append(length_new)
+            if loc_update:
+                updates.append("loc = %s")
+                params.append(loc_new)
             params.append(coil_id)
             cursor.execute(
                 f"UPDATE kr_wire_coil SET {', '.join(updates)}, updated_at = NOW() "
@@ -872,6 +943,9 @@ def update_coil(coil_id):
             if has_len:
                 old_len = float(coil['coil_length']) if coil.get('coil_length') is not None else None
                 changes.append(f"长度 {old_len}→{length_new}")
+            if loc_update:
+                old_loc = (coil.get('loc') or '').strip() or None
+                changes.append(f"库位 {old_loc or '空'}→{loc_new or '空'}")
             _add_log(cursor, coil['request_id'], user['username'], 'COIL_UPDATE',
                      f"修改卷标 {coil['coil_id']}: " + ", ".join(changes), request.remote_addr)
             db.commit()

@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify, session
 from datetime import datetime
 from app.models import get_db_connection, get_site_filter
 from app.services.csi_interface import enqueue_qty_move
+from app.services.csi_service import CSIClient
 from app.utils import WhereBuilder, is_en
 
 warehouse_bp = Blueprint('warehouse', __name__)
@@ -515,15 +516,28 @@ def _parse_lot_payload(data):
     return lot_no, round(qty, 2), None
 
 
+def _resolve_lot_loc(siteref, part_number, lot_no):
+    """查询 Lot 所在库位（CSI）；查询失败返回 None，不阻断批次维护"""
+    if not part_number or not lot_no:
+        return None
+    try:
+        loc = CSIClient(siteref or '410').get_lot_location(part_number, lot_no)
+        return (loc or '').strip() or None
+    except Exception as e:
+        logger.warning('批次维护：查询 Lot 库位失败 item=%s lot=%s: %s', part_number, lot_no, e)
+        return None
+
+
 def _lots_payload(cursor, request_id, item_id, item):
     """读取某明细行的批次列表并计算合计/缺量提示"""
     cursor.execute(
-        "SELECT id, lot_no, qty FROM kr_request_item_lot "
+        "SELECT id, lot_no, qty, loc FROM kr_request_item_lot "
         "WHERE request_id = %s AND item_id = %s ORDER BY id",
         (request_id, item_id)
     )
     rows = cursor.fetchall()
-    data = [{'id': r['id'], 'lot_no': r['lot_no'], 'qty': float(r['qty'])} for r in rows]
+    data = [{'id': r['id'], 'lot_no': r['lot_no'], 'qty': float(r['qty']),
+             'loc': r.get('loc')} for r in rows]
     total_qty = round(sum(r['qty'] for r in data), 2)
     item_quantity = float(item['quantity'] or 0)
     return {
@@ -565,6 +579,8 @@ def create_item_lot(request_id, item_id):
     lot_no, qty, bad = _parse_lot_payload(data)
     if bad:
         return bad, 400
+    # Lot 所在库位：请求可显式传；未传则由 CSI 兜底
+    loc = str(data.get('loc') or '').strip() or None
 
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -573,10 +589,13 @@ def create_item_lot(request_id, item_id):
             cursor.close()
             return err[0], err[1]
 
+        if not loc:
+            loc = _resolve_lot_loc(req['siteref'], item['part_number'], lot_no)
+
         cursor.execute(
-            "INSERT INTO kr_request_item_lot (request_id, item_id, lot_no, qty, siteref) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (request_id, item_id, lot_no, qty, req['siteref'])
+            "INSERT INTO kr_request_item_lot (request_id, item_id, lot_no, qty, siteref, loc) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (request_id, item_id, lot_no, qty, req['siteref'], loc)
         )
         new_id = cursor.lastrowid
         add_log(cursor, request_id, user['username'], 'ITEM_LOT_ADD',
@@ -602,6 +621,9 @@ def update_item_lot(request_id, item_id, lot_id):
     lot_no, qty, bad = _parse_lot_payload(data)
     if bad:
         return bad, 400
+    # loc：可显式传（空串=清空）；未传且批号非空时自动补查
+    has_loc = data.get('loc') is not None
+    loc_new = (str(data.get('loc')).strip() or None) if has_loc else None
 
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -611,18 +633,25 @@ def update_item_lot(request_id, item_id, lot_id):
             return err[0], err[1]
 
         cursor.execute(
-            "SELECT id FROM kr_request_item_lot "
+            "SELECT id, lot_no, loc FROM kr_request_item_lot "
             "WHERE id = %s AND request_id = %s AND item_id = %s",
             (lot_id, request_id, item_id)
         )
-        if not cursor.fetchone():
+        lot_row = cursor.fetchone()
+        if not lot_row:
             cursor.close()
             return jsonify({'success': False, 'message': '批次记录不存在'}), 404
 
+        if not has_loc:
+            old_lot = (lot_row.get('lot_no') or '').strip() or None
+            lot_changed = lot_no != old_lot
+            if lot_no and (lot_changed or not (lot_row.get('loc') or '').strip()):
+                loc_new = _resolve_lot_loc(req['siteref'], item['part_number'], lot_no)
+
         cursor.execute(
-            "UPDATE kr_request_item_lot SET lot_no = %s, qty = %s "
+            "UPDATE kr_request_item_lot SET lot_no = %s, qty = %s, loc = %s "
             "WHERE id = %s AND request_id = %s AND item_id = %s",
-            (lot_no, qty, lot_id, request_id, item_id)
+            (lot_no, qty, loc_new, lot_id, request_id, item_id)
         )
 
         add_log(cursor, request_id, user['username'], 'ITEM_LOT_EDIT',

@@ -96,7 +96,7 @@ class _Repo:
         """
         limit = limit or _batch_limit()
         sql = (
-            "SELECT id, request_id, item_id, coil_id, lot_id, siteRef, item, lot, quantity, "
+            "SELECT id, request_id, item_id, coil_id, lot_id, siteRef, item, lot, quantity, um, "
             "       warehouse, from_location, to_location, reasoncode, unitcode1, "
             "       documentnumber, status, retry_count, traceid "
             "FROM kr_csi_interface "
@@ -411,7 +411,7 @@ def _send_failure_alert(row, retry, reason):
         ('物料号', row.get('item')),
         ('批号', row.get('lot')),
         ('数量', row.get('quantity')),
-        ('单位', row.get('unitcode1')),
+        ('单位', row.get('um') or row.get('unitcode1')),
         ('失败单号', row.get('documentnumber')),
         ('traceId', row.get('traceid')),
         ('失败次数', retry),

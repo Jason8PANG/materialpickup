@@ -40,7 +40,7 @@ def _traceid(request_id, key):
 def _coil_rows(cursor, request_id, item):
     """A/B 料：每个卷标一行"""
     cursor.execute(
-        "SELECT coil_id, lot_no, coil_length, unit FROM kr_wire_coil "
+        "SELECT coil_id, lot_no, coil_length, unit, loc FROM kr_wire_coil "
         "WHERE request_id = %s AND item_id = %s AND is_deleted = 0 ORDER BY id",
         (request_id, item['id'])
     )
@@ -53,10 +53,13 @@ def _coil_rows(cursor, request_id, item):
             'item': item.get('part_number'),
             'lot': coil.get('lot_no'),
             'quantity': coil.get('coil_length'),
-            'unitcode1': coil.get('unit') or item.get('unit'),
+            # um 才是计量单位；unitcode1/unitcode2 是 account 的 unit code，保持 NULL
+            'um': coil.get('unit') or item.get('unit'),
             'coil_id': coil_id,
             'lot_id': None,
             'item_id': item['id'],
+            # 卷标维护时已持久化 Lot 所在库位；为空则交给同步器兜底
+            'from_location': coil.get('loc'),
         })
     return rows
 
@@ -64,7 +67,7 @@ def _coil_rows(cursor, request_id, item):
 def _lot_rows(cursor, request_id, item):
     """非 A/B 料：每个批次分配一行"""
     cursor.execute(
-        "SELECT id, lot_no, qty FROM kr_request_item_lot "
+        "SELECT id, lot_no, qty, loc FROM kr_request_item_lot "
         "WHERE request_id = %s AND item_id = %s ORDER BY id",
         (request_id, item['id'])
     )
@@ -79,10 +82,11 @@ def _lot_rows(cursor, request_id, item):
             'item': item.get('part_number'),
             'lot': lot_no,
             'quantity': lot.get('qty'),
-            'unitcode1': item.get('unit'),
+            'um': item.get('unit'),
             'coil_id': None,
             'lot_id': lot['id'],
             'item_id': item['id'],
+            'from_location': lot.get('loc'),
         })
     if not lot_records:
         logger.warning(
@@ -146,16 +150,16 @@ def enqueue_qty_move(cursor, req, username, now=None):
         trace_key = row['coil_id'] or f"L{row['lot_id']}"
         cursor.execute(
             "INSERT INTO kr_csi_interface "
-            "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, "
-            " warehouse, from_location, to_location, reasoncode, unitcode1, documentnumber, "
+            "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, "
+            " warehouse, from_location, to_location, reasoncode, unitcode1, unitcode2, documentnumber, "
             " is_sync, status, retry_count, traceid, createdate, createby) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
             " 0, 'PENDING', 0, %s, %s, %s)",
             (
                 request_id, row['item_id'], row['coil_id'], row['lot_id'],
-                API_QTY_MOVE, int(siteref), row['item'], row['lot'], _num(row['quantity']),
-                Config.CSI_WAREHOUSE_MAP[siteref], None, Config.CSI_TO_LOCATION,
-                Config.CSI_REASON_CODE, row['unitcode1'], documentnumber,
+                API_QTY_MOVE, int(siteref), row['item'], row['lot'], _num(row['quantity']), row['um'],
+                Config.CSI_WAREHOUSE_MAP[siteref], row['from_location'], Config.CSI_TO_LOCATION,
+                Config.CSI_REASON_CODE, None, None, documentnumber,
                 _traceid(request_id, trace_key), now, username,
             )
         )

@@ -139,10 +139,12 @@ def _paging():
 
 
 SELECT_COLUMNS = (
-    'ci.id, ci.request_id, ci.siteref, ci.api_name, ci.item, ci.lot, ci.quantity, '
-    'ci.unitcode1, ci.warehouse, ci.from_location, ci.to_location, ci.reasoncode, '
-    'ci.documentnumber, ci.traceid, ci.is_sync, ci.status, ci.retry_count, '
-    'ci.errormessage, ci.createdate, ci.createby, ci.updatedate'
+    'ci.id, ci.api_name, ci.siteref, ci.item, ci.lot, ci.quantity, ci.um, ci.job, '
+    'ci.warehouse, ci.from_location, ci.to_location, ci.reasoncode, ci.account, '
+    'ci.unitcode1, ci.unitcode2, ci.documentnumber, ci.is_sync, ci.status, ci.traceid, '
+    'ci.errormessage, ci.createdate, ci.createby, ci.updatedate, ci.updateby, '
+    'ci.request_id, ci.item_id, ci.coil_id, ci.lot_id, ci.retry_count, ci.submitted_at, '
+    'ci.last_poll_at'
 )
 
 
@@ -152,7 +154,7 @@ def _to_dict(row):
     qty = d.get('quantity')
     if isinstance(qty, Decimal):
         d['quantity'] = float(qty)
-    for key in ('createdate', 'updatedate'):
+    for key in ('createdate', 'updatedate', 'submitted_at', 'last_poll_at'):
         val = d.get(key)
         if isinstance(val, datetime):
             d[key] = val.strftime('%Y-%m-%d %H:%M:%S')
@@ -276,7 +278,7 @@ def api_export():
     for r_idx, row in enumerate(rows, start=2):
         values = [
             row.get('request_id'), row.get('siteref'), row.get('api_name'),
-            row.get('item'), row.get('lot'), row.get('quantity'), row.get('unitcode1'),
+            row.get('item'), row.get('lot'), row.get('quantity'), row.get('um'),
             row.get('warehouse'), row.get('from_location'), row.get('to_location'),
             row.get('reasoncode'), row.get('documentnumber'), row.get('traceid'),
             SYNC_LABELS.get(row.get('is_sync'), row.get('is_sync')),

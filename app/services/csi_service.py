@@ -271,13 +271,32 @@ class CSIClient:
             logger.error(f"[CSI] get_item_unit error: {e}")
             return None
 
+    def _lot_loc_from_balances(self, item: str, lot: str) -> str | None:
+        """回退查询：ue_NAI_SLLotLocs 中该 Lot 有余额的库位（取数量最大者）"""
+        try:
+            filter_str = f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0"
+            records = self._get_ido("ue_NAI_SLLotLocs", filter_str=filter_str)
+            best_qty, best_loc = None, None
+            for r in records:
+                qty = float(r.get("QtyOnHand", 0) or 0)
+                loc = str(r.get("Loc", "") or "").strip()
+                if qty <= 0 or not loc:
+                    continue
+                if best_qty is None or qty > best_qty:
+                    best_qty, best_loc = qty, loc
+            return best_loc
+        except Exception as e:
+            logger.error(f"[CSI] _lot_loc_from_balances error: {e}")
+            return None
+
     def get_lot_info(self, item: str, lot: str) -> dict | None:
         """
         查询 SLLots（按 Item 过滤验证 Lot 号），返回 DerQtyOnHand（衍生可用数量）。
         用于卷标录入时验证 Lot 与长度：长度（mm）不得超过 DerQtyOnHand（×换算系数 → mm）。
         注意：SLLots 与 ue_GDL_SLItems 一样，带 properties 参数查询返回 0 条，
         因此这里**不带 properties 全字段查询**，从返回记录中取 DerQtyOnHand/QtyOnHand 等字段。
-        返回: {item, lot, der_qty_on_hand, qty_on_hand, lot_status, whse} 或 None（Lot 不存在/查询失败）
+        loc：SLLots.Loc 为空时回退 ue_NAI_SLLotLocs 取有余额库位（验证时即可带出库位）。
+        返回: {item, lot, der_qty_on_hand, qty_on_hand, lot_status, whse, loc} 或 None（Lot 不存在/查询失败）
         """
         try:
             filter_str = f"Item = N'{item}' And Lot = N'{lot}'"
@@ -285,6 +304,9 @@ class CSIClient:
             if not records:
                 return None
             r = records[0]
+            loc = str(r.get('Loc', '') or '').strip()
+            if not loc:
+                loc = self._lot_loc_from_balances(item, lot) or ''
             return {
                 'item': r.get('Item', item),
                 'lot': r.get('Lot', lot),
@@ -292,7 +314,7 @@ class CSIClient:
                 'qty_on_hand': float(r.get('QtyOnHand', 0) or 0),
                 'lot_status': str(r.get('LotStatus', '') or ''),
                 'whse': str(r.get('Whse', '') or ''),
-                'loc': str(r.get('Loc', '') or ''),
+                'loc': loc,
             }
         except Exception as e:
             logger.error(f"[CSI] get_lot_info error: {e}")
@@ -307,22 +329,7 @@ class CSIClient:
         info = self.get_lot_info(item, lot)
         if info and info.get('loc'):
             return info['loc']
-
-        try:
-            filter_str = f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0"
-            records = self._get_ido("ue_NAI_SLLotLocs", filter_str=filter_str)
-            best_qty, best_loc = None, None
-            for r in records:
-                qty = float(r.get("QtyOnHand", 0) or 0)
-                loc = str(r.get("Loc", "") or "").strip()
-                if qty <= 0 or not loc:
-                    continue
-                if best_qty is None or qty > best_qty:
-                    best_qty, best_loc = qty, loc
-            return best_loc
-        except Exception as e:
-            logger.error(f"[CSI] get_lot_location error: {e}")
-            return None
+        return self._lot_loc_from_balances(item, lot)
 
     def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:
         """
