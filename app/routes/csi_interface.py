@@ -21,7 +21,8 @@ csi_interface_bp = Blueprint('csi_interface', __name__)
 EXPORT_MAX_ROWS = 50000
 
 SYNC_LABELS = {0: '待同步', 1: '成功', 2: '人工失败'}
-ALLOWED_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'SUCCESS', 'FAILED_MANUAL')
+ALLOWED_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'SUCCESS', 'FAILED_MANUAL',
+                  'REVERSED', 'CANCELLED')
 
 
 class _SiteForbidden(Exception):

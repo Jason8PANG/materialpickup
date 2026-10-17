@@ -34,6 +34,8 @@
                     <option value="QUEUED">QUEUED</option>
                     <option value="SUBMITTING">SUBMITTING</option>
                     <option value="SUCCESS">SUCCESS</option>
+                    <option value="REVERSED" data-i18n="csi.status_reversed">REVERSED</option>
+                    <option value="CANCELLED" data-i18n="csi.status_cancelled">CANCELLED</option>
                     <option value="FAILED_MANUAL">FAILED_MANUAL</option>
                 </select>
             </div>
@@ -170,6 +172,23 @@ function csiSyncBadge(isSync, label) {
     return '<span class="badge ' + cls + '">' + csiEsc(label) + '</span>';
 }
 
+// 状态徽章：REVERSED（已反向）灰色、CANCELLED（已取消）次要色，其余按同步语义着色
+function csiStatusBadge(status) {
+    if (!status) return '-';
+    var cls = {
+        PENDING: 'bg-warning text-dark',
+        QUEUED: 'bg-info text-dark',
+        SUBMITTING: 'bg-primary',
+        SUCCESS: 'bg-success',
+        REVERSED: 'bg-secondary',
+        CANCELLED: 'bg-light text-dark border',
+        FAILED_MANUAL: 'bg-danger'
+    }[status] || 'bg-secondary';
+    var label = status === 'REVERSED' ? __('csi.status_reversed')
+        : status === 'CANCELLED' ? __('csi.status_cancelled') : status;
+    return '<span class="badge ' + cls + '">' + csiEsc(label) + '</span>';
+}
+
 function loadCsi() {
     var tb = document.getElementById('csiBody');
     tb.innerHTML = '<tr><td colspan="31" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
@@ -208,7 +227,7 @@ function loadCsi() {
                     '<td>' + csiVal(r.documentnumber) + '</td>' +
                     '<td><span class="d-inline-block text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</span></td>' +
                     '<td>' + syncCell + '</td>' +
-                    '<td>' + csiVal(r.status) + '</td>' +
+                    '<td>' + csiStatusBadge(r.status) + '</td>' +
                     '<td class="text-end">' + csiVal(r.retry_count) + '</td>' +
                     '<td><span class="d-inline-block text-truncate" style="max-width:240px" title="' + err + '">' + (err || '-') + '</span></td>' +
                     '<td>' + csiVal(r.coil_id) + '</td>' +

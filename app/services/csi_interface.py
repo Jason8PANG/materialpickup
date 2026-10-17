@@ -12,6 +12,12 @@
   - 非 A/B 料：kr_request_item_lot 每条批次一行（lot_id 有值、coil_id 为 NULL）
   - 非 A/B 料既无卷标也无批次：只记 warning，不阻断完成备料（批次为可选维护）
 
+状态流转（接口表 status，is_sync 见同步器）：
+  PENDING → QUEUED|SUBMITTING → SUCCESS（已过账）/ FAILED_MANUAL（失败转人工）
+  PENDING|QUEUED|SUBMITTING --回到备料--> CANCELLED（作废，不再提交）
+  SUCCESS --回到备料生成反向--> REVERSED（is_sync 保持 1，保留过账历史）
+  完成备料去重只认 PENDING/QUEUED/SUBMITTING/SUCCESS，其余状态允许补发新正向。
+
 调用方须在自己的事务内调用：写入与本函数使用同一 cursor，随业务操作一起 commit；
 异常由调用方 rollback。
 """
@@ -29,6 +35,14 @@ API_QTY_MOVE = 'sl-qty-move'
 INFLIGHT_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING')
 CANCEL_MESSAGE = '已回到备料，取消同步'
 
+# 仍然生效的正向记录（完成备料去重用）。
+# REVERSED（已反向）/ CANCELLED（退回时作废）/ FAILED_MANUAL（未过账、转人工）
+# 都不算生效，不应阻止再次完成备料生成新的正向记录。
+ACTIVE_FORWARD_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'SUCCESS')
+
+# 反向记录生成后，被反向的正向行置为该状态（is_sync 保持 1，保留过账历史）
+REVERSED_STATUS = 'REVERSED'
+
 
 def _is_ab_part(part_number):
     """A/B 开头物料走卷标粒度"""
@@ -43,6 +57,15 @@ def _num(value):
 def _traceid(request_id, key):
     """唯一追踪号：MP{request_id}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128"""
     return f'MP{request_id}-{key}-{uuid.uuid4().hex[:12]}'
+
+
+def _not_reverse_clause(request_id):
+    """排除反向记录的 SQL 片段与参数。
+
+    反向单号为 MP{request_id}B{n}（见 _reverse_document_number），正向为 MP{request_id}。
+    反向行过账后同样是 is_sync=1 / SUCCESS，若不排除会被当成正向行再次反向。
+    """
+    return "(documentnumber IS NULL OR documentnumber NOT LIKE %s)", f'MP{request_id}B%'
 
 
 def _coil_rows(cursor, request_id, item):
@@ -140,11 +163,17 @@ def enqueue_qty_move(cursor, req, username, now=None):
         logger.warning('完成备料：无可同步的卷标/批次，request_id=%s', request_id)
         return 0
 
-    # 幂等：同一单据已入队的 (coil_id, lot_id) 不重复插入
-    # （uk_row 中 lot_id/coil_id 为 NULL 时 MySQL 不判重，故在此显式去重）
+    # 幂等：仅当同一单据已存在「仍然生效」的正向记录时跳过该 (coil_id, lot_id)。
+    # 只认 ACTIVE_FORWARD_STATUS：已反向（REVERSED）、退回作废（CANCELLED）、
+    # 转人工未过账（FAILED_MANUAL）都不阻止再次完成备料补发新的正向记录。
+    # （uk_row 唯一键已改为普通索引 idx_row，去重完全由这里的状态判断负责）
+    active_ph = ','.join(['%s'] * len(ACTIVE_FORWARD_STATUS))
+    not_rev_sql, not_rev_param = _not_reverse_clause(request_id)
     cursor.execute(
-        "SELECT coil_id, lot_id FROM kr_csi_interface WHERE request_id = %s AND api_name = %s",
-        (request_id, API_QTY_MOVE)
+        "SELECT coil_id, lot_id FROM kr_csi_interface "
+        "WHERE request_id = %s AND api_name = %s "
+        f"AND status IN ({active_ph}) AND {not_rev_sql}",
+        (request_id, API_QTY_MOVE) + ACTIVE_FORWARD_STATUS + (not_rev_param,)
     )
     existing = {(r.get('coil_id'), r.get('lot_id')) for r in cursor.fetchall()}
 
@@ -217,6 +246,8 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
       - 每条 is_sync=1 / SUCCESS 的正向记录 → 插入一条反向记录，
         from_location = 原 to_location、to_location = 原 from_location，其余字段照抄；
         单号用新号 MP{request_id}B{n}（原号已过账且被平台幂等锁定，不能复用）；
+      - 被反向的正向记录同事务置 status='REVERSED'（is_sync 保持 1），
+        之后不再参与反向查询，防止同一正向行被重复反向；
       - 未过账的中间态（is_sync=0 / PENDING|QUEUED|SUBMITTING）→ 置 CANCELLED；
       - FAILED_MANUAL 本来未过账 → 不动；
       - 原记录 from_location 为空 → 无法构造反向，跳过并 warning（不影响主流程）。
@@ -234,14 +265,16 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
     # 1) 先作废未过账的正向记录（必须在插入反向行之前，否则会把新反向行一起作废）
     cancelled = _cancel_inflight(cursor, request_id, now)
 
-    # 2) 取已成功过账的正向记录
+    # 2) 取已成功过账、且尚未被反向的正向记录（反向行 MP{rid}B* 排除在外）
+    not_rev_sql, not_rev_param = _not_reverse_clause(request_id)
     cursor.execute(
         "SELECT id, item_id, coil_id, lot_id, siteRef, item, lot, quantity, um, job, "
         "       warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2 "
         "FROM kr_csi_interface "
         "WHERE request_id = %s AND api_name = %s AND is_sync = 1 AND status = 'SUCCESS' "
+        f"AND {not_rev_sql} "
         "ORDER BY id",
-        (request_id, API_QTY_MOVE)
+        (request_id, API_QTY_MOVE, not_rev_param)
     )
     forwards = cursor.fetchall()
     if not forwards:
@@ -267,6 +300,19 @@ def enqueue_reverse_qty_move(cursor, req, username, now=None):
             continue
 
         key = row.get('coil_id') or f"L{row.get('lot_id')}"
+
+        # 先按状态抢占该正向行（REVERSED 后不会再被任何一轮反向选中），
+        # 同事务内标记；rowcount=0 说明已被并发操作反向，跳过，避免重复反向。
+        cursor.execute(
+            "UPDATE kr_csi_interface SET status = %s, updatedate = %s, updateby = %s "
+            "WHERE id = %s AND is_sync = 1 AND status = 'SUCCESS'",
+            (REVERSED_STATUS, now, username, row.get('id'))
+        )
+        if not cursor.rowcount:
+            logger.warning('回到备料：正向记录已被反向或状态已变更，跳过 request_id=%s csi_id=%s',
+                           request_id, row.get('id'))
+            continue
+
         # 序号按已用单号顺延，保证同单内不重号
         while True:
             seq += 1

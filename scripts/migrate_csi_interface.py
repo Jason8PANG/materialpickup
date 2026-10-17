@@ -23,9 +23,10 @@ kr_csi_interface，由常驻同步器每分钟提交到宝鼎 Syteline（Infor C
        卷标维护、批次维护时自动带出并持久化，完成备料写接口表时作为 from_location
   5. 索引
        idx_sync(is_sync) / idx_status(status) / idx_request(request_id)
-       uk_row(request_id, coil_id, lot_id, api_name) 防重复入队
-       （MySQL 唯一键允许多个 NULL，A/B 卷标行 lot_id 为 NULL、批次行 coil_id 为 NULL，
-         应用层另有「先查后插」幂等兜底）
+       idx_row(request_id, coil_id, lot_id, api_name) 普通索引（原 uk_row 唯一键已废弃）
+       原因：uk_row 唯一键会阻止「完成备料 → 回到备料 → 再次完成备料」写入第二条
+       同 (request_id, coil_id, lot_id) 的正向记录。去重改由应用层按 status 判断
+       （仅 PENDING/QUEUED/SUBMITTING/SUCCESS 生效，REVERSED/CANCELLED/FAILED_MANUAL 不阻止）
 
 运行: python scripts/migrate_csi_interface.py
 说明:
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS `{TABLE}` (
   KEY `idx_sync` (`is_sync`),
   KEY `idx_status` (`status`),
   KEY `idx_request` (`request_id`),
-  UNIQUE KEY `uk_row` (`request_id`, `coil_id`, `lot_id`, `api_name`)
+  KEY `idx_row` (`request_id`, `coil_id`, `lot_id`, `api_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 """
 
@@ -110,8 +111,12 @@ INDEXES = [
     ('idx_sync', "ADD INDEX `idx_sync` (`is_sync`)"),
     ('idx_status', "ADD INDEX `idx_status` (`status`)"),
     ('idx_request', "ADD INDEX `idx_request` (`request_id`)"),
-    ('uk_row', "ADD UNIQUE KEY `uk_row` (`request_id`, `coil_id`, `lot_id`, `api_name`)"),
+    ('idx_row', "ADD INDEX `idx_row` (`request_id`, `coil_id`, `lot_id`, `api_name`)"),
 ]
+
+# 历史唯一键：阻挡同一 (request_id, coil_id, lot_id, api_name) 的第二条正向记录，
+# 迁移时删除并改为普通索引 idx_row（去重交给应用层按 status 判断）
+LEGACY_UNIQUE_KEY = 'uk_row'
 
 # Lot 所在库位列（卷标维护 / 批次维护时自动带出并持久化）
 LOC_COLUMN = "ADD COLUMN `loc` VARCHAR(128) NULL COMMENT 'Lot所在库位(CSI)'"
@@ -242,6 +247,29 @@ def ensure_indexes(conn, cursor, spec):
         print(f'[OK] {table} 已新增索引/唯一键 {name}')
 
 
+def drop_legacy_unique_row(conn, cursor, spec):
+    """删除历史唯一键 uk_row（改为普通索引 idx_row）。
+
+    uk_row 会阻止「完成备料 → 回到备料 → 再次完成备料」写入第二条同
+    (request_id, coil_id, lot_id, api_name) 的正向记录（1062 Duplicate entry）。
+    幂等：不存在 / 已非唯一键则 SKIP。
+    """
+    table = spec['table']
+    if not spec['indexes']:
+        return
+    cursor.execute(f"SHOW INDEX FROM `{table}` WHERE Key_name = %s", (LEGACY_UNIQUE_KEY,))
+    rows = list(cursor.fetchall())
+    if not rows:
+        print(f'[SKIP] {table} 无 {LEGACY_UNIQUE_KEY} 唯一键')
+        return
+    if all(int(r.get('Non_unique') or 0) == 1 for r in rows):
+        print(f'[SKIP] {table}.{LEGACY_UNIQUE_KEY} 已非唯一键')
+        return
+    cursor.execute(f"ALTER TABLE `{table}` DROP INDEX `{LEGACY_UNIQUE_KEY}`")
+    conn.commit()
+    print(f'[OK] {table} 已删除唯一键 {LEGACY_UNIQUE_KEY}（改普通索引 idx_row，去重由应用层负责）')
+
+
 def verify(cursor, spec):
     """执行后核对：关键列类型 + 新增列清单 + 行数"""
     table = spec['table']
@@ -271,6 +299,7 @@ def main():
                 continue
             fix_column_types(conn, cursor, spec)
             ensure_new_columns(conn, cursor, spec)
+            drop_legacy_unique_row(conn, cursor, spec)
             ensure_indexes(conn, cursor, spec)
             verify(cursor, spec)
         print('\n=== 迁移完成（幂等：仅补列/改类型/建索引，未删任何列或数据） ===')
