@@ -67,7 +67,7 @@
 {% block scripts %}
 <script>
 let currentCountId = null;
-const STATUS = {'pending': '待开始', 'counting': '盘点中', 'completed': '已完成'};
+const STATUS = {'pending': '待开始', 'counting': '盘点中', 'pending_adjust': '待调整', 'completed': '已完成'};
 
 function loadCounts() {
     fetch('/api/wire/counts').then(r => r.json()).then(resp => {
@@ -75,7 +75,7 @@ function loadCounts() {
         if (!resp.success) { tb.innerHTML = '<tr><td colspan="5" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
         tb.innerHTML = resp.data.map(c => `<tr>
             <td><a href="#" onclick="openCount(${c.id});return false;">${c.count_no}</a></td>
-            <td><span class="badge ${c.status === 'counting' ? 'bg-warning text-dark' : c.status === 'completed' ? 'bg-success' : 'bg-secondary'}">${STATUS[c.status] || c.status}</span></td>
+            <td><span class="badge ${c.status === 'counting' ? 'bg-warning text-dark' : c.status === 'pending_adjust' ? 'bg-info text-dark' : c.status === 'completed' ? 'bg-success' : 'bg-secondary'}">${STATUS[c.status] || c.status}</span></td>
             <td>${c.item_count}</td><td>${c.created_by || '-'}</td>
             <td><button class="btn btn-sm btn-outline-danger" onclick="delCount(${c.id})"><i class="fas fa-trash"></i></button></td>
         </tr>`).join('');
@@ -94,6 +94,9 @@ function openCount(id) {
             html += '<button class="btn btn-warning btn-sm" onclick="startCount()"><i class="fas fa-lock me-1"></i>开启盘点（锁定卷标）</button>';
         } else if (count.status === 'counting') {
             html += '<button class="btn btn-success btn-sm" onclick="completeCount()"><i class="fas fa-check me-1"></i>完成盘点</button>';
+            html += ' <a class="btn btn-primary btn-sm" href="/api/wire/counts/' + id + '/report"><i class="fas fa-file-pdf me-1"></i>PDF 报告</a>';
+        } else if (count.status === 'pending_adjust') {
+            html += '<a class="btn btn-warning btn-sm" href="/wire/adjust"><i class="fas fa-exchange-alt me-1"></i>去差异调整</a>';
             html += ' <a class="btn btn-primary btn-sm" href="/api/wire/counts/' + id + '/report"><i class="fas fa-file-pdf me-1"></i>PDF 报告</a>';
         } else {
             html += '<a class="btn btn-primary btn-sm" href="/api/wire/counts/' + id + '/report"><i class="fas fa-file-pdf me-1"></i>PDF 报告</a>';

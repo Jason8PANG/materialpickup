@@ -394,9 +394,11 @@ def api_count_adjust():
         if not count:
             cur.close()
             return jsonify({'success': False, 'message': f'盘点单 {count_no} 不存在'}), 404
-        if count['status'] != 'completed':
+        # 待调整（盘点完成）才允许调整；兼容历史 completed 单（靠下方消耗表防重复）
+        if count['status'] not in ('pending_adjust', 'completed'):
             cur.close()
-            return jsonify({'success': False, 'message': f'盘点单 {count_no} 未完成，无法执行差异调整'}), 400
+            return jsonify({'success': False,
+                            'message': f'盘点单 {count_no} 未完成盘点（当前状态：{count["status"]}），无法执行差异调整'}), 400
 
         # 防重复：同盘点单号已执行过
         cur.execute(
@@ -497,6 +499,11 @@ def api_count_adjust():
                      traceid, now, operator)
                 )
                 csi_inserted += 1
+            # 差异调整完成 → 盘点单置为已完成（completed_at 保留盘点完成时间）
+            cur.execute(
+                "UPDATE kr_inventory_count SET status = 'completed' WHERE id = %s AND status = 'pending_adjust'",
+                (count['id'],)
+            )
             db.commit()
         except Exception as e:
             db.rollback()
@@ -785,12 +792,14 @@ def api_count_complete(count_id):
         if agg['total'] != agg['done']:
             cur.close()
             return jsonify({'success': False, 'message': f'还有 {agg["total"] - agg["done"]} 卷未录入盘点数量'}), 400
+        # 盘点完成 → 待调整；差异调整执行成功后再置为 completed（见 api_count_adjust）
         cur.execute(
-            "UPDATE kr_inventory_count SET status = 'completed', completed_at = %s WHERE id = %s",
+            "UPDATE kr_inventory_count SET status = 'pending_adjust', completed_at = %s WHERE id = %s",
             (datetime.now(), count_id)
         )
         db.commit()
-    return jsonify({'success': True, 'message': f'盘点单 {count["count_no"]} 已完成'})
+    return jsonify({'success': True,
+                    'message': f'盘点单 {count["count_no"]} 盘点完成，待差异调整'})
 
 
 # ------------------------------------------------------------------ #
