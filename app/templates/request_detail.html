@@ -97,7 +97,7 @@
                                     <th style="width:90px" data-i18n="form.stock_qty">库存量</th>
                                     <th style="min-width:120px" data-i18n="form.stock_loc">库存位置</th>
                                     <th data-i18n="form.replenish_reason">补料原因</th>
-                                    <th style="min-width:150px" data-i18n="detail.lot_col">批次维护</th>
+                                    <th style="min-width:200px" data-i18n="detail.lot_col">批次维护</th>
                                     <th style="min-width:160px" data-i18n="detail.short_reason">缺料原因</th>
                                     <th style="width:50px"></th>
                                 </tr>
@@ -445,7 +445,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017a"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261017b"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -619,7 +619,7 @@ function renderItems(items) {
 
         // 批次单元格按物料类型分流：
         //  A/B 料 → FIFO 魔法按钮 + 只读建议批号（不再提供批次号输入框与保存按钮）
-        //  其他料 → 不渲染卷标按钮，改为「维护批次」按钮（多条「批号+数量」）
+        //  其他料 → 「维护批次」按钮（多条「批号+数量」）+ 置灰不可点的卷标按钮
         let batchCell;
         if (coilIsAB) {
             batchCell = `
@@ -634,6 +634,7 @@ function renderItems(items) {
             batchCell = `
                 <div class="d-flex gap-1 align-items-center">
                     <button class="btn btn-sm btn-outline-primary" onclick="openItemLotsModal(${item.id}, '${escapeHtml(item.part_number)}', ${item.quantity}, ${REQUEST_ID})" title="维护批次（批号+数量，可多条）"><i class="fas fa-layer-group"></i></button>
+                    <button class="btn btn-sm btn-outline-secondary" disabled title="非 A/B 料无需维护卷标"><i class="fas fa-tags"></i></button>
                     <span class="text-muted small" id="lot_summary_${item.id}">-</span>
                     <span class="d-none" id="lot_old_batch_${item.id}" data-old="${escapeHtml(item.batch_no || '')}"></span>
                 </div>`;

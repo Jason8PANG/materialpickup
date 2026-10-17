@@ -431,13 +431,17 @@ def update_item_batch_no(request_id, item_id):
 
     with get_db_connection() as db:
         cursor = db.cursor()
+        # 先校验明细行存在性：MySQL 的 rowcount 是「实际变更行数」，
+        # 写入值与现有值相同时为 0，不能据此判断行是否存在。
+        _req, _item, err = _check_request_item(cursor, request_id, item_id, user)
+        if err:
+            cursor.close()
+            return err[0], err[1]
+
         cursor.execute(
             "UPDATE kr_request_item SET batch_no = %s WHERE id = %s AND request_id = %s",
             (batch_no if batch_no else None, item_id, request_id)
         )
-        if cursor.rowcount == 0:
-            cursor.close()
-            return jsonify({'success': False, 'message': '明细行不存在'}), 404
         db.commit()
         cursor.close()
 
