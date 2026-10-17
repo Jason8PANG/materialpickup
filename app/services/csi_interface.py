@@ -1,4 +1,8 @@
-"""完成备料 → CSI 库位转移接口表（kr_csi_interface）入队
+"""CSI 库位转移接口表（kr_csi_interface）入队
+
+两个方向：
+  - 完成备料 enqueue_qty_move()：仓库库位 → Floor-Core（正向）
+  - 回到备料 enqueue_reverse_qty_move()：Floor-Core → 仓库库位（反向，from/to 对调）
 
 完成备料时把需同步给宝鼎 Syteline（Infor CSI）的库位转移数据写入接口表，
 由常驻同步器（另一进程）每分钟提交 sl-qty-move 接口。
@@ -8,7 +12,7 @@
   - 非 A/B 料：kr_request_item_lot 每条批次一行（lot_id 有值、coil_id 为 NULL）
   - 非 A/B 料既无卷标也无批次：只记 warning，不阻断完成备料（批次为可选维护）
 
-调用方须在自己的事务内调用：写入与本函数使用同一 cursor，随完成备料一起 commit；
+调用方须在自己的事务内调用：写入与本函数使用同一 cursor，随业务操作一起 commit；
 异常由调用方 rollback。
 """
 import logging
@@ -20,6 +24,10 @@ from app.config import Config
 logger = logging.getLogger(__name__)
 
 API_QTY_MOVE = 'sl-qty-move'
+
+# 尚未过账（同步器仍会扫描）的中间态：回到备料时须作废，避免退回后仍继续过账
+INFLIGHT_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING')
+CANCEL_MESSAGE = '已回到备料，取消同步'
 
 
 def _is_ab_part(part_number):
@@ -169,3 +177,131 @@ def enqueue_qty_move(cursor, req, username, now=None):
     logger.info('完成备料：CSI 接口表写入 %s 行（request_id=%s, 跳过已存在 %s 行）',
                 inserted, request_id, len(rows) - inserted)
     return inserted
+
+
+# ====================================================================== #
+#  反向交易（回到备料）
+# ====================================================================== #
+def _reverse_document_number(request_id, n):
+    """反向单号：MP{request_id}B{n}（n 从 1 递增），长度 ≤12（接口硬限制）"""
+    return f'MP{request_id}B{n}'[:12]
+
+
+def _reverse_traceid(request_id, n, key):
+    """反向 traceId：MP{request_id}B{n}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128"""
+    return f'MP{request_id}B{n}-{key}-{uuid.uuid4().hex[:12]}'
+
+
+def _cancel_inflight(cursor, request_id, now):
+    """作废该单尚未过账的正向记录：is_sync=2 / CANCELLED。
+
+    同步器只扫描 is_sync=0，标记后不会再被选中；已成功的（is_sync=1）与
+    已转人工的（is_sync=2 / FAILED_MANUAL）都不受影响。
+    返回作废行数。
+    """
+    placeholders = ','.join(['%s'] * len(INFLIGHT_STATUS))
+    cursor.execute(
+        f"UPDATE kr_csi_interface SET is_sync = 2, status = 'CANCELLED', errormessage = %s, "
+        f"updatedate = %s "
+        f"WHERE request_id = %s AND api_name = %s AND is_sync = 0 "
+        f"AND status IN ({placeholders})",
+        (CANCEL_MESSAGE, now, request_id, API_QTY_MOVE) + INFLIGHT_STATUS
+    )
+    return cursor.rowcount or 0
+
+
+def enqueue_reverse_qty_move(cursor, req, username, now=None):
+    """回到备料：为已成功过账的正向库位转移生成反向记录（from/to 对调）。
+
+    规则：
+      - 每条 is_sync=1 / SUCCESS 的正向记录 → 插入一条反向记录，
+        from_location = 原 to_location、to_location = 原 from_location，其余字段照抄；
+        单号用新号 MP{request_id}B{n}（原号已过账且被平台幂等锁定，不能复用）；
+      - 未过账的中间态（is_sync=0 / PENDING|QUEUED|SUBMITTING）→ 置 CANCELLED；
+      - FAILED_MANUAL 本来未过账 → 不动；
+      - 原记录 from_location 为空 → 无法构造反向，跳过并 warning（不影响主流程）。
+
+    参数：
+      cursor  - 回到备料事务内的游标（不在此提交/回滚）
+      req     - kr_material_request 行（需 id）
+      username- 操作人（createby）
+    返回：{'forward_count': 已成功正向记录数, 'inserted': 新插入反向行数,
+           'cancelled': 作废未过账行数}
+    """
+    request_id = req['id']
+    now = now or datetime.now()
+
+    # 1) 先作废未过账的正向记录（必须在插入反向行之前，否则会把新反向行一起作废）
+    cancelled = _cancel_inflight(cursor, request_id, now)
+
+    # 2) 取已成功过账的正向记录
+    cursor.execute(
+        "SELECT id, item_id, coil_id, lot_id, siteRef, item, lot, quantity, um, job, "
+        "       warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2 "
+        "FROM kr_csi_interface "
+        "WHERE request_id = %s AND api_name = %s AND is_sync = 1 AND status = 'SUCCESS' "
+        "ORDER BY id",
+        (request_id, API_QTY_MOVE)
+    )
+    forwards = cursor.fetchall()
+    if not forwards:
+        logger.info('回到备料：无已过账记录，未生成反向交易 request_id=%s（作废 %s 行）',
+                    request_id, cancelled)
+        return {'forward_count': 0, 'inserted': 0, 'cancelled': cancelled}
+
+    # 3) 反向单号序号：按该单已有反向单号（MP{rid}B*）计数 +1，避免重号
+    cursor.execute(
+        "SELECT documentnumber FROM kr_csi_interface "
+        "WHERE request_id = %s AND api_name = %s AND documentnumber LIKE %s",
+        (request_id, API_QTY_MOVE, f'MP{request_id}B%')
+    )
+    used_docs = {(r.get('documentnumber') or '') for r in cursor.fetchall()}
+
+    inserted = 0
+    seq = 0
+    for row in forwards:
+        from_loc = (row.get('from_location') or '').strip()
+        if not from_loc:
+            logger.warning('回到备料：正向记录缺少 from_location，跳过反向 request_id=%s csi_id=%s',
+                           request_id, row.get('id'))
+            continue
+
+        key = row.get('coil_id') or f"L{row.get('lot_id')}"
+        # 序号按已用单号顺延，保证同单内不重号
+        while True:
+            seq += 1
+            documentnumber = _reverse_document_number(request_id, seq)
+            if documentnumber not in used_docs:
+                break
+            if len(documentnumber) >= 12:
+                # 单号已顶到 12 位上限（申请单号过长），再顺延会溢出，宁可重号交给同步器换号
+                logger.warning('回到备料：反向单号长度已达上限 request_id=%s doc=%s',
+                               request_id, documentnumber)
+                break
+        used_docs.add(documentnumber)
+
+        cursor.execute(
+            "INSERT INTO kr_csi_interface "
+            "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, job, "
+            " warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2, "
+            " documentnumber, is_sync, status, retry_count, traceid, errormessage, "
+            " createdate, createby, submitted_at, last_poll_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            " 0, 'PENDING', 0, %s, NULL, %s, %s, NULL, NULL)",
+            (
+                request_id, row.get('item_id'), row.get('coil_id'), row.get('lot_id'),
+                API_QTY_MOVE, row.get('siteRef'), row.get('item'), row.get('lot'),
+                _num(row.get('quantity')), row.get('um'), row.get('job'),
+                row.get('warehouse'),
+                # from/to 对调：Floor-Core → 原仓库库位
+                (row.get('to_location') or Config.CSI_TO_LOCATION), from_loc,
+                row.get('reasoncode'), row.get('account'),
+                row.get('unitcode1'), row.get('unitcode2'), documentnumber,
+                _reverse_traceid(request_id, seq, key), now, username,
+            )
+        )
+        inserted += 1
+
+    logger.info('回到备料：生成反向库位转移 %s 笔（request_id=%s, 作废未过账 %s 行）',
+                inserted, request_id, cancelled)
+    return {'forward_count': len(forwards), 'inserted': inserted, 'cancelled': cancelled}

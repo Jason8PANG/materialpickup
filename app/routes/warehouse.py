@@ -3,7 +3,7 @@ import logging
 from flask import Blueprint, request, jsonify, session
 from datetime import datetime
 from app.models import get_db_connection, get_site_filter
-from app.services.csi_interface import enqueue_qty_move
+from app.services.csi_interface import enqueue_qty_move, enqueue_reverse_qty_move
 from app.services.csi_service import CSIClient
 from app.utils import WhereBuilder, is_en
 
@@ -208,7 +208,11 @@ def restore_from_short(request_id):
 
 @warehouse_bp.route('/api/requests/<int:request_id>/back-to-prepping', methods=['POST'])
 def back_to_prepping(request_id):
-    """待取料退回备料中：用于补录/修正卷标、出库登记等（仅改 status，无其他副作用字段）"""
+    """待取料退回备料中：用于补录/修正卷标、出库登记等。
+
+    已成功过账的库位转移需生成反向交易（from/to 对调）写回接口表，
+    由同步器提交，否则物料在 CSI 里会停留在车间库位。
+    """
     user, err_resp, err_code = check_warehouse_or_admin()
     if err_resp:
         return err_resp, err_code
@@ -235,15 +239,41 @@ def back_to_prepping(request_id):
             return jsonify({'success': False,
                             'message': '仅待取料（ready_pickup）状态的申请单可回到备料中'}), 400
 
+        now = datetime.now()
+        # 反向库位转移与状态更新同事务，失败整体回滚（状态不流转）
+        try:
+            rev = enqueue_reverse_qty_move(cursor, req, user['username'], now)
+        except Exception:
+            db.rollback()
+            cursor.close()
+            logger.exception('回到备料：生成反向 CSI 库位转移失败 request_id=%s', request_id)
+            return jsonify({'success': False,
+                            'message': 'Failed to queue reverse CSI location transfer, status unchanged'
+                                       if is_en() else '回到备料失败，请稍后重试'}), 500
+
         cursor.execute(
             "UPDATE kr_material_request SET status = 'prepping' WHERE id = %s",
             (request_id,)
         )
-        add_log(cursor, request_id, user['username'], 'BACK_TO_PREPPING', '待取料退回备料中', request.remote_addr)
+        # 日志明细：反向笔数 + 作废的未过账记录数
+        notes = []
+        if rev['inserted']:
+            notes.append(f"生成反向库位转移 {rev['inserted']} 笔")
+        else:
+            notes.append('无已过账记录，未生成反向交易')
+        if rev['cancelled']:
+            notes.append(f"作废未过账记录 {rev['cancelled']} 笔")
+        add_log(cursor, request_id, user['username'], 'BACK_TO_PREPPING',
+                f"待取料退回备料中（{'，'.join(notes)}）", request.remote_addr)
         db.commit()
         cursor.close()
 
-    return jsonify({'success': True, 'message': '已回到备料中，可继续维护卷标/出库登记'})
+    message = '已回到备料中，可继续维护卷标/出库登记'
+    if rev['inserted']:
+        message = f"已回到备料中（已生成 {rev['inserted']} 笔反向库位转移），可继续维护卷标/出库登记"
+    elif rev['forward_count'] == 0:
+        message = '已回到备料中（无已过账记录，未生成反向交易），可继续维护卷标/出库登记'
+    return jsonify({'success': True, 'message': message})
 
 
 @warehouse_bp.route('/api/requests/<int:request_id>/short', methods=['POST'])
