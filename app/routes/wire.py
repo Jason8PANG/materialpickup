@@ -498,8 +498,10 @@ def api_count_adjust():
             return jsonify({'success': False, 'message': f'差异调整失败，已回滚：{e}'}), 500
         cur.close()
     return jsonify({'success': True,
-                    'message': f'盘点单 {count_no} 差异调整已执行（{inserted} 卷写入消耗记录，'
-                               f'{csi_inserted} 条 CSI 杂项交易已入队）',
+                    'message': f'盘点单 {count_no} 共 {len(items)} 卷，{inserted} 卷有差异：'
+                               f'写入消耗记录 {inserted} 条、CSI 杂项交易 {csi_inserted} 条已入队'
+                               f'（无差异的 {len(items) - inserted} 卷不产生交易）',
+                    'total_items': len(items),
                     'consumption_rows': inserted, 'csi_rows': csi_inserted})
 
 
