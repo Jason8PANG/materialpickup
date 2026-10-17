@@ -20,6 +20,10 @@
   0 / QUEUED|PENDING 平台已入队、未到终态（下一轮同 traceId 继续轮询）
   1 / SUCCESS       成功（不再处理）
   2 / FAILED_MANUAL 连续 3 次失败，已发邮件（不再处理）
+  2 / NOOP          物料已在目标库位（fromLocation == toLocation），不发请求、不告警
+
+库位口径：接口表里的 from_location / to_location 只是入队时的本地快照，
+提交前一律以 CSI 实时查询（get_lot_location）为准并回写；查询不到才用行内值兜底。
 
 并发安全：多进程/多线程可能同时扫描到同一行，靠 claim() 的条件 UPDATE
 （WHERE status IN (...) AND is_sync=0）保证只有 rowcount==1 的一方处理。
@@ -47,6 +51,12 @@ SUPPORTED_APIS = (API_QTY_MOVE, API_MISC_RECEIPT, API_MISC_ISSUE)
 # 可被抢占处理的状态（PENDING=新行/待重试，QUEUED=平台已入队，SUBMITTING=上次中断）
 CLAIMABLE_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING')
 MAX_ERR_LEN = 255  # errormessage 列 VARCHAR(255)
+
+# 物料已在目标库位：不发请求、不发邮件（is_sync=2 已排除在扫描之外）
+NOOP_STATUS = 'NOOP'
+NOOP_MESSAGE = '物料已在目标库位，无需移库'
+# 单轮最多查询的不重复 (item, lot) 数（与批量上限一致，避免一轮内大量实时查询拖慢同步）
+MAX_LOCATION_LOOKUPS = 20
 
 
 # ====================================================================== #
@@ -372,7 +382,7 @@ def _submit_and_poll(payload, api_name=API_QTY_MOVE, sleep_func=time.sleep):
 
 
 # ====================================================================== #
-#  库位补值（qty-move 补 from_location / misc 补 to_location）
+#  库位实时查询（以 CSI 为准，本地快照仅兜底）
 # ====================================================================== #
 def _lookup_lot_location(row):
     """查该 Lot 在 CSI 的实际库位；取不到返回 None"""
@@ -387,6 +397,35 @@ def _lookup_lot_location(row):
     except Exception as e:
         logger.error('CSI 同步：查询 Lot 库位异常 item=%s lot=%s: %s', item, lot, e)
         return None
+
+
+def _live_location(row, cache=None):
+    """取该行的 CSI 实时库位，同一轮内同 (item, lot) 只查一次。
+
+    cache 为 {(item, lot): loc|None}：查询结果（含失败）都缓存，
+    单轮最多查 MAX_LOCATION_LOOKUPS 个不重复 lot，超出部分直接用行内值兜底。
+    """
+    item = (row.get('item') or '').strip()
+    lot = (row.get('lot') or '').strip()
+    if not item or not lot:
+        return None
+    key = (item, lot)
+    if cache is not None:
+        if key in cache:
+            return cache[key]
+        if len(cache) >= MAX_LOCATION_LOOKUPS:
+            # 超出单轮查询上限：本轮不再查，交给行内值兜底
+            cache[key] = None
+            return None
+    loc = _lookup_lot_location(row)
+    if cache is not None:
+        cache[key] = loc
+    return loc
+
+
+def _same_loc(a, b):
+    """库位比较（忽略大小写/首尾空白）"""
+    return (a or '').strip().lower() == (b or '').strip().lower()
 
 
 # ====================================================================== #
@@ -492,7 +531,7 @@ def _send_failure_alert(row, retry, reason):
 # ====================================================================== #
 #  单行处理
 # ====================================================================== #
-def _process_row(repo, row, stats, sleep_func):
+def _process_row(repo, row, stats, sleep_func, loc_cache=None):
     row_id = row.get('id')
     api = _row_api(row)
 
@@ -501,24 +540,45 @@ def _process_row(repo, row, stats, sleep_func):
         return
     stats['claimed'] += 1
 
-    # 1. 库位补值
-    #    sl-qty-move：A/B 料行入队时 from_location 为空，需查 Lot 在 CSI 的实际库位
-    #    sl-misc-*：location 取 to_location（盘点调整入库时已定位），为空则查库位回写
+    # 1. 库位校正：以 CSI 实时查询为准（同轮同 (item, lot) 只查一次），
+    #    查询失败才用行内本地快照兜底；两者都空 → 无库位可用，计失败。
+    #    sl-qty-move 校正 from_location；sl-misc-* 的 location 存于 to_location。
+    live = _live_location(row, loc_cache)
     if api in MISC_APIS:
-        if not (row.get('to_location') or '').strip():
-            loc = _lookup_lot_location(row)
-            if not loc:
-                _fail(repo, row, '无法获取 Lot 库位', stats)
-                return
-            row['to_location'] = loc
+        old_loc = (row.get('to_location') or '').strip()
+        loc = live or old_loc
+        if not loc:
+            _fail(repo, row, '无法获取 Lot 库位', stats)
+            return
+        row['to_location'] = loc
+        if not _same_loc(loc, old_loc):
             repo.update(row_id, to_location=loc)
-    elif not (row.get('from_location') or '').strip():
-        loc = _lookup_lot_location(row)
+            logger.info('CSI 同步：库位校正 id=%s api=%s request=%s doc=%s item=%s lot=%s %s → %s',
+                        row_id, api, row.get('request_id'), row.get('documentnumber'),
+                        row.get('item'), row.get('lot'), old_loc or '(空)', loc)
+    else:
+        old_loc = (row.get('from_location') or '').strip()
+        loc = live or old_loc
         if not loc:
             _fail(repo, row, '无法获取 Lot 库位', stats)
             return
         row['from_location'] = loc
-        repo.update(row_id, from_location=loc)
+        if not _same_loc(loc, old_loc):
+            repo.update(row_id, from_location=loc)
+            logger.info('CSI 同步：库位校正 id=%s api=%s request=%s doc=%s item=%s lot=%s %s → %s',
+                        row_id, api, row.get('request_id'), row.get('documentnumber'),
+                        row.get('item'), row.get('lot'), old_loc or '(空)', loc)
+
+        # 源库位 = 目的库位：物料已在目标位置，提交必然失败，直接标记 NOOP（不发请求、不发邮件）
+        to_loc = (row.get('to_location') or Config.CSI_TO_LOCATION or '').strip()
+        if to_loc and _same_loc(loc, to_loc):
+            repo.update(row_id, is_sync=2, status=NOOP_STATUS,
+                        errormessage=NOOP_MESSAGE, last_poll_at=None)
+            stats['noop'] = stats.get('noop', 0) + 1
+            logger.info('CSI 同步：物料已在目标库位，跳过移库 id=%s request=%s doc=%s item=%s lot=%s loc=%s',
+                        row_id, row.get('request_id'), row.get('documentnumber'),
+                        row.get('item'), row.get('lot'), loc)
+            return
 
     # 2. 基础数据校验（数量必须 > 0，否则必然 400，不必浪费一次请求）
     qty = _quantity(row.get('quantity'))
@@ -577,7 +637,9 @@ def run_once(repo=None, sleep_func=None):
     """
     sleep_func = sleep_func or time.sleep
     stats = {'scanned': 0, 'claimed': 0, 'success': 0, 'queued': 0,
-             'retried': 0, 'manual': 0, 'transient': 0, 'skipped': 0, 'errors': 0}
+             'retried': 0, 'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0}
+    # 同一轮内同 (item, lot) 只查一次 CSI 库位
+    loc_cache = {}
 
     conn = None
     own = repo is None
@@ -590,7 +652,7 @@ def run_once(repo=None, sleep_func=None):
         stats['scanned'] = len(rows)
         for row in rows:
             try:
-                _process_row(repo, row, stats, sleep_func)
+                _process_row(repo, row, stats, sleep_func, loc_cache=loc_cache)
             except Exception as e:
                 # 单行异常不得中断整轮
                 stats['errors'] += 1

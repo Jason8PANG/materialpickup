@@ -342,21 +342,28 @@ def adjust_page():
 
 
 def _resolve_adjust_location(cur, siteref, coil_id, part_number, lot_no):
-    """盘点差异调整的 CSI 库位：优先卷标库位，取不到回退 CSI 实时库位查询。
+    """盘点差异调整的 CSI 库位：以 CSI 实时查询为准，本地卷标库位仅作兜底。
 
-    返回库位字符串，均为空时返回 None（杂项收发必须带库位，由调用方报错回滚）。
+    顺序：
+      1. CSI 实时查询 get_lot_location(part_number, lot_no)；
+      2. 查询失败/返回空 → 回退 kr_wire_coil.loc（该列只在退料/维护时写入，
+         领用出库到车间后不会更新，故不可作为首选）；
+      3. 两者都空 → 返回 None（杂项收发必须带库位，由调用方报错回滚整单）。
     """
-    cur.execute("SELECT loc FROM kr_wire_coil WHERE coil_id = %s ORDER BY is_deleted LIMIT 1",
-                (coil_id,))
-    row = cur.fetchone() or {}
-    loc = str(row.get('loc') or '').strip()
-    if loc:
-        return loc
     try:
         loc = str(CSIClient(siteref).get_lot_location(part_number, lot_no) or '').strip()
     except Exception as e:
         logger.warning('[盘点差异调整] CSI 库位查询失败 item=%s lot=%s: %s', part_number, lot_no, e)
         loc = ''
+    if loc:
+        return loc
+
+    cur.execute("SELECT loc FROM kr_wire_coil WHERE coil_id = %s ORDER BY is_deleted LIMIT 1",
+                (coil_id,))
+    row = cur.fetchone() or {}
+    loc = str(row.get('loc') or '').strip()
+    if loc:
+        logger.warning('[盘点差异调整] CSI 无库位，回退本地卷标库位 coil_id=%s loc=%s', coil_id, loc)
     return loc or None
 
 

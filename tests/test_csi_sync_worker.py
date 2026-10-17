@@ -134,6 +134,18 @@ def _fast_config(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_real_csi(monkeypatch):
+    """默认不访问真实 CSI：实时库位查不到 → 走行内快照兜底（与原语义一致）。
+
+    需要实时库位的用例在用例内再 patch app.csi_sync_worker.CSIClient 覆盖本 fixture。
+    """
+    client = MagicMock()
+    client.get_lot_location.return_value = None
+    monkeypatch.setattr(w, 'CSIClient', MagicMock(return_value=client))
+    return client
+
+
 def _run(repo):
     return w.run_once(repo=repo, sleep_func=lambda s: None)
 
@@ -367,6 +379,93 @@ class TestFromLocation:
         assert row['retry_count'] == 1
         assert row['errormessage'] == '无法获取 Lot 库位'
         assert row['is_sync'] == 0
+
+
+# ====================================================================== #
+#  6b. 提交前一律用 CSI 实时库位覆盖（本地快照仅兜底）
+# ====================================================================== #
+class TestLiveLocationOverride:
+    def test_qty_move_from_location_overridden(self, caplog):
+        """行内 from=RM-P015-1（旧），CSI 实际 RM-P016-2 → payload 与库内都改成实时值"""
+        repo = FakeRepo([_row(from_location='RM-P015-1', to_location='Floor-Core')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             caplog.at_level('INFO', logger='app.csi_sync_worker'):
+            client_cls.return_value.get_lot_location.return_value = 'RM-P016-2'
+            stats = _run(repo)
+
+        body = post.call_args.kwargs['json']
+        assert body['fromLocation'] == 'RM-P016-2'
+        assert body['toLocation'] == 'Floor-Core'
+        assert repo.row(1)['from_location'] == 'RM-P016-2'
+        assert '库位校正' in caplog.text and 'RM-P015-1' in caplog.text
+        assert stats['success'] == 1
+
+    def test_qty_move_same_location_marked_noop(self, caplog):
+        """CSI 实际库位 = toLocation → 物料已在目标库位：不发请求、不发邮件、is_sync=2/NOOP"""
+        repo = FakeRepo([_row(from_location='RM-P015-1', to_location='Floor-Core')])
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email') as mail, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             caplog.at_level('INFO', logger='app.csi_sync_worker'):
+            client_cls.return_value.get_lot_location.return_value = 'Floor-Core'
+            stats = _run(repo)
+
+        post.assert_not_called()
+        mail.assert_not_called()
+        row = repo.row(1)
+        assert row['is_sync'] == 2 and row['status'] == 'NOOP'
+        assert row['errormessage'] == '物料已在目标库位，无需移库'
+        assert stats['noop'] == 1
+        assert '物料已在目标库位' in caplog.text
+        # NOOP 后不再被扫描，也不会再提交
+        assert repo.fetch_candidates() == []
+        assert _run(repo)['scanned'] == 0
+
+    def test_misc_issue_location_overridden(self):
+        """盘点盘亏行 to=RM-P015-1（旧），CSI 实际 Floor-Core → payload location 用实时值"""
+        repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE, to_location='RM-P015-1')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'Floor-Core'
+            stats = _run(repo)
+
+        assert post.call_args.kwargs['json']['location'] == 'Floor-Core'
+        assert repo.row(2)['to_location'] == 'Floor-Core'
+        assert stats['success'] == 1
+
+    def test_csi_failure_falls_back_to_row_location(self):
+        """CSI 查询异常 → 用行内已有库位兜底，不阻断提交"""
+        repo = FakeRepo([_row(from_location='RM-P015-1')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.side_effect = RuntimeError('csi down')
+            stats = _run(repo)
+
+        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-P015-1'
+        assert repo.row(1)['from_location'] == 'RM-P015-1'
+        assert stats['success'] == 1
+
+    def test_same_item_lot_queried_once_per_round(self):
+        """同一轮内同 (item, lot) 的多个卷标只查一次 CSI"""
+        rows = [
+            _row(id=1, coil_id='261016004'),
+            _row(id=2, coil_id='261016005'),
+            _row(id=3, coil_id='261016006', item='B000002', lot='202510220000001'),
+        ]
+        repo = FakeRepo(rows)
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'RM-P015-1'
+            _run(repo)
+
+        assert post.call_count == 3
+        assert client_cls.return_value.get_lot_location.call_count == 2
+        assert repo.row(1)['is_sync'] == 1 and repo.row(2)['is_sync'] == 1
 
 
 # ====================================================================== #

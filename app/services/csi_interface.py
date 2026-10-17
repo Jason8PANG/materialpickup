@@ -119,7 +119,8 @@ def _coil_rows(cursor, request_id, item):
             'coil_id': coil_id,
             'lot_id': None,
             'item_id': item['id'],
-            # 卷标维护时已持久化 Lot 所在库位；为空则交给同步器兜底
+            # 库位只写本地快照（不在此查 CSI，避免完成备料被远程查询拖慢）；
+            # 同步器提交前会用 CSI 实时库位覆盖本列，因此这里允许写旧值/为空
             'from_location': coil.get('loc'),
         })
     return rows
@@ -147,6 +148,7 @@ def _lot_rows(cursor, request_id, item):
             'coil_id': None,
             'lot_id': lot['id'],
             'item_id': item['id'],
+            # 同上：本地批次库位仅作快照，提交前由同步器用 CSI 实时库位校正
             'from_location': lot.get('loc'),
         })
     if not lot_records:
