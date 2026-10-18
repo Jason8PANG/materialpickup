@@ -36,3 +36,6 @@ Thumbs.db
 
 # 数据修正备份（含业务数据，勿入库）
 scripts/backups/
+
+# 重编号脚本备份
+scripts/backups/
