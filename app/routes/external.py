@@ -264,6 +264,11 @@ def ext_create_consumption():
                              f'累计 {used + out_length:g}mm 已超过剩余长度 {total_mm - used:g}mm',
                 }), 400
 
+        # 换算值一次算好：out_length 已含报废长度，报废型消耗同样有值
+        converted_length = factor and round(out_length / factor, 4) or None
+        converted_unit = factor and coil.get('unit') or None
+        operator = (b.get('operator') or '').strip() or 'unknown'
+
         cur.execute(
             """INSERT INTO kr_wire_coil_consumption
                (coil_id, job_order, job_part_number, part_number, consume_type, out_length, unit,
@@ -274,8 +279,8 @@ def ext_create_consumption():
                VALUES (%s, %s, %s, %s, 'consumption', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'complete', %s)""",
             (coil_id, job_order, job_part_number, part_number, out_length,
              coil.get('unit') or None,
-             factor and round(out_length / factor, 4) or None,
-             factor and coil.get('unit') or None,
+             converted_length,
+             converted_unit,
              int(qty),
              _num(b.get('cut_length_mm')),
              (act_len or None),
@@ -284,13 +289,27 @@ def ext_create_consumption():
              (b.get('shear_device_no') or '').strip() or None,
              (b.get('actual_shear_equipment') or '').strip() or None,
              scrap or None,
-             (b.get('operator') or '').strip() or 'unknown',
+             operator,
              (b.get('checker') or '').strip() or None,
              1 if b.get('is_manual') else 0,
              (b.get('remark') or '').strip() or None,
              coil.get('siteref'))
         )
         new_id = cur.lastrowid
+        # 同事务写 sl-job-issue 工单发料（由同步器在 ERP 完成工单扣料）；
+        # 与消耗记录一起 commit，任何一侧失败整体回滚
+        csi_job_issue_id = _enqueue_job_issue_for_consumption(
+            cur,
+            site=site,
+            coil=coil,
+            part_number=part_number,
+            job_order=job_order,
+            converted_length=converted_length,
+            converted_unit=converted_unit,
+            consumption_id=new_id,
+            operator=operator,
+            now=datetime.now(),
+        )
         db.commit()
     return jsonify({
         'success': True,
@@ -298,8 +317,9 @@ def ext_create_consumption():
         'id': new_id,
         'consume_type': 'consumption',
         'out_length': out_length,
-        'converted_length': factor and round(out_length / factor, 4) or None,
-        'converted_unit': factor and coil.get('unit') or None,
+        'converted_length': converted_length,
+        'converted_unit': converted_unit,
+        'csi_job_issue_id': csi_job_issue_id,
         'remaining_mm': factor and round(max(total_mm - used - out_length, 0), 2) or None,
     })
 
@@ -1012,6 +1032,63 @@ def _job_issue_traceid(job, item):
     tail = '-' + uuid.uuid4().hex[:12]
     head = f'JI{job}-{item}'
     return head[:128 - len(tail)] + tail
+
+
+def _consumption_job_issue_traceid(job, item, consumption_id):
+    """JI{job}-{item}-{消耗记录id}-{uuid12}，≤128（超长截断 job/item 段，保留唯一后缀）
+
+    带消耗记录 id 便于从 ERP 单据反查本地耗用记录。
+    """
+    tail = f'-{consumption_id}-{uuid.uuid4().hex[:12]}'
+    head = f'JI{job}-{item}'
+    return head[:128 - len(tail)] + tail
+
+
+def _enqueue_job_issue_for_consumption(cur, *, site, coil, part_number, job_order,
+                                       converted_length, converted_unit,
+                                       consumption_id, operator, now):
+    """卷标耗用 → sl-job-issue 工单发料入队（须与消耗记录同一事务，由调用方 commit）。
+
+    字段口径：
+      item=卷标物料号、lot=卷标 lot_no、quantity=换算长度（已含报废，必须 >0）、
+      um=换算单位、job=完整工单号（可带 -0005 后缀，同步器负责拆后缀）、
+      warehouse=站点仓库映射、to_location=Floor-Core、from_location=NULL、
+      documentnumber=工单主号（job_order 首段，须 ≤12 位）。
+    跳过场景（返回 None，只记日志不阻断耗用）：无 job_order / 换算长度非正 /
+    主号超长 / 站点无仓库映射。
+    """
+    if not job_order:
+        print(f'[EXTERNAL CONSUMPTION] 消耗记录 {consumption_id} 无 job_order，跳过 sl-job-issue 入队')
+        return None
+    if not converted_length or float(converted_length) <= 0:
+        print(f'[EXTERNAL CONSUMPTION] 消耗记录 {consumption_id} 换算长度为 0/空，跳过 sl-job-issue 入队')
+        return None
+    doc_no = (job_order.split('-')[0] or '').strip()
+    if not doc_no or len(doc_no) > MAX_DOC_LEN:
+        print(f'[EXTERNAL CONSUMPTION] 消耗记录 {consumption_id} 工单主号 "{doc_no}" '
+              f'长度不合规（须 1~{MAX_DOC_LEN} 位），跳过 sl-job-issue 入队')
+        return None
+    warehouse = Config.CSI_WAREHOUSE_MAP.get(site)
+    if not warehouse:
+        print(f'[EXTERNAL CONSUMPTION] 站点 {site} 未配置 CSI 仓库映射，跳过 sl-job-issue 入队')
+        return None
+
+    traceid = _consumption_job_issue_traceid(job_order, part_number, consumption_id)
+    cur.execute(
+        "INSERT INTO kr_csi_interface "
+        "(api_name, siteRef, item, lot, quantity, um, job, warehouse, from_location, to_location, "
+        " reasoncode, account, unitcode1, unitcode2, documentnumber, line_seq, direction, "
+        " is_sync, status, retry_count, traceid, request_id, item_id, coil_id, lot_id, "
+        " createdate, createby) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, "
+        " NULL, NULL, NULL, NULL, %s, NULL, 'F', 0, 'PENDING', 0, %s, "
+        " NULL, NULL, %s, NULL, %s, %s)",
+        (JOB_ISSUE_API, int(site), part_number, (coil.get('lot_no') or '').strip() or None,
+         float(converted_length), converted_unit, job_order, warehouse,
+         Config.CSI_TO_LOCATION, doc_no, traceid, coil.get('coil_id'),
+         now, operator)
+    )
+    return cur.lastrowid
 
 
 @external_bp.route('/api/external/job-issue', methods=['POST'])
