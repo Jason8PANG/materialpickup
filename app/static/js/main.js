@@ -519,6 +519,9 @@ function renderActions(req) {
                 else showToast('error', '卷标功能模块未加载');
             };
         } else if (act.action === 'outbound_register') {
+            // 出库登记(issue) 业务未使用，2026-10-18 隐藏入口，代码保留
+            // 即使后续重新加入该 action，按钮也保持不可见
+            btn.classList.add('d-none');
             btn.onclick = function () {
                 if (typeof openOutboundModal === 'function') openOutboundModal(req.id);
                 else showToast('error', '出库登记模块未加载');

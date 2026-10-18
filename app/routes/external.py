@@ -387,23 +387,41 @@ def ext_create_scrap():
                              f'累计 {used + scrap_len:g}mm 已超过剩余长度 {total_mm - used:g}mm',
                 }), 400
 
+        converted_length = factor and round(scrap_len / factor, 4) or None
+        converted_unit = factor and coil.get('unit') or None
+        operator = (b.get('operator') or '').strip() or 'unknown'
+
         cur.execute(
             """INSERT INTO kr_wire_coil_consumption
                (coil_id, job_order, part_number, consume_type, out_length, unit,
                 converted_length, converted_unit, operator, remark, siteref)
                VALUES (%s, %s, %s, 'scrap', %s, %s, %s, %s, %s, %s, %s)""",
             (coil_id, job_order, part_number, scrap_len, coil.get('unit') or None,
-             factor and round(scrap_len / factor, 4) or None,
-             factor and coil.get('unit') or None,
-             (b.get('operator') or '').strip() or 'unknown',
+             converted_length, converted_unit, operator,
              (b.get('remark') or '').strip() or None,
              coil.get('siteref'))
         )
         new_id = cur.lastrowid
+        # 同事务写 sl-job-issue 工单发料（与耗用接口一致，报废也需冲减工单物料）；
+        # helper 抛异常则报废记录一并回滚
+        csi_job_issue_id = _enqueue_job_issue_for_consumption(
+            cur,
+            site=site,
+            coil=coil,
+            part_number=part_number,
+            job_order=job_order,
+            converted_length=converted_length,
+            converted_unit=converted_unit,
+            consumption_id=new_id,
+            operator=operator,
+            now=datetime.now(),
+        )
         db.commit()
     return jsonify({
         'success': True, 'message': '报废记录已保存', 'id': new_id,
         'consume_type': 'scrap', 'out_length': scrap_len,
+        'converted_length': converted_length, 'converted_unit': converted_unit,
+        'csi_job_issue_id': csi_job_issue_id,
     })
 
 

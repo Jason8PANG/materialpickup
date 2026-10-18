@@ -353,7 +353,10 @@
                 </div>
             </div>
 
-            <!-- 出库消耗登记弹窗（线卷全库存管理，1 组折叠面板，文档 4.4） -->
+            <!-- 出库登记(issue) 业务未使用，2026-10-18 隐藏入口，代码保留 -->
+            <!-- 出库消耗登记弹窗（线卷全库存管理，1 组折叠面板，文档 4.4）
+                 入口按钮已隐藏：renderActions(main.js) 不再生成 outbound_register 按钮，
+                 openOutboundModal / submitOutbound 及本弹窗保留，勿删 -->
             <div class="modal fade" id="outboundModal" tabindex="-1" data-bs-backdrop="static">
                 <div class="modal-dialog modal-xl">
                     <div class="modal-content">
