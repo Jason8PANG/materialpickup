@@ -277,7 +277,7 @@ class CSIClient:
             filter_str = (
                 f"Job = N'{job}' And Suffix = {suffix_val} And Item = N'{item}'"
             )
-            props = ["Job", "Suffix", "Item", "Backflush"]
+            props = ["Job", "Suffix", "Item", "OperNum", "Sequence", "Backflush"]
             records = self._get_ido("SLJobMatls", properties=props, filter_str=filter_str)
             if not records:
                 return None
@@ -285,6 +285,9 @@ class CSIClient:
             return {
                 'backflush': _to_bool(row.get('Backflush')),
                 'item_id': row.get('_ItemId'),
+                # SLJobMatls 主键为 Job+Suffix+Item+OperNum+Sequence，update 必须全带
+                'oper_num': row.get('OperNum'),
+                'sequence': row.get('Sequence'),
             }
         except Exception as e:
             logger.error(f"[CSI] get_job_matl_backflush error job={job} suffix={suffix} item={item}: {e}")
@@ -317,6 +320,21 @@ class CSIClient:
             logger.error(f"[CSI] 取消 Backflush 失败：{msg}")
             return False, msg
 
+        # 主键必须完整（Job+Suffix+Item+OperNum+Sequence），否则 IDO 返回 Success:false：
+        # "Key property [OperNum]/[Sequence] was not included in the update request"
+        oper_raw = info.get('oper_num')
+        seq_raw = info.get('sequence')
+        if oper_raw in (None, '') or seq_raw in (None, ''):
+            msg = f'工单物料 {tag} / {item} 缺少 OperNum/Sequence，无法更新'
+            logger.error(f"[CSI] 取消 Backflush 失败：{msg}")
+            return False, msg
+
+        def _as_int(v):
+            try:
+                return int(str(v).strip())
+            except (TypeError, ValueError):
+                return v
+
         url = f"{self._ido_base}/ido/update/SLJobMatls"
         payload = {"Changes": [{
             "Action": 2,
@@ -326,6 +344,8 @@ class CSIClient:
                 {"IsNull": False, "Modified": False, "Name": "Job", "Value": job},
                 {"IsNull": False, "Modified": False, "Name": "Suffix", "Value": suffix_val},
                 {"IsNull": False, "Modified": False, "Name": "Item", "Value": item},
+                {"IsNull": False, "Modified": False, "Name": "OperNum", "Value": _as_int(oper_raw)},
+                {"IsNull": False, "Modified": False, "Name": "Sequence", "Value": _as_int(seq_raw)},
             ],
             "UpdateLocking": 1,
         }]}
@@ -351,6 +371,16 @@ class CSIClient:
             resp.raise_for_status()
         except Exception as e:
             msg = f'更新工单物料 {tag} / {item} 失败：{e}'
+            logger.error(f"[CSI] 取消 Backflush 失败：{msg}")
+            return False, msg
+
+        # IDO 常见：HTTP 200 但 body {"Success": false, "Message": "..."}，必须校验
+        try:
+            body = resp.json() or {}
+        except Exception:
+            body = {}
+        if isinstance(body, dict) and body.get('Success') is False:
+            msg = f'更新工单物料 {tag} / {item} 被 IDO 拒绝：{body.get("Message") or "未知原因"}'
             logger.error(f"[CSI] 取消 Backflush 失败：{msg}")
             return False, msg
 
