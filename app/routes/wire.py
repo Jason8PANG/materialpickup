@@ -1183,8 +1183,8 @@ def _build_report_pdf(count, items):
     sign_w = 257 * mm
     sign_table = Table([
         [Paragraph('Applicant:', sign_style),
-         Paragraph('Applicant Dept. Manager:', sign_style),
-         Paragraph('Finance Specialist:', sign_style),
+         Paragraph('Dept. Manager:', sign_style),
+         Paragraph('Cost Accountant:', sign_style),
          Paragraph('Finance Manager:', sign_style),
          Paragraph('Operations Manager:', sign_style)],
         [Paragraph('Signature:', sign_style), Paragraph('Signature:', sign_style),
