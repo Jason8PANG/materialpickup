@@ -1122,7 +1122,7 @@ def _build_report_pdf(count, items):
          Paragraph('Net Impact', label_style), Paragraph(f'{net_impact:.2f}', value_style)],
     ]
     # 与明细表等宽（257mm），三张表右边缘对齐
-    summary = Table(summary_rows, colWidths=[30 * mm, 54 * mm, 30 * mm, 54 * mm, 34 * mm, 55 * mm])
+    summary = Table(summary_rows, colWidths=[31 * mm, 56 * mm, 31 * mm, 56 * mm, 35 * mm, 58 * mm])
     summary.hAlign = 'LEFT'
     summary.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#BFBFBF')),
@@ -1150,7 +1150,7 @@ def _build_report_pdf(count, items):
         _fmt_cell(sum_diff_qty, 2), '', '',
     ])
 
-    col_widths = [w * mm for w in (24, 28, 40, 16, 11, 20, 21, 23, 18, 16, 18, 22)]
+    col_widths = [w * mm for w in (25, 29, 41, 17, 12, 21, 22, 23, 19, 17, 19, 22)]
     table = Table(table_rows, repeatRows=1, colWidths=col_widths)
     table.hAlign = 'LEFT'
     table.setStyle(TableStyle([
@@ -1180,7 +1180,7 @@ def _build_report_pdf(count, items):
     story.append(Spacer(1, 8 * mm))
 
     # ---- 签字区（与汇总表/明细表等宽 257mm）------------------------------- #
-    sign_w = 257 * mm
+    sign_w = 267 * mm
     sign_table = Table([
         [Paragraph('Applicant:', sign_style),
          Paragraph('Dept. Manager:', sign_style),
