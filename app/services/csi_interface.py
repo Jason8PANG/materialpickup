@@ -254,11 +254,13 @@ def enqueue_qty_move(cursor, req, username, now=None):
 
         job_order = row.get('job_order')
         if job_order:
-            # 工单发料：job 为完整工单号（同步器负责拆 -0000 后缀），
-            # 目标库位固定车间库位，无 from，也不带库位转移的原因码
+            # 工单发料：job 为完整工单号（同步器负责拆 -0000 后缀）。
+            # 契约里 location = 发料（扣减库存）库位 → 取批次/卷标所在库位，
+            # 不是车间线边的 Floor-Core；无 from/to 之分。
             api_name = API_JOB_ISSUE
             job = job_order
             from_location = None
+            to_location = row['from_location']
             reasoncode = None
             traceid = _job_issue_traceid(job_order, row['item'])
             job_issue_rows += 1
@@ -266,6 +268,7 @@ def enqueue_qty_move(cursor, req, username, now=None):
             api_name = API_QTY_MOVE
             job = None
             from_location = row['from_location']
+            to_location = Config.CSI_TO_LOCATION
             reasoncode = Config.CSI_REASON_CODE
             trace_key = row['coil_id'] or f"L{row['lot_id']}"
             traceid = _traceid(request_id, trace_key)
@@ -282,7 +285,7 @@ def enqueue_qty_move(cursor, req, username, now=None):
             (
                 request_id, row['item_id'], row['coil_id'], row['lot_id'],
                 api_name, int(siteref), row['item'], row['lot'], _num(row['quantity']), row['um'], job,
-                Config.CSI_WAREHOUSE_MAP[siteref], from_location, Config.CSI_TO_LOCATION,
+                Config.CSI_WAREHOUSE_MAP[siteref], from_location, to_location,
                 reasoncode, None, None, None, documentnumber, seq,
                 traceid, now, username,
             )
