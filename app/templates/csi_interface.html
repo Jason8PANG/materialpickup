@@ -84,8 +84,6 @@
                         <th data-i18n="csi.col_to_location">目的库位</th>
                         <th data-i18n="csi.col_reasoncode">原因码</th>
                         <th data-i18n="csi.col_account">科目</th>
-                        <th data-i18n="csi.col_line_seq">行序号</th>
-                        <th data-i18n="csi.col_direction">方向</th>
                         <th data-i18n="csi.col_trace">traceId</th>
                         <th data-i18n="csi.col_sync">同步状态</th>
                         <th data-i18n="csi.col_status">状态</th>
@@ -93,12 +91,11 @@
                         <th data-i18n="csi.col_error">错误信息</th>
                         <th data-i18n="csi.col_submitted">提交时间</th>
                         <th data-i18n="csi.col_last_poll">最后轮询</th>
-                        <th data-i18n="csi.col_job">job</th>
                         <th data-i18n="csi.col_action">操作</th>
                     </tr>
                 </thead>
                 <tbody id="csiBody">
-                    <tr><td colspan="22" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                    <tr><td colspan="19" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -265,7 +262,7 @@ function csiResend(btn) {
 
 function loadCsi() {
     var tb = document.getElementById('csiBody');
-    tb.innerHTML = '<tr><td colspan="22" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="19" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
         var summary = resp.summary || {};
@@ -275,7 +272,7 @@ function loadCsi() {
             ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
             ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
         if (!resp.data || resp.data.length === 0) {
-            tb.innerHTML = '<tr><td colspan="22" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="19" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
         } else {
             tb.innerHTML = resp.data.map(function (r) {
                 var trace = csiEsc(r.traceid);
@@ -294,16 +291,13 @@ function loadCsi() {
                     '<td>' + csiVal(r.to_location) + '</td>' +
                     '<td>' + csiVal(r.reasoncode) + '</td>' +
                     '<td>' + csiVal(r.account) + '</td>' +
-                    '<td class="text-end">' + csiVal(r.line_seq) + '</td>' +
-                    '<td>' + csiDirection(r.direction) + '</td>' +
                     '<td><span class="d-inline-block text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</span></td>' +
                     '<td>' + syncCell + '</td>' +
                     '<td>' + csiStatusBadge(r.status) + '</td>' +
                     '<td class="text-end">' + csiVal(r.retry_count) + '</td>' +
-                    '<td><span class="d-inline-block text-truncate" style="max-width:240px" title="' + err + '">' + (err || '-') + '</span></td>' +
+                    '<td><span class="d-inline-block text-truncate" style="max-width:120px" title="' + err + '">' + (err || '-') + '</span></td>' +
                     '<td>' + csiVal(r.submitted_at) + '</td>' +
                     '<td>' + csiVal(r.last_poll_at) + '</td>' +
-                    '<td>' + csiVal(r.job) + '</td>' +
                     csiActionCell(r) +
                     '</tr>';
             }).join('');
