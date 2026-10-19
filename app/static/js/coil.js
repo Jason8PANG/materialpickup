@@ -282,6 +282,7 @@ function renderCoilRows() {
                 <input type="text" class="form-control form-control-sm coil-lot-input" data-idx="${idx}"
                        value="${escapeHtml(row.lot_no || '')}" placeholder="Lot" maxlength="64"
                        onblur="validateLotForRow(${idx})">
+                <span class="coil-lot-checking text-muted small d-none" id="coil_lot_checking_${idx}">${__('coil.validating')}</span>
             </td>
             <td>
                 <input type="number" class="form-control form-control-sm coil-length-input" data-idx="${idx}"
@@ -304,10 +305,24 @@ function renderCoilRows() {
     });
 }
 
+// 正在验证的批号（part_number|lot_no）：防止 Lot 框与长度框先后失焦时重复发请求
+const coilLotInFlight = {};
+
+function setLotChecking(idx, checking) {
+    const el = document.getElementById('coil_lot_checking_' + idx);
+    if (!el) return;
+    if (checking) {
+        el.textContent = __('coil.validating');
+        el.classList.remove('d-none');
+    } else {
+        el.classList.add('d-none');
+    }
+}
+
 function validateLotForRow(idx) {
     // Lot + 长度验证：连接 Infor IDO SLLots（按 Item 过滤验证 Lot），
     // 长度（mm）与 DerQtyOnHand（×换算系数 → mm）对比。
-    // 输入框失焦时触发；验证结果行内反馈（绿=通过/红=失败），Lot 为空跳过。
+    // 输入框失焦时触发；验证期间行内显示「验证中…」，结果行内反馈（绿=通过/红=失败），Lot 为空跳过。
     const row = coilState.rows[idx];
     if (!row) return;
     const lotNo = (row.lot_no || '').trim();
@@ -316,12 +331,25 @@ function validateLotForRow(idx) {
 
     const lotInput = document.querySelector('.coil-lot-input[data-idx="' + idx + '"]');
     const lenInput = document.querySelector('.coil-length-input[data-idx="' + idx + '"]');
+
+    // 同一批号正在验证中 → 直接复用上次结果，不重复请求
+    const inFlightKey = partNumber + '|' + lotNo;
+    if (coilLotInFlight[inFlightKey]) return;
+    coilLotInFlight[inFlightKey] = true;
+    setLotChecking(idx, true);
+
+    function finish() {
+        coilLotInFlight[inFlightKey] = false;
+        setLotChecking(idx, false);
+    }
+
     apiPost('/api/coils/validate-lot', {
         part_number: partNumber,
         lot_no: lotNo,
         length: row.length,
         unit: coilState.unitMap[partNumber] || ''
     }, function (resp) {
+        finish();
         // 通过
         if (lotInput) lotInput.classList.remove('is-invalid');
         if (lotInput) lotInput.classList.add('is-valid');
@@ -332,6 +360,7 @@ function validateLotForRow(idx) {
         setLotLocHint(idx, coilState.lotLocs[partNumber + '|' + lotNo]);
         showToast('success', resp.message || 'Lot 验证通过');
     }, function (err) {
+        finish();
         // 失败：Lot 不存在 或 长度超 DerQtyOnHand
         const msg = err.message || 'Lot 验证失败';
         delete coilState.lotLocs[partNumber + '|' + lotNo];

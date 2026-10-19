@@ -3,6 +3,7 @@ Infor CSI IDO API 轻量客户端
 用于工单验证、物料验证和库存查询
 """
 import time
+import threading
 import httpx
 import logging
 from urllib.parse import urlencode
@@ -13,6 +14,23 @@ logger = logging.getLogger(__name__)
 # clear_job_matl_backflush 的返回说明（同步器据 BF_MSG_CLEARED 判定「本次确实把 1 写成了 0」）
 BF_MSG_CLEARED = 'Backflush 已置为 0'
 BF_MSG_ALREADY_ZERO = 'Backflush 已为 0，无需修改'
+
+# ---------------------------------------------------------------------- #
+#  进程级 token 缓存（跨 CSIClient 实例共享）
+#  背景：每次请求都新建 CSIClient，实例级缓存形同虚设，导致每个请求都走一次
+#  OAuth2 password grant（实测 1-3 秒）。改为模块级缓存后只有首个请求付这笔开销。
+#  key = (token_url, username, company)：company 参与 key，使不同 siteref 各持一份，
+#  互不影响（token 本身是租户级，company 通过 X-Infor-MongooseConfig 头传递）。
+# ---------------------------------------------------------------------- #
+_TOKEN_CACHE: dict = {}
+_TOKEN_LOCK = threading.Lock()
+_TOKEN_REFRESH_MARGIN = 60  # 提前 60 秒视为过期，避免用到临界 token
+
+
+def _clear_token_cache() -> None:
+    """清空进程级 token 缓存（供测试使用）"""
+    with _TOKEN_LOCK:
+        _TOKEN_CACHE.clear()
 
 
 def _to_bool(value) -> bool:
@@ -44,15 +62,19 @@ class CSIClient:
         self._ido_base = Config.CSI_IDO_BASE.rstrip('/')
         self._basic_auth = f"Basic {Config.CSI_AUTH_BASIC}"
 
-        # Token 缓存
+        # Token 缓存（实例字段仅作镜像，权威缓存是模块级 _TOKEN_CACHE）
         self._token: str | None = None
         self._token_expires_at: float = 0.0
 
     # ------------------------------------------------------------------ #
     #  认证
     # ------------------------------------------------------------------ #
+    def _token_key(self) -> tuple:
+        """进程级缓存 key：同一租户账号 + 同一 company 复用同一个 token"""
+        return (self._token_url, Config.CSI_USERNAME, self._company)
+
     def _fetch_token(self) -> tuple[str, int]:
-        """向 OAuth2 端点请求 access_token"""
+        """向 OAuth2 端点请求 access_token，成功后写回进程级缓存"""
         resp = httpx.post(
             self._token_url,
             headers={
@@ -69,18 +91,37 @@ class CSIClient:
         )
         resp.raise_for_status()
         body = resp.json()
-        return body["access_token"], int(body.get("expires_in", 3600))
-
-    def _ensure_token(self) -> str:
-        """获取有效 token（缓存 + 自动刷新）"""
-        now = time.time()
-        if self._token and now < self._token_expires_at - 60:
-            return self._token
-
-        token, expires_in = self._fetch_token()
+        token = body["access_token"]
+        expires_in = int(body.get("expires_in", 3600))
+        exp = time.monotonic() + expires_in
+        _TOKEN_CACHE[self._token_key()] = {'token': token, 'exp': exp}
+        # 实例字段同步，兼容其他地方直接读取 self._token 的写法
         self._token = token
-        self._token_expires_at = time.time() + expires_in
-        return token
+        self._token_expires_at = exp
+        return token, expires_in
+
+    def _ensure_token(self, force: bool = False) -> str:
+        """获取有效 token：先读进程级缓存，未命中/临期才取（加锁双重检查）
+
+        force=True 用于 401 刷新：跳过命中判断，强制重取并回写缓存。
+        """
+        key = self._token_key()
+
+        if not force:
+            cached = _TOKEN_CACHE.get(key)
+            if cached and cached['exp'] - time.monotonic() > _TOKEN_REFRESH_MARGIN:
+                self._token = cached['token']
+                return cached['token']
+
+        with _TOKEN_LOCK:
+            if not force:
+                # 双重检查：等锁期间其他线程可能已经取到新 token
+                cached = _TOKEN_CACHE.get(key)
+                if cached and cached['exp'] - time.monotonic() > _TOKEN_REFRESH_MARGIN:
+                    self._token = cached['token']
+                    return cached['token']
+            token, _expires_in = self._fetch_token()
+            return token
 
     # ------------------------------------------------------------------ #
     #  IDO Request Service 调用（ue_NAI_* 等自定义 IDO）
@@ -107,8 +148,7 @@ class CSIClient:
                 resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
                 if resp.status_code == 401:
                     logger.info(f"[IDO] 401 token expired, refreshing...")
-                    token = self._fetch_token()[0]
-                    self._token = token
+                    token = self._ensure_token(force=True)
                     headers["Authorization"] = f"Bearer {token}"
                     resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
                 resp.raise_for_status()
@@ -149,8 +189,7 @@ class CSIClient:
                 headers["X-Infor-MongooseConfig"] = site
             resp = httpx.get(url, headers=headers, params=p, timeout=30, verify=False)
             if resp.status_code == 401:
-                token = self._fetch_token()[0]
-                self._token = token
+                token = self._ensure_token(force=True)
                 headers["Authorization"] = f"Bearer {token}"
                 resp = httpx.get(url, headers=headers, params=p, timeout=30, verify=False)
             resp.raise_for_status()
@@ -363,8 +402,7 @@ class CSIClient:
                               json=payload, timeout=60, verify=False)
             if resp.status_code == 401:
                 logger.info("[CSI] 401 token expired, refreshing...")
-                token = self._fetch_token()[0]
-                self._token = token
+                token = self._ensure_token(force=True)
                 headers["Authorization"] = f"Bearer {token}"
                 resp = httpx.post(url, headers=headers, params=params,
                                   json=payload, timeout=60, verify=False)
