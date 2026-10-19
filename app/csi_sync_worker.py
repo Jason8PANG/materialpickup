@@ -1,8 +1,8 @@
 """CSI（宝鼎 Syteline）交易同步器
 
 职责：扫描接口表 kr_csi_interface 的待处理行 → 按行的 api_name 提交对应接口 → 轮询终态；
-失败自动重试（最多 3 次，**单据号保持不变、只更换 traceId**），
-超限发邮件告警并停止自动重试。
+平台判定失败即转人工（不再自动重试），并发邮件告警；
+只有用户在看板点「重新发送」（重置为 PENDING / is_sync=0）后，同步器才会再次提交。
 
 支持的接口（按行 api_name 分派，payload 契约不同）：
   sl-qty-move      库位转移（领用/退料），字段 fromLocation/toLocation/reasonCode
@@ -23,7 +23,7 @@
   0 / SUBMITTING    本进程已抢占、正在提交/轮询
   0 / QUEUED|PENDING 平台已入队、未到终态（下一轮同 traceId 继续轮询）
   1 / SUCCESS       成功（不再处理）
-  2 / FAILED_MANUAL 连续 3 次失败，已发邮件（不再处理）
+  2 / FAILED_MANUAL 提交失败，已发邮件转人工（不再自动重试；仅「重新发送」可复活）
   2 / NOOP          物料已在目标库位（fromLocation == toLocation），不发请求、不告警
 
 库位口径：接口表里的 from_location / to_location 只是入队时的本地快照，
@@ -91,6 +91,10 @@ def _poll_attempts():
 
 
 def _max_retry():
+    """已废弃：失败即转人工，不再按次数重试。
+
+    仅为兼容 .env 中已有的 CSI_SYNC_MAX_RETRY 配置而保留（不再参与任何决策）。
+    """
     return max(1, _cfg_int('CSI_SYNC_MAX_RETRY', 3))
 
 
@@ -356,7 +360,7 @@ def _classify(resp):
 
     if code == 409:
         return {'kind': 'failed', 'status': None,
-                'reason': 'HTTP 409 CONFLICT：单号被平台锁定/冲突（重试不换号，3 次后转人工）'}
+                'reason': 'HTTP 409 CONFLICT：单号被平台锁定/冲突，需人工核对'}
     if code == 400:
         return {'kind': 'failed', 'status': None,
                 'reason': f'HTTP 400 入队被拒：{_outer_message(resp, body)}'}
@@ -518,27 +522,14 @@ def _ensure_job_backflush_cleared(row, cache=None):
 #  失败处理 / 告警邮件
 # ====================================================================== #
 def _fail(repo, row, reason, stats):
-    """失败重试流程：<3 次保留原单号、仅换 traceId 重投；>=3 次转人工并发邮件"""
+    """失败即转人工：不再自动重试，也不更换 traceId。
+
+    只有用户点「重新发送」（routes/csi_interface.py 的 resend，重置为
+    is_sync=0 / PENDING / retry_count=0 并生成新 traceId）后，同步器才会再次提交。
+    retry_count 仅作累加统计（记录这条行一共失败/被重发过多少次），不参与决策。
+    """
     retry = int(row.get('retry_count') or 0) + 1
     reason = (reason or '未知错误')[:MAX_ERR_LEN]
-
-    if retry < _max_retry():
-        trace = _retry_trace_id(row)
-        repo.update(
-            row['id'],
-            retry_count=retry,
-            traceid=trace,
-            is_sync=0,
-            status='PENDING',
-            errormessage=reason,
-            last_poll_at=None,
-            submitted_at=None,
-        )
-        stats['retried'] += 1
-        logger.warning('CSI 同步失败（第 %s/%s 次），保留单号仅换 traceId 重试 id=%s request=%s doc=%s trace=%s 原因=%s',
-                       retry, _max_retry(), row['id'], row.get('request_id'),
-                       row.get('documentnumber'), trace, reason)
-        return
 
     repo.update(
         row['id'],
@@ -549,8 +540,8 @@ def _fail(repo, row, reason, stats):
         last_poll_at=None,
     )
     stats['manual'] += 1
-    logger.error('CSI 同步连续失败 %s 次，转人工 id=%s request=%s doc=%s 原因=%s',
-                 retry, row['id'], row.get('request_id'), row.get('documentnumber'), reason)
+    logger.error('CSI 同步失败，转人工（不自动重试）id=%s request=%s doc=%s 原因=%s',
+                 row['id'], row.get('request_id'), row.get('documentnumber'), reason)
     _send_failure_alert(row, retry, reason)
 
 
@@ -621,7 +612,7 @@ def _send_failure_alert(row, retry, reason):
       <p style="margin:6px 0;">CSI {api_label}（{api}）自动同步失败，已停止自动重试，请人工处理。</p>
       <table style="width:100%;border-collapse:collapse;font-size:12px;line-height:1.45;margin:6px 0 10px;">{rows_html}</table>
       <p style="margin:6px 0;color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
-      <p style="margin:6px 0;color:#666;font-size:12px;">已自动重试 3 次仍失败（单号不变，仅换 traceId），请人工在宝鼎平台重新发送或核对数据。</p>
+      <p style="margin:6px 0;color:#666;font-size:12px;">同步失败，已停止自动重试，请在看板「同步接口查询」页点「重新发送」或到宝鼎平台人工处理（单号与 traceId 均保持不变）。</p>
       <p style="margin:6px 0;color:#999;font-size:11px;">本邮件由物料领取看板系统自动发送，请勿直接回复。</p>
     </div>
     """

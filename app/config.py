@@ -89,7 +89,8 @@ class Config:
     CSI_SYNC_STALE_SECONDS = int(os.environ.get('CSI_SYNC_STALE_SECONDS', '45'))  # 行被判定为「轮询超时」的秒数
     CSI_SYNC_POLL_INTERVAL = int(os.environ.get('CSI_SYNC_POLL_INTERVAL', '5'))   # 平台异步队列轮询间隔
     CSI_SYNC_POLL_ATTEMPTS = int(os.environ.get('CSI_SYNC_POLL_ATTEMPTS', '4'))   # 单轮最多轮询次数
-    CSI_SYNC_MAX_RETRY = int(os.environ.get('CSI_SYNC_MAX_RETRY', '3'))           # 连续失败次数上限（达到即转人工）
+    # 已废弃：失败即转人工、不再自动重试；保留读取只为兼容 .env 里已有的该项配置
+    CSI_SYNC_MAX_RETRY = int(os.environ.get('CSI_SYNC_MAX_RETRY', '3'))
     CSI_SYNC_HTTP_TIMEOUT = int(os.environ.get('CSI_SYNC_HTTP_TIMEOUT', '20'))    # 单次 HTTP 超时
 
     # 站点配置

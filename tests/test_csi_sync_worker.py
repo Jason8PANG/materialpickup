@@ -3,9 +3,9 @@
 
 覆盖点：
   1. QUEUED → PENDING → SUCCESS 状态推进（ion 对象 / 数组两种结构）
-  2. HTTP 400 入队被拒 → retry_count+1、**单号不变**、只换 traceId、is_sync=0
-  3. HTTP 409 CONFLICT → 单号不变、只换 traceId
-  4. 连续 3 次失败 → is_sync=2/FAILED_MANUAL + 邮件一次，之后不再被扫描，单号全程不变
+  2. HTTP 400 入队被拒 → 失败即转人工：单号与 traceId 均不变、is_sync=2/FAILED_MANUAL
+  3. HTTP 409 CONFLICT → 同上（不再自动换 traceId 重投）
+  4. 一次失败即 FAILED_MANUAL + 邮件一次，之后不再被扫描；「重新发送」重置后可再次提交
   5. from_location 为空 → 查 CSI 库位补值
   5b. sl-misc-receipt / sl-misc-issue（盘点差异调整）：按行 api_name 组装 location/account 契约
   6. 并发抢占 → 同一行只提交一次
@@ -203,15 +203,16 @@ class TestSuccess:
         assert stats['success'] == 1
 
     def test_ion_list_with_failed_item_is_failure(self):
-        """ion 数组中出现 Success=False → 失败（不误判成功）"""
+        """ion 数组中出现 Success=False → 失败（不误判成功），且直接转人工"""
         repo = FakeRepo([_row()])
         ion = [{'Success': True}, {'Success': False, 'Message': 'lot not found'}]
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _ok('SUCCESS', ion))):
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _ok('SUCCESS', ion))), \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
         row = repo.row(1)
         assert row['retry_count'] == 1
         assert 'lot not found' in row['errormessage']
-        assert row['is_sync'] == 0
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_payload_contract(self):
         """请求体字段严格符合宝鼎契约"""
@@ -234,50 +235,53 @@ class TestSuccess:
 
 
 # ====================================================================== #
-#  2/3. 400 / 409 → 保留单号，仅换 traceId 重试
+#  2/3. 400 / 409 → 失败即转人工，单号与 traceId 均不再变化
 # ====================================================================== #
-class TestFailAndRetryKeepDocumentNumber:
-    def test_http_400_keeps_document_number(self):
+class TestFailTerminalKeepsDocumentNumber:
+    def test_http_400_terminal_keeps_document_and_trace(self):
+        """失败即终态：不换 traceId、不重置 PENDING（避免下次被自动重投）"""
         repo = FakeRepo([_row()])
         with patch('app.csi_sync_worker.requests.post',
-                   return_value=_resp(400, {'success': False, 'message': 'documentNumber 超过 12 位'})):
+                   return_value=_resp(400, {'success': False, 'message': 'documentNumber 超过 12 位'})), \
+             patch('app.csi_sync_worker.send_email'):
             stats = _run(repo)
 
         row = repo.row(1)
         assert row['retry_count'] == 1
-        # 单号原样沿用，只更换 traceId
+        # 单号与 traceId 都保持原样（traceId 只由「重新发送」更换）
         assert row['documentnumber'] == 'MP2967'
-        assert row['traceid'] != 'MP2967-261016004-ce830e42a267'
-        assert row['traceid'].startswith('MP2967-261016004-')
-        assert len(row['traceid']) < 128
-        assert row['is_sync'] == 0 and row['status'] == 'PENDING'
+        assert row['traceid'] == 'MP2967-261016004-ce830e42a267'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
         assert 'documentNumber' in row['errormessage']
-        assert stats['retried'] == 1
+        assert stats['manual'] == 1
+        assert stats['retried'] == 0
 
-    def test_http_409_keeps_document_number(self):
+    def test_http_409_terminal_keeps_document_and_trace(self):
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})):
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})), \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         row = repo.row(1)
         assert row['retry_count'] == 1
         assert row['documentnumber'] == 'MP2967'
-        assert row['traceid'] != 'MP2967-261016004-ce830e42a267'
+        assert row['traceid'] == 'MP2967-261016004-ce830e42a267'
         assert '409' in row['errormessage']
-        assert row['is_sync'] == 0
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_reverse_row_keeps_reverse_document_number(self):
-        """反向行（MP{rid}B{seq}）重试同样保持单号不变"""
+        """反向行（MP{rid}B{seq}）转人工时同样保持单号与 traceId 不变"""
         repo = FakeRepo([_row(documentnumber='MP2973B01', traceid='MP2973B01-L21-aaaa')])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})):
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})), \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         row = repo.row(1)
         assert row['documentnumber'] == 'MP2973B01'
-        assert row['traceid'].startswith('MP2973B01-')
+        assert row['traceid'] == 'MP2973B01-L21-aaaa'
 
     def test_retry_trace_id_is_unique_and_bounded(self):
-        """每次重试的 traceId 都不同，且长度 < 128"""
+        """「重新发送」用的 _retry_trace_id：每次都不同，且长度 < 128"""
         row = _row(documentnumber='MP29679999')
         traces = {w._retry_trace_id(row) for _ in range(5)}
         assert len(traces) == 5
@@ -286,37 +290,52 @@ class TestFailAndRetryKeepDocumentNumber:
 
 
 # ====================================================================== #
-#  4. 连续 3 次失败 → 转人工 + 邮件（且只发一次）
+#  4. 一次失败即转人工 + 邮件；「重新发送」是唯一复活入口
 # ====================================================================== #
-class TestManualFailAfterThreeRetries:
-    def test_three_failures_then_email_and_stop(self):
+class TestManualFailOnFirstFailure:
+    def test_one_failure_is_terminal_and_not_rescanned(self):
+        """首次失败即 FAILED_MANUAL：邮件一次、单号/traceId 不变、下一轮不再扫描"""
         repo = FakeRepo([_row()])
-        traces = []
         with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed())), \
              patch('app.csi_sync_worker.send_email') as mail:
-            _run(repo)
-            assert repo.row(1)['retry_count'] == 1
-            assert repo.row(1)['documentnumber'] == 'MP2967'
-            traces.append(repo.row(1)['traceid'])
-            assert mail.call_count == 0
-
-            _run(repo)
-            assert repo.row(1)['retry_count'] == 2
-            assert repo.row(1)['documentnumber'] == 'MP2967'
-            traces.append(repo.row(1)['traceid'])
-            assert mail.call_count == 0
-
             stats = _run(repo)
-            row = repo.row(1)
 
-        assert row['retry_count'] == 3
-        # 三次重试单号始终未变，只有 traceId 变化
+        row = repo.row(1)
+        assert row['retry_count'] == 1
         assert row['documentnumber'] == 'MP2967'
-        assert traces[0] != traces[1]
-        assert row['traceid'] == traces[1]   # 转人工不再更换 traceId
+        assert row['traceid'] == 'MP2967-261016004-ce830e42a267'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert row['errormessage'] and '科学计数法解析失败' in row['errormessage']
+        assert stats['manual'] == 1 and stats['retried'] == 0
+        assert mail.call_count == 1
+
+        # 下一轮：该行不被取出，也不会再提交、再发邮件
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email') as mail2:
+            stats2 = _run(repo)
+        post.assert_not_called()
+        mail2.assert_not_called()
+        assert stats2['scanned'] == 0
+
+    def test_retry_count_no_longer_gates_terminal_state(self):
+        """retry_count 只做累加统计：>= MAX_RETRY 也不影响「失败即终态」"""
+        repo = FakeRepo([_row(retry_count=7)])
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('平台拒绝'))), \
+             patch('app.csi_sync_worker.send_email') as mail:
+            stats = _run(repo)
+
+        row = repo.row(1)
+        assert row['retry_count'] == 8
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
         assert stats['manual'] == 1
         assert mail.call_count == 1
+
+    def test_alert_mail_stops_auto_retry_wording(self):
+        """邮件文案：含「已停止自动重试」与重新发送指引，不再出现「已自动重试 3 次」"""
+        repo = FakeRepo([_row()])
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed())), \
+             patch('app.csi_sync_worker.send_email') as mail:
+            _run(repo)
 
         to_email, subject, body = mail.call_args.args
         assert to_email == 'jason.pang@nai-group.com'
@@ -324,23 +343,56 @@ class TestManualFailAfterThreeRetries:
         assert 'MP2967' in body             # 单号保持不变
         assert '科学计数法解析失败' in body
         assert '已停止自动重试' in body
+        assert '重新发送' in body
+        assert '3 次' not in body           # 去掉旧的「重试 3 次」说法
         assert 'A000871' in body and '6.5' in body
 
-        # 转人工后不再被扫描、不再提交
-        assert repo.fetch_candidates() == []
-        with patch('app.csi_sync_worker.requests.post') as post:
-            stats2 = _run(repo)
-        post.assert_not_called()
-        assert stats2['scanned'] == 0
+    def test_resend_resets_then_syncs_successfully(self, client, auth_headers, monkeypatch):
+        """失败后调 resend 接口：reset 为 PENDING/新 traceId → 同步器再次提交 → SUCCESS"""
+        repo = FakeRepo([_row()])
+        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('数量超发'))), \
+             patch('app.csi_sync_worker.send_email'):
+            _run(repo)
+
+        row = repo.row(1)
+        failed_trace = row['traceid']
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+
+        # 端点内部用 get_db + _fetch_row + sync_worker._Repo，这里都指向 FakeRepo
+        from app.routes import csi_interface as ci
+        monkeypatch.setattr(ci, 'get_db', lambda: MagicMock())
+        monkeypatch.setattr(ci, '_fetch_row', lambda conn, rid: dict(repo.row(rid)))
+        monkeypatch.setattr(w, '_Repo', lambda conn: repo)
+
+        responses = [_resp(200, _queued('QUEUED')), _resp(200, _ok('SUCCESS', {'Success': True}))]
+        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post:
+            resp = auth_headers('admin').post('/api/csi-interface/1/resend')
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload['success'] is True
+        new_trace = payload['data']['traceid']
+        assert new_trace != failed_trace                     # 重发生成新 traceId
+        assert post.call_args.kwargs['json']['traceId'] == new_trace
+
+        row = repo.row(1)
+        assert row['is_sync'] == 1 and row['status'] == 'SUCCESS'
+        assert row['retry_count'] == 0
+        assert row['errormessage'] is None
+
+        # 成功后不再被扫描
+        assert _run(repo)['scanned'] == 0
 
     def test_unconfirmed_counts_as_failure(self):
         repo = FakeRepo([_row()])
         with patch('app.csi_sync_worker.requests.post',
-                   return_value=_resp(200, {'data': {'status': 'UNCONFIRMED'}})):
+                   return_value=_resp(200, {'data': {'status': 'UNCONFIRMED'}})), \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
         row = repo.row(1)
         assert row['retry_count'] == 1
         assert 'UNCONFIRMED' in row['errormessage']
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_email_failure_does_not_break_run(self):
         repo = FakeRepo([_row(retry_count=2)])
@@ -386,18 +438,20 @@ class TestFromLocation:
         assert repo.row(1)['from_location'] == 'B-02-03'
         assert repo.row(1)['is_sync'] == 1
 
-    def test_lookup_failure_counts_as_retry(self):
+    def test_lookup_failure_is_terminal(self):
         repo = FakeRepo([_row(from_location='')])
         with patch('app.csi_sync_worker.requests.post') as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker.send_email') as mail:
             client_cls.return_value.get_lot_location.return_value = None
-            _run(repo)
+            stats = _run(repo)
 
         post.assert_not_called()          # 不发出必然失败的请求
         row = repo.row(1)
         assert row['retry_count'] == 1
         assert row['errormessage'] == '无法获取 Lot 库位'
-        assert row['is_sync'] == 0
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert stats['manual'] == 1 and mail.call_count == 1
 
 
 # ====================================================================== #
@@ -576,11 +630,12 @@ class TestMiscReceiptAndIssue:
         assert repo.row(2)['to_location'] == 'C-09-09'
         assert repo.row(2)['is_sync'] == 1
 
-    def test_location_lookup_failure_counts_as_retry(self):
-        """库位补不到 → 不提交、retry_count+1"""
+    def test_location_lookup_failure_is_terminal(self):
+        """库位补不到 → 不提交、直接转人工（FAILED_MANUAL）"""
         repo = FakeRepo([_misc_row(to_location='')])
         with patch('app.csi_sync_worker.requests.post') as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker.send_email'):
             client_cls.return_value.get_lot_location.return_value = None
             _run(repo)
 
@@ -588,27 +643,18 @@ class TestMiscReceiptAndIssue:
         row = repo.row(2)
         assert row['retry_count'] == 1
         assert row['errormessage'] == '无法获取 Lot 库位'
-        assert row['is_sync'] == 0
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_empty_account_blocks_request_then_manual_with_email(self):
-        """account 为空 → 不发请求，3 次后 FAILED_MANUAL，邮件含接口名"""
+        """account 为空 → 不发请求，首次即 FAILED_MANUAL，邮件含接口名"""
         repo = FakeRepo([_misc_row(account=None)])
         with patch('app.csi_sync_worker.requests.post') as post, \
              patch('app.csi_sync_worker.send_email') as mail:
-            _run(repo)
-            assert repo.row(2)['retry_count'] == 1
-            assert repo.row(2)['is_sync'] == 0
-            assert mail.call_count == 0
-
-            _run(repo)
-            assert repo.row(2)['retry_count'] == 2
-            assert mail.call_count == 0
-
             stats = _run(repo)
 
         post.assert_not_called()          # account 必填，绝不发必然失败的请求
         row = repo.row(2)
-        assert row['retry_count'] == 3
+        assert row['retry_count'] == 1
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
         assert 'account' in row['errormessage']
         assert stats['manual'] == 1
@@ -625,20 +671,20 @@ class TestMiscReceiptAndIssue:
         # 转人工后不再被扫描
         assert repo.fetch_candidates() == []
 
-    def test_failed_response_retries_new_trace_same_document(self):
-        """FAILED（data.error）→ 换 traceId、单号不变"""
+    def test_failed_response_is_terminal_keeps_trace(self):
+        """FAILED（data.error）→ 单号与 traceId 都不变，直接转人工"""
         repo = FakeRepo([_misc_row()])
         with patch('app.csi_sync_worker.requests.post',
-                   return_value=_resp(200, _failed('科目 505100 无效'))):
+                   return_value=_resp(200, _failed('科目 505100 无效'))), \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         row = repo.row(2)
         assert row['retry_count'] == 1
         assert row['documentnumber'] == 'INV260001001'
-        assert row['traceid'] != 'INV260001001-261017001-1a2b3c4d5e6f'
-        assert row['traceid'].startswith('INV260001001-261017001-')
+        assert row['traceid'] == 'INV260001001-261017001-1a2b3c4d5e6f'
         assert '科目 505100 无效' in row['errormessage']
-        assert row['is_sync'] == 0 and row['status'] == 'PENDING'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_misc_success_with_ion_list(self):
         """ion 为数组且全部 Success → 判定成功"""
@@ -719,11 +765,12 @@ class TestJobIssue:
         assert repo.row(3)['to_location'] == 'C-09-09'
         assert repo.row(3)['is_sync'] == 1
 
-    def test_location_lookup_failure_counts_as_retry(self):
-        """库位补不到 → 不发请求、retry_count+1"""
+    def test_location_lookup_failure_is_terminal(self):
+        """库位补不到 → 不发请求、直接转人工"""
         repo = FakeRepo([_job_issue_row(to_location='')])
         with patch('app.csi_sync_worker.requests.post') as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker.send_email'):
             client_cls.return_value.get_lot_location.return_value = None
             client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             _run(repo)
@@ -732,37 +779,39 @@ class TestJobIssue:
         row = repo.row(3)
         assert row['retry_count'] == 1
         assert '库位' in row['errormessage']
-        assert row['is_sync'] == 0
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_missing_job_blocks_request(self):
-        """job 为空 → 不发请求、retry_count+1"""
+        """job 为空 → 不发请求、直接转人工"""
         repo = FakeRepo([_job_issue_row(job=None)])
-        with patch('app.csi_sync_worker.requests.post') as post:
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         post.assert_not_called()
         row = repo.row(3)
         assert row['retry_count'] == 1
         assert 'job' in row['errormessage']
-        assert row['is_sync'] == 0
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
-    def test_failed_keeps_document_and_swaps_trace(self):
-        """平台 FAILED → 单号不变、只换 traceId"""
+    def test_failed_keeps_document_and_trace(self):
+        """平台 FAILED → 单号与 traceId 都不变，直接转人工"""
         repo = FakeRepo([_job_issue_row()])
         with patch('app.csi_sync_worker.requests.post',
-                   return_value=_resp(200, _failed('工单已关闭'))):
+                   return_value=_resp(200, _failed('工单已关闭'))), \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         row = repo.row(3)
         assert row['retry_count'] == 1
         assert row['documentnumber'] == 'JOB00001'
-        assert row['traceid'] != 'JIJ000029867-B052552-0f1e2d3c4b5a'
+        assert row['traceid'] == 'JIJ000029867-B052552-0f1e2d3c4b5a'
         assert '工单已关闭' in row['errormessage']
-        assert row['is_sync'] == 0 and row['status'] == 'PENDING'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_manual_fail_email_has_job(self):
-        """连续 3 次失败 → 转人工，邮件带接口名与工单号"""
-        repo = FakeRepo([_job_issue_row(retry_count=2)])
+        """转人工 → 邮件带接口名与工单号"""
+        repo = FakeRepo([_job_issue_row()])
         with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('工单不存在'))), \
              patch('app.csi_sync_worker.send_email') as mail:
             stats = _run(repo)
@@ -824,12 +873,13 @@ class TestJobIssueBackflush:
         assert repo.row(3)['is_sync'] == 1 and stats['success'] == 1
 
     def test_backflush_lookup_failure_blocks_submission(self, _no_real_csi):
-        """查不到工单物料 → 不提交，走失败流程（原因含「取消 Backflush 失败」）"""
+        """查不到工单物料 → 不提交，直接转人工（原因含「取消 Backflush 失败」）"""
         client = _no_real_csi
         client.clear_job_matl_backflush.return_value = (
             False, '未找到工单物料 J000029867-0000 / B052552（或查询失败）')
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post') as post:
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email'):
             stats = _run(repo)
 
         post.assert_not_called()
@@ -837,7 +887,8 @@ class TestJobIssueBackflush:
         assert row['retry_count'] == 1
         assert row['errormessage'].startswith('取消 Backflush 失败')
         assert '未找到工单物料' in row['errormessage']
-        assert row['is_sync'] == 0 and stats['retried'] == 1
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert stats['manual'] == 1 and stats['retried'] == 0
 
     def test_backflush_update_failure_blocks_submission(self, _no_real_csi):
         """IDO update 非 2xx → 不提交（避免与倒冲冲突）"""
@@ -845,7 +896,8 @@ class TestJobIssueBackflush:
         client.clear_job_matl_backflush.return_value = (
             False, '更新工单物料 J000029867-0000 / B052552 失败：HTTP 500')
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post') as post:
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         post.assert_not_called()
@@ -855,11 +907,12 @@ class TestJobIssueBackflush:
         assert 'HTTP 500' in row['errormessage']
 
     def test_backflush_exception_blocks_submission(self, _no_real_csi):
-        """CSIClient 抛异常 → 不放行，计一次失败"""
+        """CSIClient 抛异常 → 不放行，计一次失败并转人工"""
         client = _no_real_csi
         client.clear_job_matl_backflush.side_effect = RuntimeError('ido down')
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post') as post:
+        with patch('app.csi_sync_worker.requests.post') as post, \
+             patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
         post.assert_not_called()
