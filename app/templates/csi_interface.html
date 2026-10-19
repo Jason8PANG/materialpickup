@@ -39,14 +39,11 @@
                     <option value="FAILED_MANUAL">FAILED_MANUAL</option>
                 </select>
             </div>
-            <div class="col-6 col-md-2">
+            <div class="col-6 col-md-3">
                 <input type="text" class="form-control form-control-sm" id="fItem" data-i18n="csi.item" placeholder="物料号">
             </div>
-            <div class="col-6 col-md-2">
+            <div class="col-6 col-md-3">
                 <input type="text" class="form-control form-control-sm" id="fLot" data-i18n="csi.lot" placeholder="批次">
-            </div>
-            <div class="col-6 col-md-2">
-                <input type="text" class="form-control form-control-sm" id="fTrace" data-i18n="csi.trace_placeholder" placeholder="traceId 模糊查询">
             </div>
         </div>
         <div class="row g-2 mb-3">
@@ -162,7 +159,6 @@ function buildCsiQuery(withPaging) {
     if (fStatus.value) p.set('status', fStatus.value);
     if (fItem.value.trim()) p.set('item', fItem.value.trim());
     if (fLot.value.trim()) p.set('lot', fLot.value.trim());
-    if (fTrace.value.trim()) p.set('traceid', fTrace.value.trim());
     if (fDateFrom.value) p.set('date_from', fDateFrom.value);
     if (fDateTo.value) p.set('date_to', fDateTo.value);
     if (fKeyword.value.trim()) p.set('keyword', fKeyword.value.trim());
@@ -371,7 +367,6 @@ function resetFilters() {
     fStatus.value = '';
     fItem.value = '';
     fLot.value = '';
-    fTrace.value = '';
     fDateFrom.value = '';
     fDateTo.value = '';
     fKeyword.value = '';
