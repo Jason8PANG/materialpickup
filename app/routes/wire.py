@@ -1095,6 +1095,7 @@ def _build_report_pdf(count, items):
         drawing = createBarcodeDrawing(
             'Code128', value=count_no, barHeight=12 * mm,
             barWidth=0.28 * mm, humanReadable=False, quiet=True)
+        drawing.hAlign = 'CENTER'
         barcode_cell.append(drawing)
         barcode_cell.append(Paragraph(count_no, small_style))
     title_row = Table([[logo_cell, title_block, barcode_cell]],
@@ -1120,7 +1121,8 @@ def _build_report_pdf(count, items):
          Paragraph('Loss Amount', label_style), Paragraph(f'{loss_amount:.2f}', value_style),
          Paragraph('Net Impact', label_style), Paragraph(f'{net_impact:.2f}', value_style)],
     ]
-    summary = Table(summary_rows, colWidths=[30 * mm, 52 * mm, 30 * mm, 52 * mm, 34 * mm, 52 * mm])
+    # 与明细表等宽（257mm），三张表右边缘对齐
+    summary = Table(summary_rows, colWidths=[30 * mm, 54 * mm, 30 * mm, 54 * mm, 34 * mm, 55 * mm])
     summary.hAlign = 'LEFT'
     summary.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#BFBFBF')),
@@ -1177,8 +1179,8 @@ def _build_report_pdf(count, items):
         'Unpriced Items are diff rows whose standard cost is unavailable.', note_style))
     story.append(Spacer(1, 8 * mm))
 
-    # ---- 签字区（铺满页面可用宽度）--------------------------------------- #
-    sign_w = page_w - 2 * margin_lr
+    # ---- 签字区（与汇总表/明细表等宽 257mm）------------------------------- #
+    sign_w = 257 * mm
     sign_table = Table([
         [Paragraph('Applicant:', sign_style),
          Paragraph('Applicant Dept. Manager:', sign_style),
