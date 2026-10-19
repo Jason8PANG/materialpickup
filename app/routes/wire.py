@@ -945,7 +945,7 @@ def _fetch_unit_costs(siteref, part_numbers):
 
 
 def _build_report_pdf(count, items):
-    """生成「Wire Rod Inventory Count Report」PDF。
+    """生成「Shopfloor Inventory Count Report」PDF。
 
     - 全英文、内置 Helvetica，跨平台不依赖字体文件
     - 每行差异金额 = |diff_converted| x CSI 标准成本
@@ -1069,16 +1069,27 @@ def _build_report_pdf(count, items):
         buf, pagesize=landscape(A4),
         leftMargin=margin_lr, rightMargin=margin_lr,
         topMargin=12 * mm, bottomMargin=16 * mm,
-        title='Wire Rod Inventory Count Report',
+        title='Shopfloor Inventory Count Report',
         author='Material Pickup System')
 
     story = []
 
-    # ---- 标题 + 条形码 -------------------------------------------------- #
+    # ---- 标题 + Logo + 条形码 -------------------------------------------- #
+    import os
+    from reportlab.platypus import Image
+
     count_no = count.get('count_no') or ''
-    title_block = [Paragraph('Wire Rod Inventory Count Report', title_style),
+    title_block = [Paragraph('Shopfloor Inventory Count Report', title_style),
                    Spacer(1, 2 * mm),
                    Paragraph(f'Count No.: <b>{count_no}</b>', value_style)]
+    # 公司 Logo（随代码分发，不依赖绝对路径）
+    logo_cell = []
+    logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static', 'images', 'logo.png')
+    if os.path.exists(logo_path):
+        try:
+            logo_cell.append(Image(logo_path, width=26 * mm, height=20 * mm))
+        except Exception:
+            logo_cell = []
     barcode_cell = [Spacer(1, 1 * mm)]
     if count_no:
         drawing = createBarcodeDrawing(
@@ -1086,8 +1097,8 @@ def _build_report_pdf(count, items):
             barWidth=0.28 * mm, humanReadable=False, quiet=True)
         barcode_cell.append(drawing)
         barcode_cell.append(Paragraph(count_no, small_style))
-    title_row = Table([[title_block, barcode_cell]],
-                      colWidths=[190 * mm, 70 * mm])
+    title_row = Table([[logo_cell, title_block, barcode_cell]],
+                      colWidths=[30 * mm, 160 * mm, 77 * mm])
     title_row.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
@@ -1166,8 +1177,8 @@ def _build_report_pdf(count, items):
         'Unpriced Items are diff rows whose standard cost is unavailable.', note_style))
     story.append(Spacer(1, 8 * mm))
 
-    # ---- 签字区 --------------------------------------------------------- #
-    sign_w = 190 * mm
+    # ---- 签字区（铺满页面可用宽度）--------------------------------------- #
+    sign_w = page_w - 2 * margin_lr
     sign_table = Table([
         [Paragraph('Applicant:', sign_style),
          Paragraph('Applicant Dept. Manager:', sign_style),
