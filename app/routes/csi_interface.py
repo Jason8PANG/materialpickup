@@ -1,8 +1,9 @@
-"""同步接口查询（kr_csi_interface）：条件筛选列表 + Excel 导出 + 失败重发。
+"""同步接口查询（kr_csi_interface）：条件筛选列表 + Excel 导出 + 失败重发 + 人工取消。
 
 数据来源：备料完成写入 CSI 接口表，由 app/csi_sync_worker.py 轮询同步。
 权限：登录即可查看；站点范围受会话 available_sites 限制（admin 可跨站）。
 重发（POST /api/csi-interface/<id>/resend）：仅 warehouse/admin，且只对失败/终止态开放。
+取消（POST /api/csi-interface/<id>/cancel）：仅 warehouse/admin，且只对未成功过账的记录开放。
 """
 import io
 import logging
@@ -102,6 +103,10 @@ def _build_query(user):
         val = (args.get(key) or '').strip()
         if val:
             wb.add(f'{col} LIKE %s', f'%{val}%')
+
+    traceid = (args.get('traceid') or '').strip()
+    if traceid:
+        wb.add('ci.traceid LIKE %s', f'%{traceid}%')
 
     request_id = (args.get('request_id') or '').strip()
     if request_id:
@@ -355,6 +360,82 @@ def api_resend(row_id):
             'success': False, 'message': message,
             'data': _resend_data(row_id, final_trace, api_name, final_status, message, error),
         })
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ====================================================================== #
+#  人工取消（未成功过账的记录 → CANCELLED，不再提交到 ERP）
+# ====================================================================== #
+# 仅这些状态可取消；SUCCESS/REVERSED 已过账、CANCELLED 已取消，均不允许
+CANCEL_ALLOWED_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'FAILED_MANUAL', 'NOOP', 'FAILED')
+CANCEL_SUCCESS_STATUS = ('SUCCESS', 'REVERSED')
+
+
+@csi_interface_bp.route('/api/csi-interface/<int:row_id>/cancel', methods=['POST'])
+def api_cancel(row_id):
+    """人工取消：置 CANCELLED / is_sync=2，保留 traceId 以便追溯。
+
+    取消后同步器不会再捞取该行（fetch_candidates 仅取 is_sync=0），
+    需要恢复时可对失败行使用「重新发送」重置为待同步。
+    """
+    user, err = _check_login()
+    if err:
+        return err
+    if (user or {}).get('role') not in ('warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    operator = user.get('username') or user.get('display_name') or 'system'
+    conn = get_db()
+    try:
+        row = _fetch_row(conn, row_id)
+        if not row:
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+        scope_err = _check_site_scope(user, row)
+        if scope_err:
+            return scope_err
+
+        is_sync = row.get('is_sync')
+        status = str(row.get('status') or '').upper()
+        if status == 'CANCELLED':
+            return jsonify({'success': False, 'message': '已是取消状态'}), 400
+        if is_sync == 1 or status in CANCEL_SUCCESS_STATUS:
+            return jsonify({'success': False,
+                            'message': '已成功过账，不能取消（如需冲销请走盘点差异调整或反向交易）'}), 400
+        if status not in CANCEL_ALLOWED_STATUS:
+            return jsonify({'success': False,
+                            'message': f'当前状态（{status or "空"}）不允许取消'}), 400
+
+        # 条件更新兜底并发：期间被同步器抢占/提交成功则 rowcount=0
+        placeholders = ', '.join(['%s'] * len(CANCEL_ALLOWED_STATUS))
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE kr_csi_interface SET status = 'CANCELLED', is_sync = 2, "
+                "errormessage = %s, transient_count = 0, last_poll_at = NULL, "
+                "updateby = %s, updatedate = NOW() "
+                f"WHERE id = %s AND is_sync <> 1 AND status IN ({placeholders})",
+                ('人工取消', operator, row_id) + CANCEL_ALLOWED_STATUS
+            )
+            affected = cur.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+        if not affected:
+            return jsonify({'success': False, 'message': '记录状态已变化，请刷新后重试'}), 400
+
+        logger.info('CSI 取消：id=%s 原状态=%s trace=%s 操作人=%s',
+                    row_id, status or '空', row.get('traceid'), operator)
+        return jsonify({'success': True, 'message': '已取消',
+                        'data': {'row_id': row_id, 'status': 'CANCELLED', 'message': '已取消'}})
     finally:
         try:
             conn.close()

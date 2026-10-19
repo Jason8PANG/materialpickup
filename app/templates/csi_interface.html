@@ -46,20 +46,17 @@
                 <input type="text" class="form-control form-control-sm" id="fLot" data-i18n="csi.lot" placeholder="批次">
             </div>
             <div class="col-6 col-md-2">
-                <input type="text" class="form-control form-control-sm" id="fDoc" data-i18n="csi.documentnumber" placeholder="单据号">
+                <input type="text" class="form-control form-control-sm" id="fTrace" data-i18n="csi.trace_placeholder" placeholder="traceId 模糊查询">
             </div>
         </div>
         <div class="row g-2 mb-3">
-            <div class="col-6 col-md-2">
-                <input type="text" class="form-control form-control-sm" id="fRequestId" data-i18n="csi.request_id" placeholder="申请单号">
-            </div>
             <div class="col-6 col-md-2">
                 <input type="date" class="form-control form-control-sm" id="fDateFrom" title="开始日期">
             </div>
             <div class="col-6 col-md-2">
                 <input type="date" class="form-control form-control-sm" id="fDateTo" title="结束日期">
             </div>
-            <div class="col-6 col-md-2">
+            <div class="col-6 col-md-4">
                 <input type="text" class="form-control form-control-sm" id="fKeyword" data-i18n="csi.keyword" placeholder="traceId / 错误信息 / 创建人">
             </div>
             <div class="col-6 col-md-2">
@@ -165,8 +162,7 @@ function buildCsiQuery(withPaging) {
     if (fStatus.value) p.set('status', fStatus.value);
     if (fItem.value.trim()) p.set('item', fItem.value.trim());
     if (fLot.value.trim()) p.set('lot', fLot.value.trim());
-    if (fDoc.value.trim()) p.set('documentnumber', fDoc.value.trim());
-    if (fRequestId.value.trim()) p.set('request_id', fRequestId.value.trim());
+    if (fTrace.value.trim()) p.set('traceid', fTrace.value.trim());
     if (fDateFrom.value) p.set('date_from', fDateFrom.value);
     if (fDateTo.value) p.set('date_to', fDateTo.value);
     if (fKeyword.value.trim()) p.set('keyword', fKeyword.value.trim());
@@ -201,18 +197,56 @@ function csiStatusBadge(status) {
 
 // 失败/终止态才可重发（与后端 RESEND_FAILED_STATUS 保持一致）
 var CSI_RESEND_STATUSES = ['FAILED_MANUAL', 'NOOP', 'CANCELLED', 'FAILED'];
+// 未成功过账才可取消（与后端 CANCEL_ALLOWED_STATUS 保持一致）
+var CSI_CANCEL_STATUSES = ['PENDING', 'QUEUED', 'SUBMITTING', 'FAILED_MANUAL', 'NOOP', 'FAILED'];
 
 function csiCanResend(r) {
     if (r.is_sync === 2) return true;
     return CSI_RESEND_STATUSES.indexOf(String(r.status || '').toUpperCase()) >= 0;
 }
 
+function csiCanCancel(r) {
+    var st = String(r.status || '').toUpperCase();
+    if (r.is_sync === 1) return false;
+    return CSI_CANCEL_STATUSES.indexOf(st) >= 0;
+}
+
 function csiActionCell(r) {
-    if (!csiCanResend(r)) return '<td class="text-center">-</td>';
-    return '<td class="text-center">' +
-        '<button type="button" class="btn btn-outline-warning btn-sm csi-resend-btn" data-id="' +
-        csiEsc(r.id) + '"><i class="fas fa-redo me-1"></i>' +
-        csiEsc(__('csi.resend')) + '</button></td>';
+    var btns = '';
+    if (csiCanCancel(r)) {
+        btns += '<button type="button" class="btn btn-outline-secondary btn-sm csi-cancel-btn" data-id="' +
+            csiEsc(r.id) + '"><i class="fas fa-ban me-1"></i>' +
+            csiEsc(__('csi.cancel')) + '</button>';
+    }
+    if (csiCanResend(r)) {
+        btns += '<button type="button" class="btn btn-outline-warning btn-sm csi-resend-btn" data-id="' +
+            csiEsc(r.id) + '"><i class="fas fa-redo me-1"></i>' +
+            csiEsc(__('csi.resend')) + '</button>';
+    }
+    if (!btns) return '<td class="text-center">-</td>';
+    return '<td class="text-center"><div class="d-flex gap-1 justify-content-center">' + btns + '</div></td>';
+}
+
+// 取消：确认 → 调接口 → 成功刷新列表（失败 toast 后端 message）
+function csiCancel(btn) {
+    var rowId = btn.getAttribute('data-id');
+    if (!rowId) return;
+    if (!window.confirm(__('csi.cancel_confirm'))) return;
+
+    var originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' +
+        csiEsc(__('csi.cancelling'));
+
+    apiPost('/api/csi-interface/' + rowId + '/cancel', {}, function (resp) {
+        var d = resp.data || {};
+        showToast('success', d.message || resp.message || __('csi.cancelled_ok'));
+        loadCsi();
+    }, function (resp) {
+        showToast('error', resp.message || __('csi.cancel_failed'));
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    });
 }
 
 // 重发：确认 → loading（单次最长约 30 秒）→ 结果 toast（失败可再次点击重试）
@@ -337,8 +371,7 @@ function resetFilters() {
     fStatus.value = '';
     fItem.value = '';
     fLot.value = '';
-    fDoc.value = '';
-    fRequestId.value = '';
+    fTrace.value = '';
     fDateFrom.value = '';
     fDateTo.value = '';
     fKeyword.value = '';
@@ -351,8 +384,11 @@ document.getElementById('exportBtn').addEventListener('click', function () {
 // 操作列按钮走事件委托（表格行是动态渲染的）
 document.getElementById('csiBody').addEventListener('click', function (e) {
     var target = e.target;
-    var btn = target && target.closest ? target.closest('.csi-resend-btn') : null;
-    if (btn) csiResend(btn);
+    if (!target || !target.closest) return;
+    var btn = target.closest('.csi-resend-btn');
+    if (btn) { csiResend(btn); return; }
+    btn = target.closest('.csi-cancel-btn');
+    if (btn) csiCancel(btn);
 });
 document.addEventListener('DOMContentLoaded', function () {
     loadCsi();
