@@ -24,15 +24,19 @@
                     <li class="nav-item">
                         <a class="nav-link" href="/kanban"><i class="fas fa-columns me-1"></i><span data-i18n="nav.kanban">看板</span></a>
                     </li>
-                    {% if session.user.role in ['requester', 'admin'] %}
+                    {% if session.user.role in ['requester', 'admin', 'me_engineer', 'warehouse'] %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="fas fa-plus-circle me-1"></i><span data-i18n="nav.new">新建</span>
                         </a>
                         <ul class="dropdown-menu">
+                            {% if session.user.role in ['requester', 'admin'] %}
                             <li><a class="dropdown-item" href="/request/new"><i class="fas fa-list me-2"></i><span data-i18n="nav.new_normal">新建按需物料申请</span></a></li>
                             <li><a class="dropdown-item" href="/request/minpack/new"><i class="fas fa-cube me-2"></i><span data-i18n="nav.new_minpack">新建最小包装物料申请</span></a></li>
                             <li><a class="dropdown-item" href="/return/new"><i class="fas fa-undo-alt me-2"></i><span data-i18n="nav.new_return">新建物料退料申请</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            {% endif %}
+                            <li><a class="dropdown-item" href="/wire/count"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.wire_count">线材库存盘点</span></a></li>
                         </ul>
                     </li>
                     {% endif %}
@@ -44,7 +48,6 @@
                         <ul class="dropdown-menu">
                             <li><a class="dropdown-item" href="/wire/coils"><i class="fas fa-tags me-2"></i><span data-i18n="nav.wire_coils">卷标查询</span></a></li>
                             <li><a class="dropdown-item" href="/wire/consumption"><i class="fas fa-chart-line me-2"></i><span data-i18n="nav.wire_consumption">线材消耗查询</span></a></li>
-                            <li><a class="dropdown-item" href="/wire/count"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.wire_count">线材库存盘点</span></a></li>
                             {% if session.user.role in ['warehouse', 'admin'] %}
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="/return/review"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.return_review">退料复核</span></a></li>
