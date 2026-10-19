@@ -621,14 +621,17 @@ def _send_failure_alert(row, retry, reason):
     # 紧凑版：两个「标签|值」放一行（4 列），行数减半、字号缩小，邮件预览窗格即可看全
     pairs = [cells[i:i + 2] for i in range(0, len(cells), 2)]
     trs = []
-    for pair in pairs:
+    for pi, pair in enumerate(pairs):
         tds = []
-        for k, v in pair:
+        for idx, (k, v) in enumerate(pair):
             val = html.escape(str(v if v is not None else ''))
+            # 左侧值列（表格第 2 列）固定窄宽，避免短内容把列撑得很宽
+            val_w = 'width:100px;' if (pi == 0 and idx == 1) else ''
             tds.append(
                 '<td style="padding:3px 8px;border:1px solid #ececec;background:#f7f7f7;'
                 'color:#555;white-space:nowrap;width:72px;">' + html.escape(str(k)) + '</td>'
-                '<td style="padding:3px 8px;border:1px solid #ececec;word-break:break-all;">' + val + '</td>'
+                '<td style="padding:3px 8px;border:1px solid #ececec;word-break:break-all;'
+                + val_w + '">' + val + '</td>'
             )
         if len(pair) == 1:
             tds.append('<td style="padding:3px 8px;border:1px solid #ececec;background:#f7f7f7;"></td>'
@@ -652,7 +655,7 @@ def _send_failure_alert(row, retry, reason):
     <div style="max-width:700px;margin:0 auto;font-family:Arial,'Microsoft YaHei',sans-serif;
                 font-size:13px;line-height:1.5;padding:6px 2px;">
       <p style="margin:6px 0;">{intro}</p>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;line-height:1.45;margin:6px 0 10px;">{rows_html}</table>
+      <table style="width:660px;max-width:100%;border-collapse:collapse;font-size:12px;line-height:1.45;margin:6px 0 10px;">{rows_html}</table>
       <p style="margin:6px 0;color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
       <p style="margin:6px 0;color:#666;font-size:12px;">{footer}</p>
       <p style="margin:6px 0;color:#999;font-size:11px;">本邮件由物料领取看板系统自动发送，请勿直接回复。</p>
