@@ -908,156 +908,285 @@ def api_count_complete(count_id):
 
 
 # ------------------------------------------------------------------ #
-#  PDF 报告
+#  PDF 报告（全英文 + CSI 标准成本差异金额 + 单号条形码）
 # ------------------------------------------------------------------ #
+#  字体策略：只使用 PDF 内置 Helvetica / Helvetica-Bold。
+#  生产环境是 CentOS，没有任何中文 TTF，注册 Windows 字体路径必然失败并回退，
+#  中文随即变成方块/乱码。因此报告内容全部改为 ASCII 英文，不再依赖系统字体。
+REPORT_FONT = 'Helvetica'
+REPORT_FONT_BOLD = 'Helvetica-Bold'
+
+
+def _fmt_cell(value, digits=2):
+    """数值单元格格式化：None/空 → ''，其余按指定小数位输出（兼容 Decimal）"""
+    if value is None or value == '':
+        return ''
+    try:
+        return f'{float(value):.{digits}f}'
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fetch_unit_costs(siteref, part_numbers):
+    """按物料去重查询 CSI 标准成本；同一 client 实例复用，查不到/异常记 None"""
+    costs = {}
+    client = None
+    for pn in part_numbers:
+        if not pn or pn in costs:
+            continue
+        try:
+            if client is None:
+                client = CSIClient(siteref or '310')
+            costs[pn] = client.get_item_cost(pn)
+        except Exception as e:      # 成本查询失败不阻断报告
+            logger.warning('[REPORT] get_item_cost(%s) failed: %s', pn, e)
+            costs[pn] = None
+    return costs
+
+
 def _build_report_pdf(count, items):
-    """生成「线边仓线材盘点报告」PDF（reportlab + SimHei 中文字体）"""
+    """生成「Wire Rod Inventory Count Report」PDF。
+
+    - 全英文、内置 Helvetica，跨平台不依赖字体文件
+    - 每行差异金额 = |diff_converted| x CSI 标准成本
+    - 汇总盘盈/盘亏金额与净影响，取不到成本的行计入 Unpriced Items
+    - 标题区嵌入 Code128 单号条形码
+    """
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib import colors
     from reportlab.lib.units import mm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                    Paragraph, Spacer)
     from reportlab.lib.styles import ParagraphStyle
+    from reportlab.graphics.barcode import createBarcodeDrawing
 
-    # 中文字体（SimHei）
-    font_paths = [
-        r'C:\Windows\Fonts\simhei.ttf',
-        r'C:\Windows\Fonts\simsun.ttc',
-        r'C:\Windows\Fonts\msyh.ttc',
-    ]
-    font_name = 'SimHei'
-    registered = False
-    for fp in font_paths:
-        try:
-            pdfmetrics.registerFont(TTFont(font_name, fp))
-            registered = True
-            break
-        except Exception:
-            continue
-    if not registered:
-        font_name = 'Helvetica'
+    page_w, page_h = landscape(A4)
+    margin_lr = 12 * mm
+
+    # ---- 成本查询：按物料去重，整体只用一个 CSIClient ------------------ #
+    part_numbers = []
+    for it in items:
+        pn = it.get('part_number')
+        if pn and pn not in part_numbers:
+            part_numbers.append(pn)
+    unit_costs = _fetch_unit_costs(count.get('siteref'), part_numbers)
+
+    # ---- 逐行计算差异数量 / 金额 -------------------------------------- #
+    rows_data = []
+    gain_amount = 0.0
+    loss_amount = 0.0
+    diff_items = 0
+    unpriced_items = 0
+    sum_orig = sum_used = sum_remain = sum_actual = sum_diff_mm = sum_diff_qty = 0.0
+
+    for it in items:
+        diff_converted = it.get('diff_converted')
+        if diff_converted is None and it.get('diff_mm') is not None:
+            f = _factor(it.get('unit'))
+            if f:
+                diff_converted = float(it['diff_mm']) / f
+        diff_qty = float(diff_converted) if diff_converted is not None else None
+
+        cost = unit_costs.get(it.get('part_number'))
+        amount = None
+        if diff_qty is not None and cost is not None:
+            amount = round(abs(diff_qty) * float(cost), 2)
+
+        if diff_qty is not None and abs(diff_qty) > 0.000001:
+            diff_items += 1
+            if cost is None:
+                unpriced_items += 1
+            elif diff_qty > 0:
+                gain_amount += amount
+            else:
+                loss_amount += amount
+
+        # 合计行累加（忽略空值）
+        if it.get('original_qty') is not None:
+            sum_orig += float(it['original_qty'])
+        if it.get('used_mm') is not None:
+            sum_used += float(it['used_mm'])
+        if it.get('remain_mm') is not None:
+            sum_remain += float(it['remain_mm'])
+        if it.get('actual_mm') is not None:
+            sum_actual += float(it['actual_mm'])
+        if it.get('diff_mm') is not None:
+            sum_diff_mm += float(it['diff_mm'])
+        if diff_qty is not None:
+            sum_diff_qty += diff_qty
+
+        rows_data.append([
+            it.get('coil_id') or '',
+            it.get('part_number') or '',
+            it.get('lot_no') or '',
+            _fmt_cell(it.get('original_qty'), 2),
+            it.get('unit') or '',
+            _fmt_cell(it.get('used_mm'), 2),
+            _fmt_cell(it.get('remain_mm'), 2),
+            _fmt_cell(it.get('actual_mm'), 2),
+            _fmt_cell(it.get('diff_mm'), 2),
+            _fmt_cell(diff_qty, 2),
+            f'{float(cost):.4f}' if cost is not None else '-',
+            f'{amount:.2f}' if amount is not None else '-',
+        ])
+
+    net_impact = gain_amount - loss_amount
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    completed_at = count.get('completed_at')
+    if hasattr(completed_at, 'strftime'):
+        completed_at = completed_at.strftime('%Y-%m-%d %H:%M:%S')
+    elif completed_at:
+        completed_at = str(completed_at)
+    else:
+        completed_at = '-'
+
+    # ---- 样式 ---------------------------------------------------------- #
+    cell_style = ParagraphStyle('cell', fontName=REPORT_FONT, fontSize=8, leading=10)
+    head_style = ParagraphStyle('head', fontName=REPORT_FONT_BOLD, fontSize=7.5,
+                                leading=9, alignment=1, textColor=colors.white)
+    title_style = ParagraphStyle('title', fontName=REPORT_FONT_BOLD, fontSize=16,
+                                 leading=20)
+    small_style = ParagraphStyle('small', fontName=REPORT_FONT, fontSize=7, leading=9,
+                                 alignment=1)
+    label_style = ParagraphStyle('label', fontName=REPORT_FONT_BOLD, fontSize=8.5,
+                                 leading=11)
+    value_style = ParagraphStyle('value', fontName=REPORT_FONT, fontSize=8.5,
+                                 leading=11)
+    sign_style = ParagraphStyle('sign', fontName=REPORT_FONT, fontSize=9, leading=13)
 
     buf = _io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4,  # 纵向
-                            leftMargin=15 * mm, rightMargin=15 * mm,
-                            topMargin=15 * mm, bottomMargin=18 * mm,
-                            title='线边仓线材盘点报告')
-    style = ParagraphStyle('zh', fontName=font_name, fontSize=10, leading=14)
+
+    def _footer(canvas, doc_):
+        canvas.saveState()
+        canvas.setFont(REPORT_FONT, 7)
+        canvas.setFillColor(colors.grey)
+        canvas.drawString(margin_lr, 8 * mm, 'Generated by Material Pickup System')
+        canvas.drawRightString(page_w - margin_lr, 8 * mm,
+                               f'Generated at {generated_at}    Page {doc_.page}')
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        leftMargin=margin_lr, rightMargin=margin_lr,
+        topMargin=12 * mm, bottomMargin=16 * mm,
+        title='Wire Rod Inventory Count Report',
+        author='Material Pickup System')
 
     story = []
-    # 标题行：左=标题，右=公司 Logo
-    from reportlab.platypus import Image
-    logo_path = None
-    for lp in (r'D:\Workbuddy\多智能体\物料领取看板\app\static\images\logo.png',
-               r'app/static/images/logo.png'):
-        import os
-        if os.path.exists(lp):
-            logo_path = lp
-            break
-    title_para = Paragraph('<font size="16"><b>线边仓线材盘点报告</b></font>', style)
-    if logo_path:
-        logo_img = Image(logo_path, width=22 * mm, height=19 * mm)
-        title_row = Table([[title_para, logo_img]], colWidths=[130 * mm, 40 * mm])
-        title_row.hAlign = 'LEFT'
-        title_row.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (-1, -1), font_name),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
-        ]))
-        story.append(title_row)
-    else:
-        story.append(title_para)
-    story.append(Spacer(1, 4 * mm))
-    # 信息区：每行一个字段
-    for label, val in [
-        ('盘点单号', count['count_no']),
-        ('站点', count.get('siteref') or '-'),
-        ('创建人', count.get('created_by') or '-'),
-        ('开始', count.get('started_at') or '-'),
-        ('完成', count.get('completed_at') or '-'),
-    ]:
-        story.append(Paragraph(f'{label}：{val}', style))
-    story.append(Spacer(1, 4 * mm))
 
-    # 表头中英双语（第一行中文、第二行英文）；最后一列单位按 CSI 单位动态显示
-    head_style = ParagraphStyle('head', fontName=font_name, fontSize=8, leading=10,
-                                alignment=1)  # 居中
-    last_unit = next((it.get('unit') or '' for it in items if it.get('unit')), '')
-    last_en = f'Diff({last_unit})' if last_unit else 'Diff'
-    last_header = Paragraph(f'差异数量({last_unit})<br/>{last_en}', head_style) if last_unit \
-        else Paragraph('差异数量<br/>Diff', head_style)
-    headers = [
-        Paragraph('物料<br/>Item', head_style),
-        Paragraph('原始数量<br/>Orig', head_style),
-        Paragraph('单位<br/>Unit', head_style),
-        Paragraph('Lot No', head_style),
-        Paragraph('盘点实际数量(mm)<br/>Actual', head_style),
-        Paragraph('差异数量(mm)<br/>Diff', head_style),
-        last_header,
+    # ---- 标题 + 条形码 -------------------------------------------------- #
+    count_no = count.get('count_no') or ''
+    title_block = [Paragraph('Wire Rod Inventory Count Report', title_style),
+                   Spacer(1, 2 * mm),
+                   Paragraph(f'Count No.: <b>{count_no}</b>', value_style)]
+    barcode_cell = [Spacer(1, 1 * mm)]
+    if count_no:
+        drawing = createBarcodeDrawing(
+            'Code128', value=count_no, barHeight=12 * mm,
+            barWidth=0.28 * mm, humanReadable=False, quiet=True)
+        barcode_cell.append(drawing)
+        barcode_cell.append(Paragraph(count_no, small_style))
+    title_row = Table([[title_block, barcode_cell]],
+                      colWidths=[190 * mm, 70 * mm])
+    title_row.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    story.append(title_row)
+    story.append(Spacer(1, 5 * mm))
+
+    # ---- 汇总区 --------------------------------------------------------- #
+    summary_rows = [
+        [Paragraph('Count No.', label_style), Paragraph(str(count_no), value_style),
+         Paragraph('Site', label_style), Paragraph(str(count.get('siteref') or '-'), value_style),
+         Paragraph('Completed At', label_style), Paragraph(completed_at, value_style)],
+        [Paragraph('Total Coils', label_style), Paragraph(str(len(items)), value_style),
+         Paragraph('Diff Items', label_style), Paragraph(str(diff_items), value_style),
+         Paragraph('Unpriced Items', label_style), Paragraph(str(unpriced_items), value_style)],
+        [Paragraph('Gain Amount', label_style), Paragraph(f'{gain_amount:.2f}', value_style),
+         Paragraph('Loss Amount', label_style), Paragraph(f'{loss_amount:.2f}', value_style),
+         Paragraph('Net Impact', label_style), Paragraph(f'{net_impact:.2f}', value_style)],
     ]
-    rows = [headers]
-    total_diff = 0.0
-    for it in items:
-        f = _factor(it.get('unit'))
-        diff_converted = it.get('diff_converted')
-        if diff_converted is None and it.get('diff_mm') is not None and f:
-            diff_converted = round(float(it['diff_mm']) / f, 2)
-        rows.append([
-            it.get('part_number') or it.get('coil_id') or '',
-            it.get('original_qty') if it.get('original_qty') is not None else '',
-            it.get('unit') or '',
-            it.get('lot_no') or '',
-            it.get('actual_mm') if it.get('actual_mm') is not None else '',
-            it.get('diff_mm') if it.get('diff_mm') is not None else '',
-            diff_converted if diff_converted is not None else '',
-        ])
-        if it.get('diff_mm') is not None:
-            total_diff += float(it['diff_mm'])
-    rows.append(['合计差异', '', '', '', '', round(total_diff, 2), ''])
+    summary = Table(summary_rows, colWidths=[30 * mm, 52 * mm, 30 * mm, 52 * mm, 34 * mm, 52 * mm])
+    summary.hAlign = 'LEFT'
+    summary.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#BFBFBF')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F2F2F2')),
+        ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#F2F2F2')),
+        ('BACKGROUND', (4, 0), (4, -1), colors.HexColor('#F2F2F2')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(summary)
+    story.append(Spacer(1, 6 * mm))
 
-    # 纵向 A4，7 列合计 170mm（与签核区表格同宽）；Lot No 列加宽容纳长批次号
-    TABLE_WIDTH = 170 * mm
-    col_widths = [35 * mm, 18 * mm, 12 * mm, 36 * mm, 28 * mm, 20 * mm, 18 * mm]
-    assert sum(col_widths) <= TABLE_WIDTH, '表宽超过 170mm'
-    table = Table(rows, repeatRows=1, colWidths=col_widths)
-    table.hAlign = 'LEFT'   # 左边框对齐页边距（与标题/信息区/签核区一致）
+    # ---- 明细表 --------------------------------------------------------- #
+    headers = [Paragraph(h, head_style) for h in (
+        'Coil ID', 'Part No.', 'Lot No.', 'Orig Qty', 'Unit', 'Used(mm)',
+        'Remain(mm)', 'Counted(mm)', 'Diff(mm)', 'Diff(Qty)', 'Unit Cost',
+        'Diff Amount')]
+    table_rows = [headers] + rows_data
+    table_rows.append([
+        'TOTAL', '', '',
+        _fmt_cell(sum_orig, 2), '',
+        _fmt_cell(sum_used, 2), _fmt_cell(sum_remain, 2),
+        _fmt_cell(sum_actual, 2), _fmt_cell(sum_diff_mm, 2),
+        _fmt_cell(sum_diff_qty, 2), '', '',
+    ])
+
+    col_widths = [w * mm for w in (24, 28, 40, 16, 11, 20, 21, 23, 18, 16, 18, 22)]
+    table = Table(table_rows, repeatRows=1, colWidths=col_widths)
+    table.hAlign = 'LEFT'
     table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (-1, -1), font_name),
-        ('FONTNAME', (0, 0), (-1, 0), font_name),
+        ('FONTNAME', (0, 0), (-1, -1), REPORT_FONT),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4472C4')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),   # 全部左对齐（同 Word 习惯）
-        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('ALIGN', (0, 0), (1, -1), 'LEFT'),
+        ('ALIGN', (3, 1), (-1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
         ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#F2F2F2')]),
         ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FFE699')),
+        ('FONTNAME', (0, -1), (-1, -1), REPORT_FONT_BOLD),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
     story.append(table)
-    story.append(Spacer(1, 10 * mm))
+    story.append(Spacer(1, 4 * mm))
 
-    # 签字区：申请人 / 申请人部门经理 / 仓库人员（签字 + 时间）
-    # 宽度与盘点明细表一致（170mm），左右边框与明细表对齐
-    sign_col = TABLE_WIDTH / 3
-    sign_table = Table(
-        [[Paragraph(f'申请人：', style), Paragraph(f'申请人部门经理：', style),
-          Paragraph(f'仓库人员：', style)],
-         [Paragraph(f'签字：', style), Paragraph(f'签字：', style), Paragraph(f'签字：', style)],
-         [Paragraph(f'时间：', style), Paragraph(f'时间：', style), Paragraph(f'时间：', style)]],
-        colWidths=[sign_col] * 3)
-    sign_table.hAlign = 'LEFT'   # 与盘点明细表左边框对齐
+    note_style = ParagraphStyle('note', fontName=REPORT_FONT, fontSize=7, leading=9,
+                                textColor=colors.HexColor('#595959'))
+    story.append(Paragraph(
+        'Diff(Qty) &gt; 0 = gain (inventory increase); Diff(Qty) &lt; 0 = loss (inventory decrease). '
+        'Diff Amount = |Diff(Qty)| x Unit Cost (CSI standard cost). '
+        'Unpriced Items are diff rows whose standard cost is unavailable.', note_style))
+    story.append(Spacer(1, 8 * mm))
+
+    # ---- 签字区 --------------------------------------------------------- #
+    sign_w = 190 * mm
+    sign_table = Table([
+        [Paragraph('Applicant:', sign_style),
+         Paragraph('Applicant Dept. Manager:', sign_style),
+         Paragraph('Warehouse Keeper:', sign_style)],
+        [Paragraph('Signature:', sign_style), Paragraph('Signature:', sign_style),
+         Paragraph('Signature:', sign_style)],
+        [Paragraph('Date:', sign_style), Paragraph('Date:', sign_style),
+         Paragraph('Date:', sign_style)],
+    ], colWidths=[sign_w / 3] * 3)
+    sign_table.hAlign = 'LEFT'
     sign_table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (-1, -1), font_name),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
     ]))
     story.append(sign_table)
 
-    doc.build(story)
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     buf.seek(0)
     return buf
 
