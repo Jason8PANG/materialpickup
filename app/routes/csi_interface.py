@@ -292,7 +292,7 @@ def api_resend(row_id):
             return jsonify({'success': False, 'message': '该记录正在同步中，请稍后再试'}), 400
 
         trace = sync_worker._retry_trace_id(row)
-        repo.update(row_id, is_sync=0, status='PENDING', retry_count=0,
+        repo.update(row_id, is_sync=0, status='PENDING', retry_count=0, transient_count=0,
                     errormessage=None, submitted_at=None, last_poll_at=None,
                     traceid=trace, updateby=operator)
         logger.info('CSI 重发：重置为待同步 id=%s api=%s trace=%s 操作人=%s',

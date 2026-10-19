@@ -92,6 +92,7 @@ class Config:
     # 已废弃：失败即转人工、不再自动重试；保留读取只为兼容 .env 里已有的该项配置
     CSI_SYNC_MAX_RETRY = int(os.environ.get('CSI_SYNC_MAX_RETRY', '3'))
     CSI_SYNC_HTTP_TIMEOUT = int(os.environ.get('CSI_SYNC_HTTP_TIMEOUT', '20'))    # 单次 HTTP 超时
+    CSI_SYNC_MAX_TRANSIENT = int(os.environ.get('CSI_SYNC_MAX_TRANSIENT', '3'))   # 网络类错误同 traceId 最多重试次数
 
     # 站点配置
     SITE_CONFIG = {

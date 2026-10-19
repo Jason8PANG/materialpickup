@@ -98,6 +98,11 @@ def _max_retry():
     return max(1, _cfg_int('CSI_SYNC_MAX_RETRY', 3))
 
 
+def _max_transient():
+    """网络类错误（transient）在同一 traceId 下的最大重试次数"""
+    return max(1, _cfg_int('CSI_SYNC_MAX_TRANSIENT', 3))
+
+
 def _http_timeout():
     return _cfg_int('CSI_SYNC_HTTP_TIMEOUT', 20)
 
@@ -128,7 +133,7 @@ class _Repo:
         sql = (
             "SELECT id, request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, "
             "       job, warehouse, from_location, to_location, reasoncode, account, unitcode1, "
-            "       documentnumber, status, retry_count, traceid "
+            "       documentnumber, status, retry_count, transient_count, traceid "
             "FROM kr_csi_interface "
             f"WHERE api_name IN ({placeholders}) AND is_sync = 0 "
             "  AND status IN ('PENDING','QUEUED','SUBMITTING') "
@@ -537,6 +542,7 @@ def _fail(repo, row, reason, stats):
         is_sync=2,
         status='FAILED_MANUAL',
         errormessage=reason,
+        transient_count=0,
         last_poll_at=None,
     )
     stats['manual'] += 1
@@ -606,13 +612,25 @@ def _send_failure_alert(row, retry, reason):
         trs.append('<tr>' + ''.join(tds) + '</tr>')
     rows_html = ''.join(trs)
 
+    # 网络类错误（同 traceId 重试达上限）与业务错误的文案区分，便于运维判断处置方向
+    is_network = str(reason or '').startswith('网络/服务异常重试')
+    if is_network:
+        intro = (f'CSI {api_label}（{api}）网络异常重试 {_max_transient()} 次仍失败，已转人工；'
+                 f'请点「重新发送」或检查到宝鼎接口的网络连通性。')
+        footer = (f'网络异常重试 {_max_transient()} 次仍失败，已转人工；请在「同步接口查询」页点「重新发送」，'
+                  '或检查到宝鼎接口（bdsytelineapi）的网络连通性（单号与 traceId 均保持不变）。')
+    else:
+        intro = f'CSI {api_label}（{api}）自动同步失败，已停止自动重试，请人工处理。'
+        footer = ('同步失败，已停止自动重试，请在看板「同步接口查询」页点「重新发送」'
+                  '或到宝鼎平台人工处理（单号与 traceId 均保持不变）。')
+
     body = f"""
     <div style="max-width:700px;margin:0 auto;font-family:Arial,'Microsoft YaHei',sans-serif;
                 font-size:13px;line-height:1.5;padding:6px 2px;">
-      <p style="margin:6px 0;">CSI {api_label}（{api}）自动同步失败，已停止自动重试，请人工处理。</p>
+      <p style="margin:6px 0;">{intro}</p>
       <table style="width:100%;border-collapse:collapse;font-size:12px;line-height:1.45;margin:6px 0 10px;">{rows_html}</table>
       <p style="margin:6px 0;color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
-      <p style="margin:6px 0;color:#666;font-size:12px;">同步失败，已停止自动重试，请在看板「同步接口查询」页点「重新发送」或到宝鼎平台人工处理（单号与 traceId 均保持不变）。</p>
+      <p style="margin:6px 0;color:#666;font-size:12px;">{footer}</p>
       <p style="margin:6px 0;color:#999;font-size:11px;">本邮件由物料领取看板系统自动发送，请勿直接回复。</p>
     </div>
     """
@@ -722,7 +740,7 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
     kind = result['kind']
 
     if kind == 'success':
-        repo.update(row_id, is_sync=1, status='SUCCESS', errormessage=None)
+        repo.update(row_id, is_sync=1, status='SUCCESS', errormessage=None, transient_count=0)
         stats['success'] += 1
         logger.info('CSI 同步成功 id=%s api=%s request=%s doc=%s', row_id, api,
                     row.get('request_id'), row.get('documentnumber'))
@@ -735,12 +753,19 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
                     row_id, api, row.get('request_id'), result.get('status'))
 
     elif kind == 'transient':
-        # 网络/服务端异常：不计 retry，保留 SUBMITTING 与抢占时的 last_poll_at=NOW()，
-        # 45s 后下一轮会重新选中（避免短时间内高频重试）
-        repo.update(row_id, errormessage=(result.get('reason') or '')[:MAX_ERR_LEN])
+        # 网络/服务端异常：同一 traceId 下轮重试（换 traceId 会导致平台重复过账），
+        # 达到上限才转人工。保留 SUBMITTING 与抢占时的 last_poll_at=NOW()，
+        # 45s 后下一轮会重新选中（避免短时间内高频重试）。
+        tcount = int(row.get('transient_count') or 0) + 1
+        if tcount >= _max_transient():
+            # 网络类错误达上限：转人工（traceId 保持不变，便于幂等核对）
+            _fail(repo, row, f'网络/服务异常重试 {tcount} 次仍失败：{result.get("reason") or ""}', stats)
+            return
+        repo.update(row_id, transient_count=tcount,
+                    errormessage=(result.get('reason') or '')[:MAX_ERR_LEN])
         stats['transient'] += 1
-        logger.warning('CSI 同步暂时失败（不计重试）id=%s api=%s request=%s 原因=%s',
-                       row_id, api, row.get('request_id'), result.get('reason'))
+        logger.warning('CSI 同步暂时失败（第 %s/%s 次，同 traceId 下轮重试）id=%s api=%s request=%s 原因=%s',
+                       tcount, _max_transient(), row_id, api, row.get('request_id'), result.get('reason'))
 
     else:  # failed
         _fail(repo, row, result.get('reason'), stats)
