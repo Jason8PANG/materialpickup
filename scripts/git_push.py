@@ -13,7 +13,7 @@ r = requests.get(f'{API}/git/commits/{commit_sha}', headers=HEADERS)
 base_tree_sha = r.json()['tree']['sha']
 
 base_dir = 'D:/Workbuddy/多智能体/物料领取看板'
-skip_dirs = {'.git', '__pycache__', 'flask_session', 'venv', '.venv', 'node_modules', '需求文档', 'deploy', 'tests', 'scripts', '.pytest_cache'}
+skip_dirs = {'.git', '__pycache__', 'flask_session', 'venv', '.venv', 'node_modules', '需求文档', 'tests', 'scripts', '.pytest_cache'}
 skip_files = {'.env', '.env.bak', 'pytest_out.log'}
 
 tree = []
@@ -33,7 +33,7 @@ for root, dirs, files in os.walk(base_dir):
 r = requests.post(f'{API}/git/trees', json={'tree': tree, 'base_tree': base_tree_sha}, headers=HEADERS)
 new_tree_sha = r.json()['sha']
 r = requests.post(f'{API}/git/commits', json={
-    'message': 'feat: 卷标状态收敛为在车间/在库存/盘点中/已消完（移除已消耗死状态）+ 盘点锁定接入 external API',
+    'message': 'fix: 补装cryptography>=42.0.0(MySQL8 caching_sha2_password认证必需)',
     'tree': new_tree_sha,
     'parents': [commit_sha]
 }, headers=HEADERS)

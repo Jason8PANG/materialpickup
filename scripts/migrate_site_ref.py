@@ -5,16 +5,22 @@
 （X-Site-Ref 强制校验 + 按站点过滤 + 落库）。本脚本为相关表补齐 siteref 列并回填。
 
 涉及表（只加列 + 回填，不删任何列/数据，幂等可重复执行）：
-  1. kr_wire_coil_consumption（消耗/报废登记表，25 列，当前无 siteref）
-       - 加列 siteref VARCHAR(16) NULL + 索引 idx_siteref
-       - 回填：通过 LEFT JOIN kr_wire_coil 取关联卷标的 siteref
+  1. kr_wire_coil_consumption（26 列，已含 siteref VARCHAR(16) + 索引 idx_siteref）
+       - 本脚本此前迁移已补齐；重复执行仅幂等 SKIP / 补索引，不重复加列
+       - 新装库时列随 scripts/migrate_wire_coil.py 的 CREATE 一并建立
+       - 回填依据：通过 LEFT JOIN kr_wire_coil 取关联卷标的 siteref
          （登记时服务端从关联卷标自动带出，与卷标同站点）
-  2. kr_cutting_check（首末件检查登记表，30 列，当前无 siteref）
-       - 加列 siteref VARCHAR(16) NULL + 索引 idx_siteref
-       - 回填：当前库中为 410 站点联调测试数据（行数 < 1000），
+  2. kr_cutting_check（31 列，已含 siteref VARCHAR(16) + 索引 idx_siteref）
+       - 同上，幂等 SKIP / 补索引
+       - 回填依据：当前库中为 410 站点联调测试数据（行数 < 1000），
          直接 UPDATE siteref = '410'；若行数 >= 1000 则保持 NULL，
          在报告中注明需人工确认各站点归属后再回填。
-  3. kr_cutting_ref 不迁移：无 siteref 列，裁剪参数跨站点共享。
+  3. kr_cutting_ref（18 列，无 siteref —— 本次纳入迁移）
+       - 裁剪参数按站点独立规格维护，需加 siteref 区分各站 BOM 参数
+       - 加列 siteref VARCHAR(16) NULL + 索引 idx_siteref（AFTER device_no）
+       - 回填：现有 23,508 行由备料 MP1 BOM 单源导入（原单源导入、供 410 站点裁线参考），
+         统一回填 '410'，与 kr_cutting_check 回填 '410' 的口径一致；
+         310 站点规格后续由独立导入维护。
 
 运行: python scripts/migrate_site_ref.py
 说明:
@@ -46,8 +52,11 @@ def get_connection():
     )
 
 
-def ensure_siteref_column(conn, cursor, table, comment):
-    """幂等补齐 siteref 列 + 索引，返回是否本次新增列"""
+def ensure_siteref_column(conn, cursor, table, comment, after=None):
+    """幂等补齐 siteref 列 + 索引，返回是否本次新增列。
+
+    after 指定列定位（如 'device_no'，加在指定列之后）；None 时追加到表尾。
+    """
     cursor.execute(f"SHOW COLUMNS FROM `{table}` LIKE 'siteref'")
     exists = cursor.fetchone() is not None
     if exists:
@@ -56,8 +65,11 @@ def ensure_siteref_column(conn, cursor, table, comment):
 
     cursor.execute(f"SHOW INDEX FROM `{table}` WHERE Key_name = 'idx_siteref'")
     has_idx = cursor.fetchone() is not None
+    col_def = f"siteref VARCHAR(16) NULL COMMENT '{comment}'"
+    if after:
+        col_def += f" AFTER `{after}`"
     alters = [
-        f"ADD COLUMN siteref VARCHAR(16) NULL COMMENT '{comment}'",
+        f"ADD COLUMN {col_def}",
     ]
     if not has_idx:
         alters.append("ADD INDEX idx_siteref (siteref)")
@@ -77,7 +89,7 @@ def ensure_siteref_index(conn, cursor, table):
 
 
 def migrate_consumption(conn, cursor):
-    """kr_wire_coil_consumption：加列 + 从关联卷标回填 siteref"""
+    """kr_wire_coil_consumption：幂等校验 siteref 列/索引（此前已迁移，SKIP）+ 从关联卷标回填"""
     added = ensure_siteref_column(
         conn, cursor, 'kr_wire_coil_consumption',
         '站点：310-苏州/410-槟城（冗余自关联卷标，外部 API 落库）')
@@ -99,7 +111,7 @@ def migrate_consumption(conn, cursor):
 
 
 def migrate_cutting_check(conn, cursor):
-    """kr_cutting_check：加列 + 回填。
+    """kr_cutting_check：幂等校验 siteref 列/索引（此前已迁移，SKIP）+ 回填。
     当前库中为 410 站点联调测试数据（行数 < 1000），直接回填 '410'；
     若行数大则保持 NULL，需人工确认站点归属。"""
     added = ensure_siteref_column(
@@ -128,6 +140,30 @@ def migrate_cutting_check(conn, cursor):
               f'需人工确认各站点归属后再回填（参见 wiptrack_api_integration.md）')
 
 
+def migrate_cutting_ref(conn, cursor):
+    """kr_cutting_ref：加列（AFTER device_no）+ 索引 + 回填 '410'。
+    裁剪参数为各站点独立规格；现有 23,508 行由备料 MP1 BOM 单源导入
+    （原单源导入、主要供 410 站点裁线参考），统一回填 '410'，
+    310 站点规格后续由独立导入维护。"""
+    added = ensure_siteref_column(
+        conn, cursor, 'kr_cutting_ref',
+        '站点：310-苏州/410-槟城（各站点独立规格）',
+        after='device_no')
+    if not added:
+        ensure_siteref_index(conn, cursor, 'kr_cutting_ref')
+
+    cursor.execute(
+        "UPDATE kr_cutting_ref SET siteref = '410' WHERE siteref IS NULL"
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    cursor.execute(
+        "SELECT COUNT(*) AS n FROM kr_cutting_ref WHERE siteref IS NULL"
+    )
+    remain_null = cursor.fetchone()['n']
+    print(f'[OK] kr_cutting_ref 回填 {affected} 行（仍为 NULL: {remain_null}）')
+
+
 def main():
     conn = get_connection()
     try:
@@ -135,11 +171,14 @@ def main():
         print('=== 站点维度迁移开始（materialpickup） ===')
         migrate_consumption(conn, cursor)
         migrate_cutting_check(conn, cursor)
+        migrate_cutting_ref(conn, cursor)
         # 汇总
         cursor.execute("SELECT siteref, COUNT(*) AS n FROM kr_wire_coil_consumption GROUP BY siteref")
         print('kr_wire_coil_consumption 按站点分布:', cursor.fetchall())
         cursor.execute("SELECT siteref, COUNT(*) AS n FROM kr_cutting_check GROUP BY siteref")
         print('kr_cutting_check 按站点分布:', cursor.fetchall())
+        cursor.execute("SELECT siteref, COUNT(*) AS n FROM kr_cutting_ref GROUP BY siteref")
+        print('kr_cutting_ref 按站点分布:', cursor.fetchall())
         print('=== 迁移完成（只加列+回填，未删除任何列/数据） ===')
     finally:
         conn.close()

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS kr_cutting_ref (
   length_tol      VARCHAR(32)   DEFAULT NULL COMMENT '长度公差',
   cut_device      VARCHAR(64)   DEFAULT NULL COMMENT '剪切设备',
   device_no       VARCHAR(64)   DEFAULT NULL COMMENT '设备序号',
+  siteref         VARCHAR(16)   DEFAULT NULL COMMENT '站点：310-苏州/410-槟城（各站点独立规格）',
   strip_len_a     DECIMAL(10,2) DEFAULT NULL COMMENT '去皮尺寸A端(mm)',
   strip_tol_a     VARCHAR(32)   DEFAULT NULL COMMENT '去皮尺寸公差A端',
   strip_len_b     DECIMAL(10,2) DEFAULT NULL COMMENT '去皮尺寸B端(mm)',
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS kr_cutting_ref (
   PRIMARY KEY (id),
   INDEX idx_finished_part (finished_part),
   INDEX idx_wire_part (wire_part),
+  INDEX idx_siteref (siteref),
   INDEX idx_finished_wire (finished_part, wire_part)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='成品对应物料裁线数据库（备料MP1导入，裁线时调用参考）'

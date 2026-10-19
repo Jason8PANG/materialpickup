@@ -109,6 +109,8 @@ CONSUMPTION_WIDE_COLUMNS = [
 # 不再需要 DROP COLUMN 清理逻辑。
 
 # 消耗记录表固定基础列（含索引/主键），宽表列由 CONSUMPTION_WIDE_COLUMNS 动态拼接
+# siteref 为站点维度列（v1.0 之后新增），新装库随基础列一步建齐；
+# 既有库由 scripts/migrate_site_ref.py 幂等 ALTER 补齐。
 CONSUMPTION_BASE_COLUMNS = """
   id              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
   coil_id         VARCHAR(16)   NOT NULL COMMENT '卷标ID（逻辑关联 kr_wire_coil.coil_id）',
@@ -117,6 +119,7 @@ CONSUMPTION_BASE_COLUMNS = """
   consume_type    VARCHAR(20)   NOT NULL DEFAULT 'issue' COMMENT '消耗类型：issue出库 / scrap报废（报废登记后续迭代）',
   out_length      DECIMAL(12,2) NOT NULL COMMENT '消耗/出库长度（原始录入值，单位固定 mm）',
   unit            VARCHAR(16)   DEFAULT NULL COMMENT 'CSI 物料单位（冗余自线卷表，作为单位换算的源单位，如 M/FT）',
+  siteref         VARCHAR(16)   DEFAULT NULL COMMENT '站点：310-苏州/410-槟城（冗余自关联卷标，外部 API 落库）',
 """
 
 CONSUMPTION_TAIL_COLUMNS = """
@@ -128,6 +131,7 @@ CONSUMPTION_TAIL_COLUMNS = """
   INDEX idx_coil_id (coil_id),
   INDEX idx_job_order (job_order),
   INDEX idx_consume_type (consume_type),
+  INDEX idx_siteref (siteref),
   INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='线卷消耗记录表（每卷每次出库/报废一行，宽表存储线材加工过程参数）'
 """
