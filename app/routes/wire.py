@@ -1184,12 +1184,16 @@ def _build_report_pdf(count, items):
     sign_table = Table([
         [Paragraph('Applicant:', sign_style),
          Paragraph('Applicant Dept. Manager:', sign_style),
-         Paragraph('Warehouse Keeper:', sign_style)],
+         Paragraph('Finance Specialist:', sign_style),
+         Paragraph('Finance Manager:', sign_style),
+         Paragraph('Operations Manager:', sign_style)],
         [Paragraph('Signature:', sign_style), Paragraph('Signature:', sign_style),
+         Paragraph('Signature:', sign_style), Paragraph('Signature:', sign_style),
          Paragraph('Signature:', sign_style)],
         [Paragraph('Date:', sign_style), Paragraph('Date:', sign_style),
+         Paragraph('Date:', sign_style), Paragraph('Date:', sign_style),
          Paragraph('Date:', sign_style)],
-    ], colWidths=[sign_w / 3] * 3)
+    ], colWidths=[sign_w / 5] * 5)
     sign_table.hAlign = 'LEFT'
     sign_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
