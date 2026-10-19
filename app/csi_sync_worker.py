@@ -597,20 +597,32 @@ def _send_failure_alert(row, retry, reason):
                       f"{row.get('warehouse') or ''} / {row.get('from_location') or ''} → {row.get('to_location') or ''}"))
     cells.append(('时间', now))
 
-    rows_html = ''.join(
-        f'<tr><td style="padding:6px 10px;border:1px solid #e8e8e8;background:#fafafa;'
-        f'white-space:nowrap;">{html.escape(str(k))}</td>'
-        f'<td style="padding:6px 10px;border:1px solid #e8e8e8;">{html.escape(str(v if v is not None else ""))}</td></tr>'
-        for k, v in cells
-    )
+    # 紧凑版：两个「标签|值」放一行（4 列），行数减半、字号缩小，邮件预览窗格即可看全
+    pairs = [cells[i:i + 2] for i in range(0, len(cells), 2)]
+    trs = []
+    for pair in pairs:
+        tds = []
+        for k, v in pair:
+            val = html.escape(str(v if v is not None else ''))
+            tds.append(
+                '<td style="padding:3px 8px;border:1px solid #ececec;background:#f7f7f7;'
+                'color:#555;white-space:nowrap;width:72px;">' + html.escape(str(k)) + '</td>'
+                '<td style="padding:3px 8px;border:1px solid #ececec;word-break:break-all;">' + val + '</td>'
+            )
+        if len(pair) == 1:
+            tds.append('<td style="padding:3px 8px;border:1px solid #ececec;background:#f7f7f7;"></td>'
+                       '<td style="padding:3px 8px;border:1px solid #ececec;"></td>')
+        trs.append('<tr>' + ''.join(tds) + '</tr>')
+    rows_html = ''.join(trs)
 
     body = f"""
-    <div style="max-width:640px;margin:0 auto;font-family:Arial,sans-serif;padding:16px;">
-      <p>CSI {api_label}（{api}）自动同步失败，已停止自动重试，请人工处理。</p>
-      <table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;">{rows_html}</table>
-      <p style="color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
-      <p>已自动重试 3 次仍失败（单据号保持不变，仅更换 traceId），已停止自动重试，请人工在宝鼎平台重新发送或核对数据。</p>
-      <p style="color:#999;font-size:12px;">本邮件由物料领取看板系统自动发送，请勿直接回复。</p>
+    <div style="max-width:700px;margin:0 auto;font-family:Arial,'Microsoft YaHei',sans-serif;
+                font-size:13px;line-height:1.5;padding:6px 2px;">
+      <p style="margin:6px 0;">CSI {api_label}（{api}）自动同步失败，已停止自动重试，请人工处理。</p>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;line-height:1.45;margin:6px 0 10px;">{rows_html}</table>
+      <p style="margin:6px 0;color:#c0392b;"><strong>错误原文：</strong>{html.escape(str(reason))}</p>
+      <p style="margin:6px 0;color:#666;font-size:12px;">已自动重试 3 次仍失败（单号不变，仅换 traceId），请人工在宝鼎平台重新发送或核对数据。</p>
+      <p style="margin:6px 0;color:#999;font-size:11px;">本邮件由物料领取看板系统自动发送，请勿直接回复。</p>
     </div>
     """
     try:
