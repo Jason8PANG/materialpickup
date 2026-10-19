@@ -41,6 +41,75 @@ def validate_site_match(request_row, user):
     return None
 
 
+# 批次累计数量比较的浮点容差
+LOT_QTY_TOLERANCE = 0.0001
+
+
+def validate_item_lots(cursor, request_id):
+    """完成备料前校验非 A/B 明细的批次维护。
+
+    规则（A/B 物料按卷标粒度维护，不要求批次表；short_reason 非空的缺料行豁免）：
+      1. 每行至少 1 条 qty > 0 的 kr_request_item_lot 记录，否则视为未维护批次；
+      2. 每行批次数量合计不得超过明细申请数量（浮点容差 0.0001）。
+    返回错误提示文案；校验通过返回 None。
+    """
+    cursor.execute(
+        "SELECT id, part_number, quantity, short_reason FROM kr_request_item "
+        "WHERE request_id = %s ORDER BY id",
+        (request_id,)
+    )
+    items = [it for it in cursor.fetchall()
+             if (it.get('part_number') or '')[:1].upper() not in ('A', 'B')
+             and (it.get('short_reason') or '').strip() == '']
+    if not items:
+        return None
+
+    placeholders = ','.join(['%s'] * len(items))
+    cursor.execute(
+        f"SELECT item_id, COALESCE(SUM(qty), 0) AS total_qty, "
+        f"SUM(CASE WHEN qty > 0 THEN 1 ELSE 0 END) AS positive_cnt "
+        f"FROM kr_request_item_lot "
+        f"WHERE request_id = %s AND item_id IN ({placeholders}) GROUP BY item_id",
+        [request_id] + [it['id'] for it in items]
+    )
+    stats = {r['item_id']: (float(r.get('total_qty') or 0), int(r.get('positive_cnt') or 0))
+             for r in cursor.fetchall()}
+
+    en = is_en()
+    row_label = 'row' if en else '行'
+    missing, over = [], []
+    for it in items:
+        total, positive = stats.get(it['id'], (0.0, 0))
+        if positive == 0:
+            missing.append(f"{it['part_number']}（{row_label} {it['id']}）" if not en
+                           else f"{it['part_number']}(row{it['id']})")
+            continue
+        item_qty = float(it.get('quantity') or 0)
+        if total > item_qty + LOT_QTY_TOLERANCE:
+            over.append((it['part_number'], it['id'], total, item_qty))
+
+    if not missing and not over:
+        return None
+
+    if en:
+        parts = []
+        if missing:
+            parts.append('Materials without lot allocation: ' + ', '.join(missing)
+                         + '; please maintain lots on the prep detail page')
+        if over:
+            parts.append('Lot total exceeds requested quantity: ' + '; '.join(
+                f'{p}(row{r}) {t:.2f} > {q:.2f}' for p, r, t, q in over))
+        return ' | '.join(parts)
+
+    parts = []
+    if missing:
+        parts.append('物料 ' + '、'.join(missing) + '未维护批次，请先在备料详情页维护批次')
+    if over:
+        parts.append('批次累计超过申请数量：' + '；'.join(
+            f'物料 {p}（行 {r}）批次累计 {t:.2f} 超过申请数量 {q:.2f}' for p, r, t, q in over))
+    return '；'.join(parts)
+
+
 @warehouse_bp.route('/api/requests/<int:request_id>/start-prep', methods=['POST'])
 def start_prep(request_id):
     user, err_resp, err_code = check_warehouse_or_admin()
@@ -143,6 +212,13 @@ def complete_prep(request_id):
                         'success': False,
                         'message': f'A/B 开头物料必须录入卷标：{parts}，请先在备料详情页维护卷标'
                     }), 400
+
+        # 批次维护校验：非 A/B 物料必须维护批次，且批次累计不得超过申请数量。
+        # A/B 物料走卷标粒度（卷标录入不写批次表），不要求批次。
+        lot_error = validate_item_lots(cursor, request_id)
+        if lot_error:
+            cursor.close()
+            return jsonify({'success': False, 'message': lot_error}), 400
 
         now = datetime.now()
         # 写入 CSI 库位转移接口表：与状态更新同事务，失败整体回滚
