@@ -6,8 +6,11 @@
   - 退料复核 enqueue_return_qty_move()：Floor-Core → 退回库位（正向，单卷一条，
     单号 = 退料单号 + 单内行号）
 
-完成备料时把需同步给宝鼎 Syteline（Infor CSI）的库位转移数据写入接口表，
-由常驻同步器（另一进程）每分钟提交 sl-qty-move 接口。
+完成备料时把需同步给宝鼎 Syteline（Infor CSI）的数据写入接口表，由常驻同步器
+（另一进程）每分钟提交。接口类型按申请单明细逐行判断：
+  - 明细 job_order 非空 → sl-job-issue（工单发料：物料从仓库发到工单/车间库位）
+  - 明细 job_order 为空 → sl-qty-move（库位转移：仓库库位 → Floor-Core）
+同一申请单允许混合（部分明细带工单、部分不带）。
 
 粒度：按「卷标 / 批次」拆行
   - A/B 料：kr_wire_coil 每个未软删卷标一行（coil_id 有值、lot_id 为 NULL）
@@ -15,10 +18,10 @@
   - 非 A/B 料既无卷标也无批次：只记 warning，不阻断完成备料（批次为可选维护）
 
 单号规则（平台按 traceId + site + documentNumber 幂等，同单多行必须不同号）：
-  - 正向：MP{request_id}{line_seq:02d}   例 MP297301 / MP297302
+  - 正向：MP{request_id}{line_seq:02d}   例 MP297301 / MP297302（qty-move 与 job-issue 共用）
   - 反向：MP{request_id}B{line_seq:02d}  例 MP2973B01，line_seq 取被反向正向行的序号
   - line_seq 为该申请单内的永久递增行序号（1..N），任何状态占用后都不复用；
-    单号超过 12 位（接口硬限制）的行直接跳过并告警，不产生非法单号。
+    单号超过 12 位（接口硬限制）的行直接抛错，不产生非法单号。
 
 状态流转（接口表 status，is_sync 见同步器）：
   PENDING → QUEUED|SUBMITTING → SUCCESS（已过账）/ FAILED_MANUAL（失败转人工）
@@ -38,6 +41,7 @@ from app.config import Config
 logger = logging.getLogger(__name__)
 
 API_QTY_MOVE = 'sl-qty-move'
+API_JOB_ISSUE = 'sl-job-issue'   # 明细带工单号时按工单发料提交
 MAX_DOC_LEN = 12   # documentnumber 列 VARCHAR(12)，接口硬限制
 
 # 尚未过账（同步器仍会扫描）的中间态：回到备料时须作废，避免退回后仍继续过账
@@ -58,6 +62,11 @@ def _is_ab_part(part_number):
     return (part_number or '')[:1].upper() in ('A', 'B')
 
 
+def _job_order(item):
+    """明细工单号（去空白；空串视为无工单 → 走 qty-move）"""
+    return str(item.get('job_order') or '').strip() or None
+
+
 def _num(value):
     """DECIMAL -> float（保留 NULL）"""
     return None if value is None else float(value)
@@ -66,6 +75,13 @@ def _num(value):
 def _traceid(request_id, key):
     """唯一追踪号：MP{request_id}-{coil_id 或 L{lot_id}}-{uuid12}，长度 < 128"""
     return f'MP{request_id}-{key}-{uuid.uuid4().hex[:12]}'
+
+
+def _job_issue_traceid(job, item):
+    """工单发料追踪号：JI{job}-{item}-{uuid12}，长度 < 128（超长截断前半段）"""
+    tail = f'-{uuid.uuid4().hex[:12]}'
+    head = f'JI{job}-{item}'
+    return head[:128 - len(tail)] + tail
 
 
 def _next_line_seq(cursor, request_id):
@@ -119,6 +135,7 @@ def _coil_rows(cursor, request_id, item):
             'coil_id': coil_id,
             'lot_id': None,
             'item_id': item['id'],
+            'job_order': _job_order(item),
             # 库位只写本地快照（不在此查 CSI，避免完成备料被远程查询拖慢）；
             # 同步器提交前会用 CSI 实时库位覆盖本列，因此这里允许写旧值/为空
             'from_location': coil.get('loc'),
@@ -148,6 +165,7 @@ def _lot_rows(cursor, request_id, item):
             'coil_id': None,
             'lot_id': lot['id'],
             'item_id': item['id'],
+            'job_order': _job_order(item),
             # 同上：本地批次库位仅作快照，提交前由同步器用 CSI 实时库位校正
             'from_location': lot.get('loc'),
         })
@@ -162,7 +180,8 @@ def _lot_rows(cursor, request_id, item):
 def _collect_rows(cursor, request_id):
     """按卷标/批次拆行，返回待写入的行（不含单据级公共字段）"""
     cursor.execute(
-        "SELECT id, part_number, unit FROM kr_request_item WHERE request_id = %s ORDER BY id",
+        "SELECT id, part_number, unit, job_order FROM kr_request_item "
+        "WHERE request_id = %s ORDER BY id",
         (request_id,)
     )
     rows = []
@@ -175,7 +194,10 @@ def _collect_rows(cursor, request_id):
 
 
 def enqueue_qty_move(cursor, req, username, now=None):
-    """把一张申请单的库位转移数据写入 kr_csi_interface。
+    """把一张申请单的库位转移/工单发料数据写入 kr_csi_interface。
+
+    逐明细判断接口类型：明细 job_order 非空 → sl-job-issue（工单发料），
+    为空 → sl-qty-move（仓库库位 → Floor-Core）。同一申请单允许混合。
 
     参数：
       cursor  - 完成备料事务内的游标（不在此提交/回滚）
@@ -198,14 +220,15 @@ def enqueue_qty_move(cursor, req, username, now=None):
     # 幂等：仅当同一单据已存在「仍然生效」的正向记录时跳过该 (coil_id, lot_id)。
     # 只认 ACTIVE_FORWARD_STATUS：已反向（REVERSED）、退回作废（CANCELLED）、
     # 转人工未过账（FAILED_MANUAL）都不阻止再次完成备料补发新的正向记录。
+    # qty-move 与 job-issue 共用同一 key 去重（同一卷标/批次只发一次）。
     # （uk_row 唯一键已改为普通索引 idx_row，去重完全由这里的状态判断负责）
     active_ph = ','.join(['%s'] * len(ACTIVE_FORWARD_STATUS))
     not_rev_sql, not_rev_param = _not_reverse_clause(request_id)
     cursor.execute(
         "SELECT coil_id, lot_id FROM kr_csi_interface "
-        "WHERE request_id = %s AND api_name = %s "
+        "WHERE request_id = %s AND api_name IN (%s, %s) "
         f"AND status IN ({active_ph}) AND {not_rev_sql}",
-        (request_id, API_QTY_MOVE) + ACTIVE_FORWARD_STATUS + (not_rev_param,)
+        (request_id, API_QTY_MOVE, API_JOB_ISSUE) + ACTIVE_FORWARD_STATUS + (not_rev_param,)
     )
     existing = {(r.get('coil_id'), r.get('lot_id')) for r in cursor.fetchall()}
 
@@ -214,6 +237,7 @@ def enqueue_qty_move(cursor, req, username, now=None):
     # 平台可能锁死失败单号，因此任何状态下用过的 seq 都不复用）
     seq = _next_line_seq(cursor, request_id)
     inserted = 0
+    job_issue_rows = 0
     for row in rows:
         key = (row['coil_id'], row['lot_id'])
         if key in existing:
@@ -227,29 +251,49 @@ def enqueue_qty_move(cursor, req, username, now=None):
                 f'CSI 单据号 {documentnumber} 长度 {len(documentnumber)} 位，'
                 f'超过接口上限 {MAX_DOC_LEN} 位（request_id={request_id}）'
             )
-        trace_key = row['coil_id'] or f"L{row['lot_id']}"
+
+        job_order = row.get('job_order')
+        if job_order:
+            # 工单发料：job 为完整工单号（同步器负责拆 -0000 后缀），
+            # 目标库位固定车间库位，无 from，也不带库位转移的原因码
+            api_name = API_JOB_ISSUE
+            job = job_order
+            from_location = None
+            reasoncode = None
+            traceid = _job_issue_traceid(job_order, row['item'])
+            job_issue_rows += 1
+        else:
+            api_name = API_QTY_MOVE
+            job = None
+            from_location = row['from_location']
+            reasoncode = Config.CSI_REASON_CODE
+            trace_key = row['coil_id'] or f"L{row['lot_id']}"
+            traceid = _traceid(request_id, trace_key)
+
         cursor.execute(
             "INSERT INTO kr_csi_interface "
-            "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, "
-            " warehouse, from_location, to_location, reasoncode, unitcode1, unitcode2, documentnumber, "
+            "(request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity, um, job, "
+            " warehouse, from_location, to_location, reasoncode, account, unitcode1, unitcode2, documentnumber, "
             " line_seq, direction, "
             " is_sync, status, retry_count, traceid, createdate, createby) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
             " %s, 'F', "
             " 0, 'PENDING', 0, %s, %s, %s)",
             (
                 request_id, row['item_id'], row['coil_id'], row['lot_id'],
-                API_QTY_MOVE, int(siteref), row['item'], row['lot'], _num(row['quantity']), row['um'],
-                Config.CSI_WAREHOUSE_MAP[siteref], row['from_location'], Config.CSI_TO_LOCATION,
-                Config.CSI_REASON_CODE, None, None, documentnumber, seq,
-                _traceid(request_id, trace_key), now, username,
+                api_name, int(siteref), row['item'], row['lot'], _num(row['quantity']), row['um'], job,
+                Config.CSI_WAREHOUSE_MAP[siteref], from_location, Config.CSI_TO_LOCATION,
+                reasoncode, None, None, None, documentnumber, seq,
+                traceid, now, username,
             )
         )
         existing.add(key)
         inserted += 1
 
-    logger.info('完成备料：CSI 接口表写入 %s 行（request_id=%s, 跳过已存在 %s 行）',
-                inserted, request_id, len(rows) - inserted)
+    logger.info('完成备料：CSI 接口表写入 %s 行（request_id=%s, sl-job-issue %s 行, '
+                'sl-qty-move %s 行, 跳过已存在 %s 行）',
+                inserted, request_id, job_issue_rows, inserted - job_issue_rows,
+                len(rows) - inserted)
     return inserted
 
 
@@ -269,6 +313,8 @@ def _reverse_traceid(request_id, seq, key):
 def _cancel_inflight(cursor, request_id, now):
     """作废该单尚未过账的正向记录：is_sync=2 / CANCELLED。
 
+    完成备料可能同时写入 sl-qty-move 与 sl-job-issue（明细是否带工单），
+    两者都是正向记录，回到备料时必须一并作废，避免退回后仍在提交。
     同步器只扫描 is_sync=0，标记后不会再被选中；已成功的（is_sync=1）与
     已转人工的（is_sync=2 / FAILED_MANUAL）都不受影响。
     返回作废行数。
@@ -277,9 +323,9 @@ def _cancel_inflight(cursor, request_id, now):
     cursor.execute(
         f"UPDATE kr_csi_interface SET is_sync = 2, status = 'CANCELLED', errormessage = %s, "
         f"updatedate = %s "
-        f"WHERE request_id = %s AND api_name = %s AND is_sync = 0 "
+        f"WHERE request_id = %s AND api_name IN (%s, %s) AND is_sync = 0 "
         f"AND status IN ({placeholders})",
-        (CANCEL_MESSAGE, now, request_id, API_QTY_MOVE) + INFLIGHT_STATUS
+        (CANCEL_MESSAGE, now, request_id, API_QTY_MOVE, API_JOB_ISSUE) + INFLIGHT_STATUS
     )
     return cursor.rowcount or 0
 

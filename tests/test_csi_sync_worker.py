@@ -542,6 +542,80 @@ class TestLiveLocationOverride:
 
 
 # ====================================================================== #
+#  6c. 撤回/退料方向：保留行内 from_location（不被实时库位覆盖）
+# ====================================================================== #
+class TestReturnDirectionKeepsRowLocation:
+    @pytest.mark.parametrize('row_over', [
+        # 回到备料生成的反向行（direction=B）
+        dict(id=11, request_id=2973, documentnumber='MP2973B05', direction='B',
+             from_location='Floor-Core', to_location='RM-B009-2-001'),
+        # 退料复核生成的正向行（车间 → 退回库位），direction=F
+        dict(id=12, request_id=3016, documentnumber='301601', direction='F',
+             from_location='Floor-Core', to_location='C-03-02'),
+    ])
+    def test_return_row_keeps_from_location(self, row_over, caplog):
+        """同一 lot 在车间与仓库都有量时，实时库位（=to）不得覆盖行内 from，否则误判 NOOP"""
+        repo = FakeRepo([_row(**row_over)])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             caplog.at_level('INFO', logger='app.csi_sync_worker'):
+            # 实时查询恰好返回仓库库位（= to）：若被采用就会 from == to → NOOP
+            client_cls.return_value.get_lot_location.return_value = row_over['to_location']
+            stats = _run(repo)
+
+        client_cls.return_value.get_lot_location.assert_not_called()
+        body = post.call_args.kwargs['json']
+        assert body['fromLocation'] == 'Floor-Core'
+        assert body['toLocation'] == row_over['to_location']
+        row = repo.row(row_over['id'])
+        assert row['from_location'] == 'Floor-Core'
+        assert row['is_sync'] == 1 and row['status'] == 'SUCCESS'
+        assert stats['success'] == 1 and stats['noop'] == 0
+        assert '撤回/退料方向保留行内库位' in caplog.text
+
+    def test_forward_row_still_overridden_by_live_location(self):
+        """正向备料（仓库 → Floor-Core）行为不变：仍按实时库位校正"""
+        repo = FakeRepo([_row(id=13, from_location='RM-P015-1', to_location='Floor-Core')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'RM-P016-2'
+            stats = _run(repo)
+
+        client_cls.return_value.get_lot_location.assert_called_once()
+        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-P016-2'
+        assert repo.row(13)['from_location'] == 'RM-P016-2'
+        assert stats['success'] == 1
+
+    def test_return_row_without_from_location_looks_up_live(self):
+        """撤回行 from_location 为空 → 才查实时库位兜底"""
+        repo = FakeRepo([_row(id=14, documentnumber='MP2973B06', direction='B',
+                              from_location=None, to_location='RM-B009-2-001')])
+        with patch('app.csi_sync_worker.requests.post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'RM-B009-9-999'
+            stats = _run(repo)
+
+        client_cls.return_value.get_lot_location.assert_called_once()
+        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-B009-9-999'
+        assert repo.row(14)['from_location'] == 'RM-B009-9-999'
+        assert stats['success'] == 1
+
+    def test_is_return_direction_helper(self):
+        """判定口径：源为车间库位、目标为仓库库位（RM / 非车间库位）"""
+        from app.csi_sync_worker import _is_return_direction
+        assert _is_return_direction('Floor-Core', 'RM-B009-2-001') is True
+        assert _is_return_direction('floor-core', 'C1M1') is True
+        assert _is_return_direction('Floor-Core', 'C-03-02') is True
+        assert _is_return_direction('RM-B009-2-001', 'Floor-Core') is False
+        assert _is_return_direction('RM-B009-2-001', 'RM-B009-3-001') is False
+        assert _is_return_direction('', 'RM-B009-2-001') is False
+        assert _is_return_direction('Floor-Core', '') is False
+
+
+# ====================================================================== #
 #  5b. 杂项收发（盘点差异调整）：sl-misc-receipt / sl-misc-issue
 # ====================================================================== #
 class TestMiscReceiptAndIssue:

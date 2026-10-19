@@ -26,8 +26,12 @@
   2 / FAILED_MANUAL 提交失败，已发邮件转人工（不再自动重试；仅「重新发送」可复活）
   2 / NOOP          物料已在目标库位（fromLocation == toLocation），不发请求、不告警
 
-库位口径：接口表里的 from_location / to_location 只是入队时的本地快照，
-提交前一律以 CSI 实时查询（get_lot_location）为准并回写；查询不到才用行内值兜底。
+库位口径：接口表里的 from_location / to_location 只是入队时的本地快照。
+  - 正向备料（仓库 → Floor-Core）：提交前以 CSI 实时查询（get_lot_location）为准并回写，
+    用于纠正库存快照过期；查询不到才用行内值兜底。
+  - 撤回/退料（Floor-Core → 仓库库位）：保留行内 from_location，不用实时库位覆盖。
+    同一 Lot 同时在车间和仓库有量时，实时查询只会返回其中一处，覆盖会把
+    from 改成 to 从而误判 NOOP（id=51 的失败原因）。
 
 并发安全：多进程/多线程可能同时扫描到同一行，靠 claim() 的条件 UPDATE
 （WHERE status IN (...) AND is_sync=0）保证只有 rowcount==1 的一方处理。
@@ -483,6 +487,26 @@ def _same_loc(a, b):
     return (a or '').strip().lower() == (b or '').strip().lower()
 
 
+def _is_return_direction(from_location, to_location):
+    """是否「车间 → 仓库」的撤回/退料方向。
+
+    判据：源为车间库位（Config.CSI_TO_LOCATION，如 Floor-Core / Floor 开头），
+    且目标不是该车间库位（RM 开头的仓库库位、C1M1 等仓库代码均属此类）。
+    这类行的 from 是「物料当前所在车间库位」的确定性事实，不能被 CSI 实时
+    库位覆盖——同一 Lot 可能同时在车间与仓库两个库位有量，实时查询返回哪一个
+    并不确定；覆盖成仓库库位后会与 to 相同，被误判 NOOP。
+    """
+    frm = (from_location or '').strip()
+    to = (to_location or '').strip()
+    if not frm or not to:
+        return False
+    shop = (Config.CSI_TO_LOCATION or '').strip()
+    from_shop = (bool(shop) and _same_loc(frm, shop)) or frm.upper().startswith('FLOOR')
+    if not from_shop:
+        return False
+    return to.upper().startswith('RM') or not _same_loc(to, shop)
+
+
 # ====================================================================== #
 #  工单物料 Backflush（倒冲）前置处理
 # ====================================================================== #
@@ -684,21 +708,40 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
                         row_id, api, row.get('request_id'), row.get('documentnumber'),
                         row.get('item'), row.get('lot'), old_loc or '(空)', loc)
     else:
-        live = _live_location(row, loc_cache)
         old_loc = (row.get('from_location') or '').strip()
-        loc = live or old_loc
-        if not loc:
-            _fail(repo, row, '无法获取 Lot 库位', stats)
-            return
-        row['from_location'] = loc
-        if not _same_loc(loc, old_loc):
-            repo.update(row_id, from_location=loc)
-            logger.info('CSI 同步：库位校正 id=%s api=%s request=%s doc=%s item=%s lot=%s %s → %s',
+        to_loc = (row.get('to_location') or Config.CSI_TO_LOCATION or '').strip()
+        if _is_return_direction(old_loc, to_loc):
+            # 撤回/退料（车间 → 仓库）：from 保留行内值。
+            # 同一 lot 可能同时在车间与仓库有量，实时查询只会返回其中一处；
+            # 用它覆盖会把 from 改成仓库库位，与 to 相同后误判 NOOP。
+            loc = old_loc
+            logger.info('CSI 同步：撤回/退料方向保留行内库位 id=%s api=%s request=%s doc=%s '
+                        'item=%s lot=%s from=%s to=%s（不按 CSI 实时库位覆盖）',
                         row_id, api, row.get('request_id'), row.get('documentnumber'),
-                        row.get('item'), row.get('lot'), old_loc or '(空)', loc)
+                        row.get('item'), row.get('lot'), loc, to_loc)
+        else:
+            # 正向备料（仓库 → 车间）：按 CSI 实时库位校正，纠正本地快照过期
+            live = _live_location(row, loc_cache)
+            loc = live or old_loc
+            if not loc:
+                _fail(repo, row, '无法获取 Lot 库位', stats)
+                return
+            row['from_location'] = loc
+            if live and not _same_loc(loc, old_loc):
+                repo.update(row_id, from_location=loc)
+                logger.info('CSI 同步：库位校正 id=%s api=%s request=%s doc=%s item=%s lot=%s %s → %s',
+                            row_id, api, row.get('request_id'), row.get('documentnumber'),
+                            row.get('item'), row.get('lot'), old_loc or '(空)', loc)
+            elif live:
+                logger.info('CSI 同步：正向备料行内库位与 CSI 实时库位一致 id=%s doc=%s '
+                            'item=%s lot=%s loc=%s',
+                            row_id, row.get('documentnumber'), row.get('item'), row.get('lot'), loc)
+            else:
+                logger.info('CSI 同步：CSI 实时库位查询无结果，用行内库位兜底 id=%s doc=%s '
+                            'item=%s lot=%s loc=%s',
+                            row_id, row.get('documentnumber'), row.get('item'), row.get('lot'), loc)
 
         # 源库位 = 目的库位：物料已在目标位置，提交必然失败，直接标记 NOOP（不发请求、不发邮件）
-        to_loc = (row.get('to_location') or Config.CSI_TO_LOCATION or '').strip()
         if to_loc and _same_loc(loc, to_loc):
             repo.update(row_id, is_sync=2, status=NOOP_STATUS,
                         errormessage=NOOP_MESSAGE, last_poll_at=None)
