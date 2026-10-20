@@ -41,3 +41,6 @@ scripts/backups/
 scripts/backups/
 _mail_preview.html
 _count_report_preview.pdf
+
+# 数据库备份
+_backup/
