@@ -11,7 +11,7 @@
   6. 并发抢占 → 同一行只提交一次
   7. 真实库：2967/2973 两条 PENDING 行能被选中；条件 UPDATE 具备抢占语义
 
-全程 mock requests.post，绝不真实过账。
+全程 mock _http_post（提交边界），绝不真实过账。
 """
 import sys
 import os
@@ -181,7 +181,7 @@ class TestSuccess:
             _resp(200, _queued('PENDING')),
             _resp(200, _ok('SUCCESS', {'Success': True, 'Message': 'ok'})),
         ]
-        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post:
+        with patch('app.csi_sync_worker._http_post', side_effect=responses) as post:
             stats = _run(repo)
 
         assert post.call_count == 3
@@ -197,7 +197,7 @@ class TestSuccess:
         """SUCCESS 且 ion 为数组 → 判定成功（防 AttributeError）"""
         repo = FakeRepo([_row()])
         ion = [{'Success': True, 'Message': 'a'}, {'Success': True, 'Message': 'b'}]
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _ok('SUCCESS', ion))):
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _ok('SUCCESS', ion))):
             stats = _run(repo)
         assert repo.row(1)['is_sync'] == 1
         assert stats['success'] == 1
@@ -206,7 +206,7 @@ class TestSuccess:
         """ion 数组中出现 Success=False → 失败（不误判成功），且直接转人工"""
         repo = FakeRepo([_row()])
         ion = [{'Success': True}, {'Success': False, 'Message': 'lot not found'}]
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _ok('SUCCESS', ion))), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _ok('SUCCESS', ion))), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
         row = repo.row(1)
@@ -217,7 +217,7 @@ class TestSuccess:
     def test_payload_contract(self):
         """请求体字段严格符合宝鼎契约"""
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             _run(repo)
         body = post.call_args.kwargs['json']
         assert body == {
@@ -241,7 +241,7 @@ class TestFailTerminalKeepsDocumentNumber:
     def test_http_400_terminal_keeps_document_and_trace(self):
         """失败即终态：不换 traceId、不重置 PENDING（避免下次被自动重投）"""
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(400, {'success': False, 'message': 'documentNumber 超过 12 位'})), \
              patch('app.csi_sync_worker.send_email'):
             stats = _run(repo)
@@ -258,7 +258,7 @@ class TestFailTerminalKeepsDocumentNumber:
 
     def test_http_409_terminal_keeps_document_and_trace(self):
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(409, {'message': 'conflict'})), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
@@ -272,7 +272,7 @@ class TestFailTerminalKeepsDocumentNumber:
     def test_reverse_row_keeps_reverse_document_number(self):
         """反向行（MP{rid}B{seq}）转人工时同样保持单号与 traceId 不变"""
         repo = FakeRepo([_row(documentnumber='MP2973B01', traceid='MP2973B01-L21-aaaa')])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(409, {'message': 'conflict'})), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(409, {'message': 'conflict'})), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
@@ -296,7 +296,7 @@ class TestManualFailOnFirstFailure:
     def test_one_failure_is_terminal_and_not_rescanned(self):
         """首次失败即 FAILED_MANUAL：邮件一次、单号/traceId 不变、下一轮不再扫描"""
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed())), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _failed())), \
              patch('app.csi_sync_worker.send_email') as mail:
             stats = _run(repo)
 
@@ -310,7 +310,7 @@ class TestManualFailOnFirstFailure:
         assert mail.call_count == 1
 
         # 下一轮：该行不被取出，也不会再提交、再发邮件
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email') as mail2:
             stats2 = _run(repo)
         post.assert_not_called()
@@ -320,7 +320,7 @@ class TestManualFailOnFirstFailure:
     def test_retry_count_no_longer_gates_terminal_state(self):
         """retry_count 只做累加统计：>= MAX_RETRY 也不影响「失败即终态」"""
         repo = FakeRepo([_row(retry_count=7)])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('平台拒绝'))), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _failed('平台拒绝'))), \
              patch('app.csi_sync_worker.send_email') as mail:
             stats = _run(repo)
 
@@ -333,7 +333,7 @@ class TestManualFailOnFirstFailure:
     def test_alert_mail_stops_auto_retry_wording(self):
         """邮件文案：含「已停止自动重试」与重新发送指引，不再出现「已自动重试 3 次」"""
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed())), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _failed())), \
              patch('app.csi_sync_worker.send_email') as mail:
             _run(repo)
 
@@ -350,7 +350,7 @@ class TestManualFailOnFirstFailure:
     def test_resend_resets_then_syncs_successfully(self, client, auth_headers, monkeypatch):
         """失败后调 resend 接口：reset 为 PENDING/新 traceId → 同步器再次提交 → SUCCESS"""
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('数量超发'))), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _failed('数量超发'))), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
@@ -365,7 +365,7 @@ class TestManualFailOnFirstFailure:
         monkeypatch.setattr(w, '_Repo', lambda conn: repo)
 
         responses = [_resp(200, _queued('QUEUED')), _resp(200, _ok('SUCCESS', {'Success': True}))]
-        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post:
+        with patch('app.csi_sync_worker._http_post', side_effect=responses) as post:
             resp = auth_headers('admin').post('/api/csi-interface/1/resend')
 
         assert resp.status_code == 200
@@ -385,7 +385,7 @@ class TestManualFailOnFirstFailure:
 
     def test_unconfirmed_counts_as_failure(self):
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, {'data': {'status': 'UNCONFIRMED'}})), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
@@ -396,7 +396,7 @@ class TestManualFailOnFirstFailure:
 
     def test_email_failure_does_not_break_run(self):
         repo = FakeRepo([_row(retry_count=2)])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed())), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _failed())), \
              patch('app.csi_sync_worker.send_email', side_effect=RuntimeError('smtp down')):
             stats = _run(repo)
         assert stats['manual'] == 1
@@ -410,7 +410,7 @@ class TestTransient:
     def test_timeout_does_not_increment_retry(self):
         import requests as _requests
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    side_effect=_requests.Timeout('read timeout')):
             stats = _run(repo)
         row = repo.row(1)
@@ -427,7 +427,7 @@ class TestTransient:
 class TestFromLocation:
     def test_empty_from_location_looked_up(self):
         repo = FakeRepo([_row(from_location=None)])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'B-02-03'
@@ -440,7 +440,7 @@ class TestFromLocation:
 
     def test_lookup_failure_is_terminal(self):
         repo = FakeRepo([_row(from_location='')])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              patch('app.csi_sync_worker.send_email') as mail:
             client_cls.return_value.get_lot_location.return_value = None
@@ -461,7 +461,7 @@ class TestLiveLocationOverride:
     def test_qty_move_from_location_overridden(self, caplog):
         """行内 from=RM-P015-1（旧），CSI 实际 RM-P016-2 → payload 与库内都改成实时值"""
         repo = FakeRepo([_row(from_location='RM-P015-1', to_location='Floor-Core')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              caplog.at_level('INFO', logger='app.csi_sync_worker'):
@@ -478,7 +478,7 @@ class TestLiveLocationOverride:
     def test_qty_move_same_location_marked_noop(self, caplog):
         """CSI 实际库位 = toLocation → 物料已在目标库位：不发请求、不发邮件、is_sync=2/NOOP"""
         repo = FakeRepo([_row(from_location='RM-P015-1', to_location='Floor-Core')])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email') as mail, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              caplog.at_level('INFO', logger='app.csi_sync_worker'):
@@ -499,7 +499,7 @@ class TestLiveLocationOverride:
     def test_misc_issue_location_overridden(self):
         """盘点盘亏行 to=RM-P015-1（旧），CSI 实际 Floor-Core → payload location 用实时值"""
         repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE, to_location='RM-P015-1')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'Floor-Core'
@@ -512,7 +512,7 @@ class TestLiveLocationOverride:
     def test_csi_failure_falls_back_to_row_location(self):
         """CSI 查询异常 → 用行内已有库位兜底，不阻断提交"""
         repo = FakeRepo([_row(from_location='RM-P015-1')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.side_effect = RuntimeError('csi down')
@@ -530,7 +530,7 @@ class TestLiveLocationOverride:
             _row(id=3, coil_id='261016006', item='B000002', lot='202510220000001'),
         ]
         repo = FakeRepo(rows)
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'RM-P015-1'
@@ -556,7 +556,7 @@ class TestReturnDirectionKeepsRowLocation:
     def test_return_row_keeps_from_location(self, row_over, caplog):
         """同一 lot 在车间与仓库都有量时，实时库位（=to）不得覆盖行内 from，否则误判 NOOP"""
         repo = FakeRepo([_row(**row_over)])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              caplog.at_level('INFO', logger='app.csi_sync_worker'):
@@ -577,7 +577,7 @@ class TestReturnDirectionKeepsRowLocation:
     def test_forward_row_still_overridden_by_live_location(self):
         """正向备料（仓库 → Floor-Core）行为不变：仍按实时库位校正"""
         repo = FakeRepo([_row(id=13, from_location='RM-P015-1', to_location='Floor-Core')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'RM-P016-2'
@@ -592,7 +592,7 @@ class TestReturnDirectionKeepsRowLocation:
         """撤回行 from_location 为空 → 才查实时库位兜底"""
         repo = FakeRepo([_row(id=14, documentnumber='MP2973B06', direction='B',
                               from_location=None, to_location='RM-B009-2-001')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'RM-B009-9-999'
@@ -624,7 +624,7 @@ class TestMiscReceiptAndIssue:
         repo = FakeRepo([_misc_row()])
         responses = [_resp(200, _queued('QUEUED')),
                      _resp(200, _ok('SUCCESS', {'Success': True, 'Message': 'ok'}))]
-        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post:
+        with patch('app.csi_sync_worker._http_post', side_effect=responses) as post:
             stats = _run(repo)
 
         assert post.call_count == 2
@@ -657,7 +657,7 @@ class TestMiscReceiptAndIssue:
     def test_issue_payload_and_url(self):
         """盘亏行 → sl-misc-issue 端点，其余契约相同"""
         repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE)])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             stats = _run(repo)
 
@@ -680,7 +680,7 @@ class TestMiscReceiptAndIssue:
     def test_qty_move_regression_unchanged(self):
         """回归：sl-qty-move 端点与字段集合保持不变（无 account/location）"""
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             _run(repo)
 
@@ -693,7 +693,7 @@ class TestMiscReceiptAndIssue:
     def test_empty_location_looked_up_and_written_back(self):
         """location 为空 → 查 CSI 库位补值并写回 to_location"""
         repo = FakeRepo([_misc_row(to_location=None)])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'C-09-09'
@@ -707,7 +707,7 @@ class TestMiscReceiptAndIssue:
     def test_location_lookup_failure_is_terminal(self):
         """库位补不到 → 不提交、直接转人工（FAILED_MANUAL）"""
         repo = FakeRepo([_misc_row(to_location='')])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              patch('app.csi_sync_worker.send_email'):
             client_cls.return_value.get_lot_location.return_value = None
@@ -722,7 +722,7 @@ class TestMiscReceiptAndIssue:
     def test_empty_account_blocks_request_then_manual_with_email(self):
         """account 为空 → 不发请求，首次即 FAILED_MANUAL，邮件含接口名"""
         repo = FakeRepo([_misc_row(account=None)])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email') as mail:
             stats = _run(repo)
 
@@ -748,7 +748,7 @@ class TestMiscReceiptAndIssue:
     def test_failed_response_is_terminal_keeps_trace(self):
         """FAILED（data.error）→ 单号与 traceId 都不变，直接转人工"""
         repo = FakeRepo([_misc_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _failed('科目 505100 无效'))), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
@@ -764,7 +764,7 @@ class TestMiscReceiptAndIssue:
         """ion 为数组且全部 Success → 判定成功"""
         repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE)])
         ion = [{'Success': True, 'Message': 'a'}, {'Success': True, 'Message': 'b'}]
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', ion))):
             stats = _run(repo)
         assert repo.row(2)['is_sync'] == 1
@@ -782,7 +782,7 @@ class TestJobIssue:
             _resp(200, _queued('QUEUED')),
             _resp(200, _ok('SUCCESS', {'Success': True, 'Message': 'ok'})),
         ]
-        with patch('app.csi_sync_worker.requests.post', side_effect=responses) as post, \
+        with patch('app.csi_sync_worker._http_post', side_effect=responses) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             stats = _run(repo)
@@ -810,7 +810,7 @@ class TestJobIssue:
     def test_job_with_suffix_split(self):
         """job 带 -0001 后缀 → payload 拆成 job + suffix"""
         repo = FakeRepo([_job_issue_row(job='J000029867-0001', documentnumber='JOB00002')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             _run(repo)
 
@@ -827,7 +827,7 @@ class TestJobIssue:
     def test_location_empty_looked_up_and_written_back(self):
         """to_location 为空 → 实时查 Lot 库位兜底并写回"""
         repo = FakeRepo([_job_issue_row(to_location=None)])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'C-09-09'
@@ -842,7 +842,7 @@ class TestJobIssue:
     def test_location_lookup_failure_is_terminal(self):
         """库位补不到 → 不发请求、直接转人工"""
         repo = FakeRepo([_job_issue_row(to_location='')])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              patch('app.csi_sync_worker.send_email'):
             client_cls.return_value.get_lot_location.return_value = None
@@ -858,7 +858,7 @@ class TestJobIssue:
     def test_missing_job_blocks_request(self):
         """job 为空 → 不发请求、直接转人工"""
         repo = FakeRepo([_job_issue_row(job=None)])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
@@ -871,7 +871,7 @@ class TestJobIssue:
     def test_failed_keeps_document_and_trace(self):
         """平台 FAILED → 单号与 traceId 都不变，直接转人工"""
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _failed('工单已关闭'))), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
@@ -886,7 +886,7 @@ class TestJobIssue:
     def test_manual_fail_email_has_job(self):
         """转人工 → 邮件带接口名与工单号"""
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post', return_value=_resp(200, _failed('工单不存在'))), \
+        with patch('app.csi_sync_worker._http_post', return_value=_resp(200, _failed('工单不存在'))), \
              patch('app.csi_sync_worker.send_email') as mail:
             stats = _run(repo)
 
@@ -912,7 +912,7 @@ class TestJobIssueBackflush:
         client = _no_real_csi
         client.clear_job_matl_backflush.return_value = (True, BF_MSG_CLEARED)
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              caplog.at_level('INFO', logger='app.csi_sync_worker'):
             stats = _run(repo)
@@ -938,7 +938,7 @@ class TestJobIssueBackflush:
         client = _no_real_csi
         client.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             stats = _run(repo)
 
@@ -952,7 +952,7 @@ class TestJobIssueBackflush:
         client.clear_job_matl_backflush.return_value = (
             False, '未找到工单物料 J000029867-0000 / B052552（或查询失败）')
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email'):
             stats = _run(repo)
 
@@ -970,7 +970,7 @@ class TestJobIssueBackflush:
         client.clear_job_matl_backflush.return_value = (
             False, '更新工单物料 J000029867-0000 / B052552 失败：HTTP 500')
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
@@ -985,7 +985,7 @@ class TestJobIssueBackflush:
         client = _no_real_csi
         client.clear_job_matl_backflush.side_effect = RuntimeError('ido down')
         repo = FakeRepo([_job_issue_row()])
-        with patch('app.csi_sync_worker.requests.post') as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
 
@@ -1003,7 +1003,7 @@ class TestJobIssueBackflush:
             _job_issue_row(id=5, documentnumber='JOB00003'),
         ]
         repo = FakeRepo(rows)
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             stats = _run(repo)
 
@@ -1017,7 +1017,7 @@ class TestJobIssueBackflush:
         client.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
         repo = FakeRepo([_job_issue_row(job='J000004862-0005', item='F010013',
                                         documentnumber='JOB00009')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))):
             _run(repo)
 
@@ -1027,7 +1027,7 @@ class TestJobIssueBackflush:
         """回归：qty-move / misc 行不触发 Backflush 检查"""
         client = _no_real_csi
         repo = FakeRepo([_row(), _misc_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             stats = _run(repo)
 
@@ -1042,7 +1042,7 @@ class TestJobIssueBackflush:
 class TestClaim:
     def test_second_process_does_not_resubmit(self):
         repo = FakeRepo([_row()])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
             _run(repo)          # 进程 A 处理完成
             _run(repo)          # 进程 B 再扫（行已 is_sync=1）
@@ -1052,7 +1052,7 @@ class TestClaim:
         """claim 返回 False（已被别的线程抢占）→ 不提交"""
         repo = FakeRepo([_row()])
         repo.claim = lambda row_id: False   # 模拟另一进程先抢占成功
-        with patch('app.csi_sync_worker.requests.post') as post:
+        with patch('app.csi_sync_worker._http_post') as post:
             stats = _run(repo)
         post.assert_not_called()
         assert stats['skipped'] == 1
@@ -1060,7 +1060,7 @@ class TestClaim:
     def test_stale_submitting_row_is_retried(self):
         """上次中断在 SUBMITTING 的行，超时后可再次被选中"""
         repo = FakeRepo([_row(status='SUBMITTING')])
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))):
             stats = _run(repo)
         assert stats['claimed'] == 1
@@ -1138,3 +1138,100 @@ class TestRealDatabase:
             finally:
                 cur.close()
                 conn.close()
+
+
+# ====================================================================== #
+#  8. 内网请求必须绕过系统代理
+#     背景：本机 HTTP_PROXY 指向 127.0.0.1:58229，代理关闭时宝鼎/CSI 请求
+#     被塞进代理直接 ProxyError（HTTPConnectionPool(host='127.0.0.1'...)），
+#     整条过账链路失败。以下用例锁定「一律禁用环境代理」这一行为。
+# ====================================================================== #
+class TestNoSystemProxy:
+
+    def test_http_post_creates_session_with_trust_env_off(self, monkeypatch):
+        recorded = {}
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True      # requests 默认值，_http_post 必须覆盖成 False
+                recorded['sess'] = self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def post(self, url, **kwargs):
+                recorded['url'] = url
+                recorded['kw'] = kwargs
+                return 'RESP'
+
+        monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:58229')
+        monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:58229')
+        monkeypatch.setattr('app.csi_sync_worker.requests.Session', FakeSession)
+
+        out = w._http_post('http://bdsytelineapi/api/cmd/sl-job-issue',
+                           json={'a': 1}, headers={'X': 'y'}, timeout=20)
+
+        assert out == 'RESP'
+        assert recorded['sess'].trust_env is False
+        assert recorded['url'] == 'http://bdsytelineapi/api/cmd/sl-job-issue'
+        assert recorded['kw']['timeout'] == 20          # 超时值维持原样
+
+    def test_token_fetch_passes_trust_env_false(self, monkeypatch):
+        from app.services import csi_service
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {'access_token': 'tok-1', 'expires_in': 3600}
+
+        def _fake_post(url, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+        monkeypatch.setattr(csi_service.httpx, 'post', _fake_post)
+        csi_service._clear_token_cache()
+        try:
+            token, expires_in = csi_service.CSIClient('410')._fetch_token()
+        finally:
+            csi_service._clear_token_cache()
+
+        assert (token, expires_in) == ('tok-1', 3600)
+        assert captured['trust_env'] is False
+        assert captured['verify'] is False
+        assert captured['timeout'] == 30
+
+    def test_ido_get_passes_trust_env_false(self, monkeypatch):
+        from app.services import csi_service
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {'Items': []}
+
+        def _fake_get(url, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+        monkeypatch.setattr(csi_service.httpx, 'get', _fake_get)
+        client = csi_service.CSIClient('410')
+        monkeypatch.setattr(client, '_ensure_token', lambda force=False: 'tok-1')
+
+        assert client._get_ido('ue_NAI_Jobs') == []
+        assert captured['trust_env'] is False
+        assert captured['verify'] is False
+        assert captured['timeout'] == 60

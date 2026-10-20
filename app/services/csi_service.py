@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 BF_MSG_CLEARED = 'Backflush 已置为 0'
 BF_MSG_ALREADY_ZERO = 'Backflush 已为 0，无需修改'
 
+# 所有 CSI / IDO 请求共用的 httpx 参数。
+# trust_env=False：忽略 HTTP_PROXY/HTTPS_PROXY/NO_PROXY 等环境代理——
+# 宝鼎/CSI 都是内网主机，被塞进本机代理（如已关闭的 127.0.0.1:58229）
+# 会直接 ProxyError，整条链路不可用。verify=False 维持现状（内网自签证书）。
+_HTTPX_KW = {'verify': False, 'trust_env': False}
+
 # ---------------------------------------------------------------------- #
 #  进程级 token 缓存（跨 CSIClient 实例共享）
 #  背景：每次请求都新建 CSIClient，实例级缓存形同虚设，导致每个请求都走一次
@@ -87,7 +93,7 @@ class CSIClient:
                 "password": Config.CSI_PASSWORD,
             },
             timeout=30,
-            verify=False,
+            **_HTTPX_KW,
         )
         resp.raise_for_status()
         body = resp.json()
@@ -145,12 +151,12 @@ class CSIClient:
 
         for attempt in range(2 if retry_on_timeout else 1):
             try:
-                resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
+                resp = httpx.get(url, headers=headers, params=params, timeout=60, **_HTTPX_KW)
                 if resp.status_code == 401:
                     logger.info(f"[IDO] 401 token expired, refreshing...")
                     token = self._ensure_token(force=True)
                     headers["Authorization"] = f"Bearer {token}"
-                    resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
+                    resp = httpx.get(url, headers=headers, params=params, timeout=60, **_HTTPX_KW)
                 resp.raise_for_status()
                 body = resp.json()
                 records = body.get("Items") or body.get("value") or body.get("records") or []
@@ -187,11 +193,11 @@ class CSIClient:
             }
             if site:
                 headers["X-Infor-MongooseConfig"] = site
-            resp = httpx.get(url, headers=headers, params=p, timeout=30, verify=False)
+            resp = httpx.get(url, headers=headers, params=p, timeout=30, **_HTTPX_KW)
             if resp.status_code == 401:
                 token = self._ensure_token(force=True)
                 headers["Authorization"] = f"Bearer {token}"
-                resp = httpx.get(url, headers=headers, params=p, timeout=30, verify=False)
+                resp = httpx.get(url, headers=headers, params=p, timeout=30, **_HTTPX_KW)
             resp.raise_for_status()
             data = resp.json()
             rows = data.get("rows") or data.get("MvxRecord") or []
@@ -399,13 +405,13 @@ class CSIClient:
                 "X-Infor-MongooseConfig": self._company,
             }
             resp = httpx.post(url, headers=headers, params=params,
-                              json=payload, timeout=60, verify=False)
+                              json=payload, timeout=60, **_HTTPX_KW)
             if resp.status_code == 401:
                 logger.info("[CSI] 401 token expired, refreshing...")
                 token = self._ensure_token(force=True)
                 headers["Authorization"] = f"Bearer {token}"
                 resp = httpx.post(url, headers=headers, params=params,
-                                  json=payload, timeout=60, verify=False)
+                                  json=payload, timeout=60, **_HTTPX_KW)
             resp.raise_for_status()
         except Exception as e:
             msg = f'更新工单物料 {tag} / {item} 失败：{e}'

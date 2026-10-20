@@ -112,7 +112,7 @@ def _run(repo):
 class TestTransientRetry:
     def test_first_timeout_keeps_trace_and_counts(self):
         repo = FakeRepo(_row())
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    side_effect=requests.Timeout('read timeout')), \
              patch('app.csi_sync_worker.send_email'):
             stats = _run(repo)
@@ -130,7 +130,7 @@ class TestTransientRetry:
     # ---------------------------------------------------------------- #
     def test_three_transients_then_manual_with_same_trace(self):
         repo = FakeRepo(_row())
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    side_effect=requests.Timeout('read timeout')) as post, \
              patch('app.csi_sync_worker.send_email') as mail:
             for _ in range(3):
@@ -159,7 +159,7 @@ class TestTransientRetry:
             requests.Timeout('read timeout'),
             _resp(200, _ok('SUCCESS', {'Success': True, 'Message': 'ok'})),
         ]
-        with patch('app.csi_sync_worker.requests.post', side_effect=responses), \
+        with patch('app.csi_sync_worker._http_post', side_effect=responses), \
              patch('app.csi_sync_worker.send_email'):
             _run(repo)
             assert repo.row()['transient_count'] == 1
@@ -178,7 +178,7 @@ class TestTransientRetry:
     # ---------------------------------------------------------------- #
     def test_business_failure_is_immediate(self):
         repo = FakeRepo(_row())
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(400, _failed('存在重复数据'))) as post, \
              patch('app.csi_sync_worker.send_email'):
             stats = _run(repo)
@@ -195,7 +195,7 @@ class TestTransientRetry:
     # ---------------------------------------------------------------- #
     def test_alert_email_copy_for_network_failure(self):
         repo = FakeRepo(_row())
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    side_effect=requests.Timeout('read timeout')), \
              patch('app.csi_sync_worker.send_email') as mail:
             for _ in range(3):
@@ -208,7 +208,7 @@ class TestTransientRetry:
 
     def test_alert_email_copy_for_business_failure(self):
         repo = FakeRepo(_row())
-        with patch('app.csi_sync_worker.requests.post',
+        with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(400, _failed('存在重复数据'))), \
              patch('app.csi_sync_worker.send_email') as mail:
             _run(repo)

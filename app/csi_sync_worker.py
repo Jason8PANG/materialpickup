@@ -111,6 +111,18 @@ def _http_timeout():
     return _cfg_int('CSI_SYNC_HTTP_TIMEOUT', 20)
 
 
+def _http_post(url, **kwargs):
+    """POST 到宝鼎：每次新建独立 Session 并禁用环境代理。
+
+    trust_env=False 让 requests 忽略 HTTP_PROXY/HTTPS_PROXY/NO_PROXY 环境变量
+    与注册表代理设置。宝鼎是内网主机，若被塞进本机代理（如已关闭的
+    127.0.0.1:58229），会直接 ProxyError 导致整条过账链路失败。
+    """
+    with requests.Session() as sess:
+        sess.trust_env = False
+        return sess.post(url, **kwargs)
+
+
 # ====================================================================== #
 #  数据访问（独立成类，便于单测注入替身）
 # ====================================================================== #
@@ -422,7 +434,7 @@ def _submit_and_poll(payload, api_name=API_QTY_MOVE, sleep_func=time.sleep):
 
     for attempt in range(1, attempts + 1):
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=_http_timeout())
+            resp = _http_post(url, json=payload, headers=headers, timeout=_http_timeout())
         except requests.RequestException as e:
             # 网络异常/超时：本轮不计 retry_count，保留状态待下一轮
             return {'kind': 'transient', 'status': None, 'reason': f'请求异常：{e}'}
