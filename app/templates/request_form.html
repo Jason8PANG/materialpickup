@@ -166,10 +166,10 @@ function addItemRow(data) {
             <input type="text" class="form-control form-control-sm" id="part_number_${idx}" value="${escapeHtml(data.part_number || '')}" placeholder="Part Number" onblur="validateMaterial(this, ${idx})">
             <div class="stock-info" id="stock_info_${idx}"></div>
         </td>
-        <td><input type="number" step="0.01" class="form-control form-control-sm item-qty" id="quantity_${idx}" value="${data.quantity || ''}" oninput="calcRowTotal(${idx})" placeholder="数量"></td>
+        <td><input type="number" step="0.0001" class="form-control form-control-sm item-qty" id="quantity_${idx}" value="${data.quantity || ''}" oninput="calcRowTotal(${idx})" placeholder="数量"></td>
         <td><input type="number" step="0.0001" class="form-control form-control-sm item-price" id="price_${idx}" value="${data.price || ''}" placeholder="单价" readonly></td>
         <td><input type="text" class="form-control form-control-sm item-total" id="total_amount_${idx}" value="${data.total_amount || ''}" readonly></td>
-        <td><input type="number" step="0.01" class="form-control form-control-sm" id="stock_qty_${idx}" value="${data.stock_qty || ''}" placeholder="库存" readonly></td>
+        <td><input type="number" step="0.0001" class="form-control form-control-sm" id="stock_qty_${idx}" value="${data.stock_qty || ''}" placeholder="库存" readonly></td>
         <td>
             <input type="text" class="form-control form-control-sm" id="stock_loc_${idx}" value="" placeholder="验证后自动填充" readonly>
         </td>

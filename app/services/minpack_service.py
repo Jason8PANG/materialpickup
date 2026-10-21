@@ -44,7 +44,7 @@ def create_minpack_request_core(cursor, siteref, requester, items, remark='',
     # 明细（job_order 固定 NULL）
     item_data = []
     for item in items:
-        qty = float(item['quantity'])
+        qty = round(float(item['quantity']), 4)
         price = float(item['price']) if item.get('price') else 0
         total = qty * price
         stock_qty = float(item['stock_qty']) if item.get('stock_qty') else None

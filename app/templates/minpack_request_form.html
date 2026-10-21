@@ -117,7 +117,7 @@ function addRow() {
             <div class="stock-info" id="stock_info_${idx}"></div>
         </td>
         <td>
-            <input type="number" class="form-control form-control-sm" id="quantity_${idx}" placeholder="数量" min="0" step="1" oninput="calcLineTotal(${idx})">
+            <input type="number" class="form-control form-control-sm" id="quantity_${idx}" placeholder="数量" min="0" step="0.0001" oninput="calcLineTotal(${idx})">
         </td>
         <td>
             <input type="text" class="form-control form-control-sm" id="price_${idx}" readonly placeholder="自动获取">

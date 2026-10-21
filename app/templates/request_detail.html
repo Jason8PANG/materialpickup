@@ -331,7 +331,7 @@
                                 <div class="col-md-2">
                                     <label class="small text-muted" data-i18n="lots.qty">数量</label>
                                     <input type="number" class="form-control form-control-sm" id="itemLotQty"
-                                           step="0.01" min="0" placeholder="0" onblur="validateNewItemQty()">
+                                           step="0.0001" min="0" placeholder="0" onblur="validateNewItemQty()">
                                 </div>
                                 <div class="col-md-3">
                                     <button class="btn btn-sm btn-primary w-100" onclick="saveItemLot()">
@@ -401,11 +401,11 @@
                                             </div>
                                             <div class="col-md-2">
                                                 <label class="small text-muted">剪切长度</label>
-                                                <input type="number" class="form-control form-control-sm" id="ob_shear_length" step="0.01">
+                                                <input type="number" class="form-control form-control-sm" id="ob_shear_length" step="0.0001">
                                             </div>
                                             <div class="col-md-2">
                                                 <label class="small text-muted">长度公差</label>
-                                                <input type="number" class="form-control form-control-sm" id="ob_length_tolerance" step="0.01">
+                                                <input type="number" class="form-control form-control-sm" id="ob_length_tolerance" step="0.0001">
                                             </div>
                                             <div class="col-md-2">
                                                 <label class="small text-muted">剪切设备</label>
@@ -454,7 +454,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="https://unpkg.com/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
-<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261019b"></script>
+<script src="{{ url_for('static', filename='js/coil.js') }}?v=20261021a"></script>
 <script>
 const REQUEST_ID = {{ request_id }};
 let userRole = '{{ session.user.role }}';
@@ -787,7 +787,7 @@ function renderLotRows() {
                 return '<tr>' +
                     '<td><input type="text" class="form-control form-control-sm" id="lot_edit_no_' + lot.id + '" value="' + escapeHtml(lot.lot_no) + '" onblur="validateEditItemLotNo(' + lot.id + ')"></td>' +
                     '<td>' + escapeHtml(lot.loc || '-') + '</td>' +
-                    '<td><input type="number" step="0.01" min="0" class="form-control form-control-sm" id="lot_edit_qty_' + lot.id + '" value="' + lot.qty + '" onblur="validateEditItemQty(' + lot.id + ')"></td>' +
+                    '<td><input type="number" step="0.0001" min="0" class="form-control form-control-sm" id="lot_edit_qty_' + lot.id + '" value="' + lot.qty + '" onblur="validateEditItemQty(' + lot.id + ')"></td>' +
                     '<td class="text-nowrap">' +
                     '<button class="btn btn-sm btn-success" onclick="saveItemLot(' + lot.id + ')" title="保存"><i class="fas fa-save"></i></button> ' +
                     '<button class="btn btn-sm btn-secondary" onclick="cancelEditItemLot()" title="取消"><i class="fas fa-times"></i></button>' +

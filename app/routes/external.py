@@ -163,7 +163,7 @@ def ext_coil_lookup(coil_id):
         counting = cur.fetchone()['n'] > 0
     factor = _factor(coil.get('unit'))
     total_mm = float(coil['coil_length'] or 0) * factor if factor and coil.get('coil_length') is not None else None
-    remain_mm = round(total_mm - used, 2) if total_mm is not None else None
+    remain_mm = round(total_mm - used, 4) if total_mm is not None else None
     return jsonify({
         'success': True,
         'data': {
@@ -179,7 +179,7 @@ def ext_coil_lookup(coil_id):
             'request_id': coil.get('request_id'),
             'used_mm': used,
             'remain_mm': remain_mm,
-            'remain_orig': round(remain_mm / factor, 2) if remain_mm is not None and factor else None,
+            'remain_orig': round(remain_mm / factor, 4) if remain_mm is not None and factor else None,
         }
     })
 
@@ -320,7 +320,7 @@ def ext_create_consumption():
         'converted_length': converted_length,
         'converted_unit': converted_unit,
         'csi_job_issue_id': csi_job_issue_id,
-        'remaining_mm': factor and round(max(total_mm - used - out_length, 0), 2) or None,
+        'remaining_mm': factor and round(max(total_mm - used - out_length, 0), 4) or None,
     })
 
 
@@ -717,9 +717,9 @@ def ext_coils_list():
         d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status') or '')
         factor = _factor(d.get('unit'))
         if d.get('coil_length') is not None and factor:
-            remain_mm = round(d['coil_length'] * factor - d.get('total_used_mm', 0), 2)
+            remain_mm = round(d['coil_length'] * factor - d.get('total_used_mm', 0), 4)
             d['remain_mm'] = remain_mm
-            d['remain_orig'] = round(remain_mm / factor, 2)
+            d['remain_orig'] = round(remain_mm / factor, 4)
         else:
             d['remain_mm'] = None
             d['remain_orig'] = None
@@ -977,7 +977,7 @@ def ext_create_minpack_request():
         if qty_raw is None or qty_raw == '':
             return jsonify({'success': False, 'error': f'第{i+1}行缺少 quantity'}), 400
         try:
-            quantity = float(qty_raw)
+            quantity = round(float(qty_raw), 4)
         except (TypeError, ValueError):
             return jsonify({'success': False, 'error': f'第{i+1}行 quantity 必须为数字'}), 400
         if quantity <= 0:
@@ -992,7 +992,7 @@ def ext_create_minpack_request():
             return jsonify({'success': False, 'error': f'第{i+1}行 stock_qty 必须为数字'}), 400
         norm_items.append({
             'part_number': part_number,
-            'quantity': quantity,
+            'quantity': round(quantity, 4),
             'price': price,
             'stock_qty': stock_qty,
             'stock_loc': str(item.get('stock_loc') or '').strip(),
@@ -1147,7 +1147,7 @@ def ext_create_job_issue():
     if isinstance(qty_raw, bool) or qty_raw is None or qty_raw == '':
         return jsonify({'success': False, 'message': 'quantity 必须为数字且大于0'}), 400
     try:
-        quantity = float(qty_raw)
+        quantity = round(float(qty_raw), 4)
     except (TypeError, ValueError):
         return jsonify({'success': False, 'message': 'quantity 必须为数字且大于0'}), 400
     if quantity <= 0:

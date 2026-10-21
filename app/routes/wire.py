@@ -188,9 +188,9 @@ def api_coils():
         # 剩余长度（mm）= 卷长×系数 - 使用；剩余长度（原始单位）= mm ÷ 系数
         factor = _factor(d.get('unit'))
         if d.get('coil_length') is not None and factor:
-            remain_mm = round(d['coil_length'] * factor - (d.get('used_mm') or 0), 2)
+            remain_mm = round(d['coil_length'] * factor - (d.get('used_mm') or 0), 4)
             d['remain_mm'] = remain_mm
-            d['remain_orig'] = round(remain_mm / factor, 2)
+            d['remain_orig'] = round(remain_mm / factor, 4)
         else:
             d['remain_mm'] = None
             d['remain_orig'] = None
@@ -650,7 +650,7 @@ def _calc_item_metrics(coil, used_mm):
     factor = _factor(coil.get('unit'))
     original = float(coil.get('coil_length') or 0)
     used = float(used_mm or 0)
-    remain_mm = round(original * factor - used, 2) if factor else None
+    remain_mm = round(original * factor - used, 4) if factor else None
     return {
         'original_qty': original,
         'unit': coil.get('unit') or '',
@@ -836,7 +836,7 @@ def api_count_measure(count_id, item_id):
         return err
     data = request.get_json() or {}
     try:
-        actual_mm = float(data.get('actual_mm'))
+        actual_mm = round(float(data.get('actual_mm')), 4)
     except (TypeError, ValueError):
         return jsonify({'success': False, 'message': '盘点实际数量格式无效'}), 400
     if actual_mm < 0:
@@ -862,8 +862,8 @@ def api_count_measure(count_id, item_id):
             return jsonify({'success': False, 'message': '盘点明细不存在'}), 404
         factor = _factor(it.get('unit'))
         remain_mm = it.get('remain_mm')
-        diff_mm = round(actual_mm - (float(remain_mm) if remain_mm is not None else 0), 2)
-        diff_converted = round(diff_mm / factor, 2) if factor else None
+        diff_mm = round(actual_mm - (float(remain_mm) if remain_mm is not None else 0), 4)
+        diff_converted = round(diff_mm / factor, 4) if factor else None
         cur.execute(
             "UPDATE kr_inventory_count_item SET actual_mm = %s, diff_mm = %s, diff_converted = %s, "
             "measured_by = %s, measured_at = %s WHERE id = %s",
@@ -1019,13 +1019,13 @@ def _build_report_pdf(count, items):
             it.get('coil_id') or '',
             it.get('part_number') or '',
             it.get('lot_no') or '',
-            _fmt_cell(it.get('original_qty'), 2),
+            _fmt_cell(it.get('original_qty'), 4),
             it.get('unit') or '',
-            _fmt_cell(it.get('used_mm'), 2),
-            _fmt_cell(it.get('remain_mm'), 2),
-            _fmt_cell(it.get('actual_mm'), 2),
-            _fmt_cell(it.get('diff_mm'), 2),
-            _fmt_cell(diff_qty, 2),
+            _fmt_cell(it.get('used_mm'), 4),
+            _fmt_cell(it.get('remain_mm'), 4),
+            _fmt_cell(it.get('actual_mm'), 4),
+            _fmt_cell(it.get('diff_mm'), 4),
+            _fmt_cell(diff_qty, 4),
             f'{float(cost):.4f}' if cost is not None else '-',
             f'{amount:.2f}' if amount is not None else '-',
         ])
@@ -1144,10 +1144,10 @@ def _build_report_pdf(count, items):
     table_rows = [headers] + rows_data
     table_rows.append([
         'TOTAL', '', '',
-        _fmt_cell(sum_orig, 2), '',
-        _fmt_cell(sum_used, 2), _fmt_cell(sum_remain, 2),
-        _fmt_cell(sum_actual, 2), _fmt_cell(sum_diff_mm, 2),
-        _fmt_cell(sum_diff_qty, 2), '', '',
+        _fmt_cell(sum_orig, 4), '',
+        _fmt_cell(sum_used, 4), _fmt_cell(sum_remain, 4),
+        _fmt_cell(sum_actual, 4), _fmt_cell(sum_diff_mm, 4),
+        _fmt_cell(sum_diff_qty, 4), '', '',
     ])
 
     col_widths = [w * mm for w in (25, 29, 41, 17, 12, 21, 22, 23, 19, 17, 19, 22)]

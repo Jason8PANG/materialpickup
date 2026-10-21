@@ -67,7 +67,7 @@ def _convert_length(out_length: float, unit):
     factor = Config.UNIT_CONVERT_FACTOR.get(unit.upper()) if unit else None
     if not factor:
         return None, None
-    return round(out_length / factor, 2), unit
+    return round(out_length / factor, 4), unit
 
 
 def _parse_extra_fields(it: dict, row_no: int):
@@ -83,7 +83,7 @@ def _parse_extra_fields(it: dict, row_no: int):
             values[field] = str(raw).strip()
         elif ftype == 'num':
             try:
-                values[field] = round(float(raw), 2)
+                values[field] = round(float(raw), 4)
             except (TypeError, ValueError):
                 return None, f'第{row_no}行 {field} 必须为数值'
         elif ftype == 'int':
@@ -474,7 +474,7 @@ def create_coils(request_id):
             parsed.append({
                 'part_number': part_number,
                 'coil_id': coil_id,
-                'length': round(length, 2),
+                'length': round(length, 4),
                 'unit': str(it.get('unit') or '').strip(),
                 'lot_no': str(it.get('lot_no') or '').strip() or None,
                 'item_id': item_id,
@@ -831,7 +831,7 @@ def update_coil(coil_id):
     length_new = None
     if has_len:
         try:
-            length_new = round(float(len_raw), 2)
+            length_new = round(float(len_raw), 4)
         except (TypeError, ValueError):
             return jsonify({'success': False, 'message': '长度格式无效'}), 400
         if length_new <= 0:
@@ -1098,7 +1098,7 @@ def request_in_stock_coils(request_id):
                 else:
                     # 未退回的在库卷标：coil_length 为原始长度，used(mm) 须换算原始单位后相减
                     used_orig = used / factor if factor else used
-                    remain = round(coil_length - used_orig, 2)
+                    remain = round(coil_length - used_orig, 4)
                 if remain <= 0:
                     continue
                 result.setdefault(r['part_number'], []).append({
@@ -1739,7 +1739,7 @@ def create_consumption(request_id):
                          'unit', 'converted_length', 'converted_unit']
                         + list(CONSUMPTION_EXTRA_FIELDS.keys())
                         + ['operator', 'remark', 'created_at', 'siteref'])
-                vals = [coil_id, job_order, coil['part_number'], 'issue', round(out_length, 2),
+                vals = [coil_id, job_order, coil['part_number'], 'issue', round(out_length, 4),
                         unit, converted_length, converted_unit]
                 vals += [extra[k] for k in CONSUMPTION_EXTRA_FIELDS]
                 vals += [operator, remark, datetime.now(), siteref]

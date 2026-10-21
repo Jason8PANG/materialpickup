@@ -51,7 +51,7 @@ def create_request():
 
     # 校验申请数量不能超过库存量
     for i, item in enumerate(items):
-        qty = float(item['quantity'])
+        qty = round(float(item['quantity']), 4)
         stock_qty = float(item['stock_qty']) if item.get('stock_qty') else None
         if stock_qty is not None and qty > stock_qty:
             return jsonify({'success': False, 'message': f'第{i+1}行申请数量({qty})超过库存量({stock_qty})，请修改'}), 400
@@ -76,7 +76,7 @@ def create_request():
         # 2. 批量插入明细表
         item_data = []
         for item in items:
-            qty = float(item['quantity'])
+            qty = round(float(item['quantity']), 4)
             price = float(item['price']) if item.get('price') else None
             total = qty * price if price else None
             item_data.append((

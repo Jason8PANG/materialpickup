@@ -54,7 +54,7 @@ function coilTotalMm(coil) {
     // 卷长换算为 mm：coil_length × 系数；单位未知返回 null（无法换算）
     const factor = UNIT_CONVERT_FACTOR[(coil.unit || '').toUpperCase()];
     if (!factor) return null;
-    return Math.round(parseFloat(coil.coil_length) * factor * 100) / 100;
+    return Math.round(parseFloat(coil.coil_length) * factor * 10000) / 10000;
 }
 
 /* ================= 卷标信息弹窗 ================= */
@@ -286,7 +286,7 @@ function renderCoilRows() {
             </td>
             <td>
                 <input type="number" class="form-control form-control-sm coil-length-input" data-idx="${idx}"
-                       value="${row.length}" min="0" step="0.01" placeholder="${__('coils.length_placeholder')}${unit && unit !== '-' ? ' (' + escapeHtml(unit) + ')' : ''}"
+                       value="${row.length}" min="0" step="0.0001" placeholder="${__('coils.length_placeholder')}${unit && unit !== '-' ? ' (' + escapeHtml(unit) + ')' : ''}"
                        onblur="validateLotForRow(${idx})">
             </td>
             <td style="width:12%">
@@ -550,7 +550,7 @@ function renderExistingCoils() {
                 '" placeholder="Lot" maxlength="64" style="min-width:110px"></td>';
             lenCell = '<td onclick="event.stopPropagation()"><input type="number" id="edit_len_' + c.id +
                 '" class="form-control form-control-sm" value="' + c.coil_length +
-                '" min="0.01" step="any" style="min-width:90px"></td>';
+                '" min="0.01" step="0.0001" style="min-width:90px"></td>';
             saveBtnCell = '<td class="text-center" onclick="event.stopPropagation()">' +
                 '<button class="btn btn-sm btn-primary" onclick="saveCoilEdit(' + c.id + ', \'' + escapeHtml(c.coil_id) +
                 '\')" title="保存Lot/长度修改"><i class="fas fa-save"></i></button></td>';
@@ -815,7 +815,7 @@ function renderOutboundRows() {
             <td>${escapeHtml(c.coil_id)}</td>
             <td>${escapeHtml(c.part_number)}</td>
             <td>${c.coil_length} ${escapeHtml(unit || '-')}</td>
-            <td><input type="number" class="form-control form-control-sm outbound-length" data-idx="${idx}" value="${defLen}" min="0" step="0.01"></td>
+            <td><input type="number" class="form-control form-control-sm outbound-length" data-idx="${idx}" value="${defLen}" min="0" step="0.0001"></td>
             <td class="small text-muted outbound-preview" data-idx="${idx}">${preview}</td>
             <td><input type="text" class="form-control form-control-sm outbound-job" data-idx="${idx}" placeholder="${__('coils.job_placeholder')}"></td>
         `;

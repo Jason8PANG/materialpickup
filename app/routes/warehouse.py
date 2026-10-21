@@ -45,6 +45,15 @@ def validate_site_match(request_row, user):
 LOT_QTY_TOLERANCE = 0.0001
 
 
+def _fmt_qty(value):
+    """数量展示：最多 4 位小数，去掉尾随零（1.2300 -> 1.23，2.0000 -> 2）"""
+    try:
+        s = f'{float(value):.4f}'.rstrip('0').rstrip('.')
+    except (TypeError, ValueError):
+        return str(value)
+    return s or '0'
+
+
 def validate_item_lots(cursor, request_id):
     """完成备料前校验非 A/B 明细的批次维护。
 
@@ -98,7 +107,7 @@ def validate_item_lots(cursor, request_id):
                          + '; please maintain lots on the prep detail page')
         if over:
             parts.append('Lot total exceeds requested quantity: ' + '; '.join(
-                f'{p}(row{r}) {t:.2f} > {q:.2f}' for p, r, t, q in over))
+                f'{p}(row{r}) {_fmt_qty(t)} > {_fmt_qty(q)}' for p, r, t, q in over))
         return ' | '.join(parts)
 
     parts = []
@@ -106,7 +115,7 @@ def validate_item_lots(cursor, request_id):
         parts.append('物料 ' + '、'.join(missing) + '未维护批次，请先在备料详情页维护批次')
     if over:
         parts.append('批次累计超过申请数量：' + '；'.join(
-            f'物料 {p}（行 {r}）批次累计 {t:.2f} 超过申请数量 {q:.2f}' for p, r, t, q in over))
+            f'物料 {p}（行 {r}）批次累计 {_fmt_qty(t)} 超过申请数量 {_fmt_qty(q)}' for p, r, t, q in over))
     return '；'.join(parts)
 
 
@@ -619,7 +628,7 @@ def _parse_lot_payload(data):
         return None, None, jsonify({'success': False, 'message': '数量必须大于 0'})
     if qty > 9999999999.99:
         return None, None, jsonify({'success': False, 'message': '数量超出允许范围'})
-    return lot_no, round(qty, 2), None
+    return lot_no, round(qty, 4), None
 
 
 def _resolve_lot_loc(siteref, part_number, lot_no):
@@ -644,7 +653,7 @@ def _lots_payload(cursor, request_id, item_id, item):
     rows = cursor.fetchall()
     data = [{'id': r['id'], 'lot_no': r['lot_no'], 'qty': float(r['qty']),
              'loc': r.get('loc')} for r in rows]
-    total_qty = round(sum(r['qty'] for r in data), 2)
+    total_qty = round(sum(r['qty'] for r in data), 4)
     item_quantity = float(item['quantity'] or 0)
     return {
         'success': True,

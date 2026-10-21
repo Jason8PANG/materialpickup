@@ -56,7 +56,7 @@ def _coil_remain_length(cur, coil_id: str):
     unit = (row.get('unit') or '').strip().upper()
     factor = Config.UNIT_CONVERT_FACTOR.get(unit) if unit else None
     used_orig = used / factor if factor else used  # mm → 原始单位；单位未知按原值（兼容旧数据）
-    return round(float(row['coil_length']) - used_orig, 2)
+    return round(float(row['coil_length']) - used_orig, 4)
 
 
 # ================= 1. 创建退料申请单（生产发起） =================
