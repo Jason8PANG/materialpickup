@@ -6,7 +6,8 @@
   2. HTTP 400 入队被拒 → 失败即转人工：单号与 traceId 均不变、is_sync=2/FAILED_MANUAL
   3. HTTP 409 CONFLICT → 同上（不再自动换 traceId 重投）
   4. 一次失败即 FAILED_MANUAL + 邮件一次，之后不再被扫描；「重新发送」重置后可再次提交
-  5. from_location 为空 → 查 CSI 库位补值
+  5. from_location：行内有值一律以行内（申请单源库位）为准，qty-move 不查实时库位；
+     仅当行内为空时查 CSI 库位补值，仍查不到则终态失败
   5b. sl-misc-receipt / sl-misc-issue（盘点差异调整）：按行 api_name 组装 location/account 契约
   6. 并发抢占 → 同一行只提交一次
   7. 真实库：2967/2973 两条 PENDING 行能被选中；条件 UPDATE 具备抢占语义
@@ -422,7 +423,7 @@ class TestTransient:
 
 
 # ====================================================================== #
-#  6. from_location 补值
+#  6. from_location 补值（仅行内为空时）
 # ====================================================================== #
 class TestFromLocation:
     def test_empty_from_location_looked_up(self):
@@ -439,6 +440,7 @@ class TestFromLocation:
         assert repo.row(1)['is_sync'] == 1
 
     def test_lookup_failure_is_terminal(self):
+        """行内 from 为空且 CSI 查不到库位 → 源库位缺失，终态失败（不发出必然失败的请求）"""
         repo = FakeRepo([_row(from_location='')])
         with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
@@ -446,47 +448,77 @@ class TestFromLocation:
             client_cls.return_value.get_lot_location.return_value = None
             stats = _run(repo)
 
+        client_cls.return_value.get_lot_location.assert_called_once()
         post.assert_not_called()          # 不发出必然失败的请求
         row = repo.row(1)
         assert row['retry_count'] == 1
-        assert row['errormessage'] == '无法获取 Lot 库位'
+        assert '无法获取源库位' in row['errormessage']
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
-        assert stats['manual'] == 1 and mail.call_count == 1
+        assert stats['manual'] == 1 and stats['success'] == 0
+        assert mail.call_count == 1
+
+    def test_row_value_not_looked_up_even_if_csi_raises(self):
+        """行内有 from → 根本不查实时库位：CSI 查询异常也不影响提交"""
+        repo = FakeRepo([_row(from_location='RM-P015-1')])
+        with patch('app.csi_sync_worker._http_post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.side_effect = RuntimeError('csi down')
+            stats = _run(repo)
+
+        client_cls.return_value.get_lot_location.assert_not_called()
+        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-P015-1'
+        assert repo.row(1)['from_location'] == 'RM-P015-1'
+        assert repo.row(1)['is_sync'] == 1 and stats['success'] == 1
 
 
 # ====================================================================== #
-#  6b. 提交前一律用 CSI 实时库位覆盖（本地快照仅兜底）
+#  6b. sl-qty-move：行内 from_location 权威（不再被 CSI 实时库位覆盖）
 # ====================================================================== #
-class TestLiveLocationOverride:
-    def test_qty_move_from_location_overridden(self, caplog):
-        """行内 from=RM-P015-1（旧），CSI 实际 RM-P016-2 → payload 与库内都改成实时值"""
-        repo = FakeRepo([_row(from_location='RM-P015-1', to_location='Floor-Core')])
+class TestQtyMoveKeepsRowLocation:
+    def test_qty_move_keeps_row_from_location(self, caplog):
+        """行内 from=Floor-Core，CSI 实时返回 RM-B009-2-001（= 目标库位）→ payload 仍用行内值
+
+        同一 lot 跨仓库与车间两个库位时，实时查询只返回其中一处；若返回的是目标库位，
+        from 会被改成与 to 相同，误判 NOOP「物料已在目标库位」（实例：接口表 id=3081）。
+        """
+        repo = FakeRepo([_row(from_location='Floor-Core', to_location='RM-B009-2-001')])
         with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker._live_location') as live, \
              caplog.at_level('INFO', logger='app.csi_sync_worker'):
-            client_cls.return_value.get_lot_location.return_value = 'RM-P016-2'
+            client_cls.return_value.get_lot_location.return_value = 'RM-B009-2-001'
             stats = _run(repo)
 
+        # 根本不查实时库位（不走 _live_location，也不调 get_lot_location）
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
         body = post.call_args.kwargs['json']
-        assert body['fromLocation'] == 'RM-P016-2'
-        assert body['toLocation'] == 'Floor-Core'
-        assert repo.row(1)['from_location'] == 'RM-P016-2'
-        assert '库位校正' in caplog.text and 'RM-P015-1' in caplog.text
-        assert stats['success'] == 1
+        assert body['fromLocation'] == 'Floor-Core'
+        assert body['toLocation'] == 'RM-B009-2-001'
+        assert repo.row(1)['from_location'] == 'Floor-Core'
+        assert repo.row(1)['is_sync'] == 1
+        assert stats['success'] == 1 and stats['noop'] == 0
+        assert '库位校正' not in caplog.text
 
     def test_qty_move_same_location_marked_noop(self, caplog):
-        """CSI 实际库位 = toLocation → 物料已在目标库位：不发请求、不发邮件、is_sync=2/NOOP"""
-        repo = FakeRepo([_row(from_location='RM-P015-1', to_location='Floor-Core')])
+        """行内 from == to → 物料已在目标库位：不发请求、不发邮件、is_sync=2/NOOP
+
+        触发条件只看行内字段，不依赖实时查询返回值。
+        """
+        repo = FakeRepo([_row(from_location='Floor-Core', to_location='Floor-Core')])
         with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.send_email') as mail, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
              caplog.at_level('INFO', logger='app.csi_sync_worker'):
-            client_cls.return_value.get_lot_location.return_value = 'Floor-Core'
+            # 实时查询若被采用会得到不同库位、进而正常提交；此处不应被查询
+            client_cls.return_value.get_lot_location.return_value = 'RM-B009-2-001'
             stats = _run(repo)
 
         post.assert_not_called()
         mail.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
         row = repo.row(1)
         assert row['is_sync'] == 2 and row['status'] == 'NOOP'
         assert row['errormessage'] == '物料已在目标库位，无需移库'
@@ -509,21 +541,8 @@ class TestLiveLocationOverride:
         assert repo.row(2)['to_location'] == 'Floor-Core'
         assert stats['success'] == 1
 
-    def test_csi_failure_falls_back_to_row_location(self):
-        """CSI 查询异常 → 用行内已有库位兜底，不阻断提交"""
-        repo = FakeRepo([_row(from_location='RM-P015-1')])
-        with patch('app.csi_sync_worker._http_post',
-                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
-            client_cls.return_value.get_lot_location.side_effect = RuntimeError('csi down')
-            stats = _run(repo)
-
-        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-P015-1'
-        assert repo.row(1)['from_location'] == 'RM-P015-1'
-        assert stats['success'] == 1
-
-    def test_same_item_lot_queried_once_per_round(self):
-        """同一轮内同 (item, lot) 的多个卷标只查一次 CSI"""
+    def test_multi_row_round_never_queries_live_location(self):
+        """一轮内多行 qty-move（含同 item/lot 的多个卷标）→ 实时库位查询次数为 0"""
         rows = [
             _row(id=1, coil_id='261016004'),
             _row(id=2, coil_id='261016005'),
@@ -537,14 +556,16 @@ class TestLiveLocationOverride:
             _run(repo)
 
         assert post.call_count == 3
-        assert client_cls.return_value.get_lot_location.call_count == 2
-        assert repo.row(1)['is_sync'] == 1 and repo.row(2)['is_sync'] == 1
+        assert client_cls.return_value.get_lot_location.call_count == 0
+        assert [c.kwargs['json']['fromLocation'] for c in post.call_args_list] == ['A-01-01'] * 3
+        assert all(repo.row(i)['from_location'] == 'A-01-01' for i in (1, 2, 3))
+        assert all(repo.row(i)['is_sync'] == 1 for i in (1, 2, 3))
 
 
 # ====================================================================== #
-#  6c. 撤回/退料方向：保留行内 from_location（不被实时库位覆盖）
+#  6c. 行内 from_location 权威：撤回/退料与正向备料一律不被实时库位覆盖
 # ====================================================================== #
-class TestReturnDirectionKeepsRowLocation:
+class TestRowLocationAuthoritative:
     @pytest.mark.parametrize('row_over', [
         # 回到备料生成的反向行（direction=B）
         dict(id=11, request_id=2973, documentnumber='MP2973B05', direction='B',
@@ -553,13 +574,12 @@ class TestReturnDirectionKeepsRowLocation:
         dict(id=12, request_id=3016, documentnumber='301601', direction='F',
              from_location='Floor-Core', to_location='C-03-02'),
     ])
-    def test_return_row_keeps_from_location(self, row_over, caplog):
+    def test_return_row_keeps_from_location(self, row_over):
         """同一 lot 在车间与仓库都有量时，实时库位（=to）不得覆盖行内 from，否则误判 NOOP"""
         repo = FakeRepo([_row(**row_over)])
         with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls, \
-             caplog.at_level('INFO', logger='app.csi_sync_worker'):
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
             # 实时查询恰好返回仓库库位（= to）：若被采用就会 from == to → NOOP
             client_cls.return_value.get_lot_location.return_value = row_over['to_location']
             stats = _run(repo)
@@ -572,21 +592,23 @@ class TestReturnDirectionKeepsRowLocation:
         assert row['from_location'] == 'Floor-Core'
         assert row['is_sync'] == 1 and row['status'] == 'SUCCESS'
         assert stats['success'] == 1 and stats['noop'] == 0
-        assert '撤回/退料方向保留行内库位' in caplog.text
 
-    def test_forward_row_still_overridden_by_live_location(self):
-        """正向备料（仓库 → Floor-Core）行为不变：仍按实时库位校正"""
-        repo = FakeRepo([_row(id=13, from_location='RM-P015-1', to_location='Floor-Core')])
+    def test_forward_row_keeps_from_location(self):
+        """正向备料（仓库 → Floor-Core）同样保留行内 from，不再被实时库位覆盖"""
+        repo = FakeRepo([_row(id=13, from_location='RM-B009-2-001', to_location='Floor-Core')])
         with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
-            client_cls.return_value.get_lot_location.return_value = 'RM-P016-2'
+            # 实时查询返回目标库位 Floor-Core：若被采用就会 from == to → 误判 NOOP
+            client_cls.return_value.get_lot_location.return_value = 'Floor-Core'
             stats = _run(repo)
 
-        client_cls.return_value.get_lot_location.assert_called_once()
-        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-P016-2'
-        assert repo.row(13)['from_location'] == 'RM-P016-2'
-        assert stats['success'] == 1
+        client_cls.return_value.get_lot_location.assert_not_called()
+        body = post.call_args.kwargs['json']
+        assert body['fromLocation'] == 'RM-B009-2-001'
+        assert body['toLocation'] == 'Floor-Core'
+        assert repo.row(13)['from_location'] == 'RM-B009-2-001'
+        assert stats['success'] == 1 and stats['noop'] == 0
 
     def test_return_row_without_from_location_looks_up_live(self):
         """撤回行 from_location 为空 → 才查实时库位兜底"""
