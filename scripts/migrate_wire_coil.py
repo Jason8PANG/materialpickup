@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS kr_wire_coil (
   id              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
   coil_id         VARCHAR(16)   NOT NULL COMMENT '卷标ID：YYMMDD+3位流水号，共9位数字，如260814001，全局唯一',
   part_number     VARCHAR(128)  NOT NULL COMMENT '物料 Part Number',
-  coil_length     DECIMAL(12,2) NOT NULL COMMENT '长度（数值，保留2位小数）',
+  coil_length     DECIMAL(12,4) NOT NULL COMMENT '长度（数值，保留4位小数）',
   unit            VARCHAR(16)   DEFAULT NULL COMMENT '单位，自动取自CSI物料单位字段（只读回填，如M/FT/EA）',
   status          VARCHAR(20)   NOT NULL DEFAULT 'in_stock' COMMENT '状态：in_stock在库 / issued已出库 / scrapped报废',
   request_id      INT           NOT NULL COMMENT '来源申请单ID（逻辑关联 kr_material_request.id）',
@@ -86,19 +86,19 @@ CREATE TABLE IF NOT EXISTS kr_wire_coil (
 #   2) 旧表升级时的 ALTER TABLE ADD COLUMN（缺失列补建）。
 CONSUMPTION_WIDE_COLUMNS = [
     # ---- 单位换算三元组（服务端计算，前端不传） ----
-    ("converted_length", "DECIMAL(12,2)   DEFAULT NULL COMMENT '转换后长度（mm 按系数换算为 CSI 单位，服务端计算）'"),
+    ("converted_length", "DECIMAL(12,4)   DEFAULT NULL COMMENT '转换后长度（mm 按系数换算为 CSI 单位，服务端计算）'"),
     ("converted_unit",   "VARCHAR(16)     DEFAULT NULL COMMENT '转换后单位（即 CSI 单位）'"),
     # ---- 基础/线材组 ----
     ("job_part_number",        "VARCHAR(64)     DEFAULT NULL COMMENT '工单物料号'"),
     ("shear_qty",              "INT             DEFAULT NULL COMMENT '剪切数量'"),
-    ("shear_length",           "DECIMAL(12,2)   DEFAULT NULL COMMENT '剪切长度'"),
-    ("actual_shear_length",    "DECIMAL(12,2)   DEFAULT NULL COMMENT '实际剪切长度'"),
-    ("length_tolerance",       "DECIMAL(10,2)   DEFAULT NULL COMMENT '长度公差'"),
+    ("shear_length",           "DECIMAL(12,4)   DEFAULT NULL COMMENT '剪切长度'"),
+    ("actual_shear_length",    "DECIMAL(12,4)   DEFAULT NULL COMMENT '实际剪切长度'"),
+    ("length_tolerance",       "DECIMAL(10,4)   DEFAULT NULL COMMENT '长度公差'"),
     ("shear_equipment",        "VARCHAR(64)     DEFAULT NULL COMMENT '剪切设备'"),
     ("shear_device_no",        "VARCHAR(64)     DEFAULT NULL COMMENT '剪切设备编号'"),
     ("actual_shear_equipment", "VARCHAR(64)     DEFAULT NULL COMMENT '实际剪切设备'"),
     # ---- 外部集成 / 状态组（naiwiptrack 消耗登记） ----
-    ("scrap_length_actual",    "DECIMAL(12,2)   DEFAULT NULL COMMENT '实际报废长度'"),
+    ("scrap_length_actual",    "DECIMAL(12,4)   DEFAULT NULL COMMENT '实际报废长度'"),
     ("stage",                  "VARCHAR(16)     DEFAULT 'first' COMMENT '阶段：first/last/complete'"),
     ("is_manual",              "TINYINT(1)      DEFAULT 0 COMMENT '是否手动录入'"),
     ("checker",                "VARCHAR(64)     DEFAULT NULL COMMENT '确认人'"),
@@ -117,7 +117,7 @@ CONSUMPTION_BASE_COLUMNS = """
   job_order       VARCHAR(64)   DEFAULT NULL COMMENT '消耗/领取的工单号（minpack申请单可空）',
   part_number     VARCHAR(128)  NOT NULL COMMENT '物料 Part Number（冗余自线卷表，便于独立查询）',
   consume_type    VARCHAR(20)   NOT NULL DEFAULT 'issue' COMMENT '消耗类型：issue出库 / scrap报废（报废登记后续迭代）',
-  out_length      DECIMAL(12,2) NOT NULL COMMENT '消耗/出库长度（原始录入值，单位固定 mm）',
+  out_length      DECIMAL(12,4) NOT NULL COMMENT '消耗/出库长度（原始录入值，单位固定 mm）',
   unit            VARCHAR(16)   DEFAULT NULL COMMENT 'CSI 物料单位（冗余自线卷表，作为单位换算的源单位，如 M/FT）',
   siteref         VARCHAR(16)   DEFAULT NULL COMMENT '站点：310-苏州/410-槟城（冗余自关联卷标，外部 API 落库）',
 """
@@ -335,7 +335,7 @@ CREATE TABLE IF NOT EXISTS kr_return_item (
   coil_id       VARCHAR(16)   NOT NULL COMMENT '卷标ID',
   part_number   VARCHAR(128)  DEFAULT NULL COMMENT '物料号（退料时带出）',
   unit          VARCHAR(16)   DEFAULT NULL COMMENT '单位（带出）',
-  remain_length DECIMAL(12,2) DEFAULT NULL COMMENT '退料时剩余长度（原始长度-已消耗）',
+  remain_length DECIMAL(12,4) DEFAULT NULL COMMENT '退料时剩余长度（原始长度-已消耗）',
   created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   INDEX idx_return_request (request_id),
@@ -395,12 +395,12 @@ def _ensure_inventory_count_tables(conn, cursor):
         "  part_number     VARCHAR(128)  DEFAULT NULL COMMENT '物料号',\n"
         "  lot_no          VARCHAR(64)   DEFAULT NULL COMMENT 'Lot批次号',\n"
         "  unit            VARCHAR(16)   DEFAULT NULL COMMENT '单位',\n"
-        "  original_qty    DECIMAL(12,2) DEFAULT NULL COMMENT '原始数量（coil_length，系统单位）',\n"
-        "  used_mm         DECIMAL(12,2) DEFAULT NULL COMMENT '使用数量(mm，消耗汇总）',\n"
-        "  remain_mm       DECIMAL(12,2) DEFAULT NULL COMMENT '剩余数量(mm）',\n"
-        "  actual_mm       DECIMAL(12,2) DEFAULT NULL COMMENT '盘点实际数量(mm）',\n"
-        "  diff_mm         DECIMAL(12,2) DEFAULT NULL COMMENT '差异数量(mm）=实际-剩余',\n"
-        "  diff_converted  DECIMAL(12,2) DEFAULT NULL COMMENT '转换差异数量(CSI单位）',\n"
+        "  original_qty    DECIMAL(12,4) DEFAULT NULL COMMENT '原始数量（coil_length，系统单位）',\n"
+        "  used_mm         DECIMAL(12,4) DEFAULT NULL COMMENT '使用数量(mm，消耗汇总）',\n"
+        "  remain_mm       DECIMAL(12,4) DEFAULT NULL COMMENT '剩余数量(mm）',\n"
+        "  actual_mm       DECIMAL(12,4) DEFAULT NULL COMMENT '盘点实际数量(mm）',\n"
+        "  diff_mm         DECIMAL(12,4) DEFAULT NULL COMMENT '差异数量(mm）=实际-剩余',\n"
+        "  diff_converted  DECIMAL(12,4) DEFAULT NULL COMMENT '转换差异数量(CSI单位）',\n"
         "  measured_by     VARCHAR(64)   DEFAULT NULL COMMENT '测量人',\n"
         "  measured_at     DATETIME      DEFAULT NULL COMMENT '测量时间',\n"
         "  created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,\n"

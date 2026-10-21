@@ -11,8 +11,8 @@ c = conn.cursor()
 # 建表
 c.execute("""CREATE TABLE IF NOT EXISTS kr_material_request (
     id INT AUTO_INCREMENT PRIMARY KEY, job_order VARCHAR(64) NOT NULL,
-    part_number VARCHAR(128) NOT NULL, quantity DECIMAL(12,2) NOT NULL,
-    price DECIMAL(12,4), total_amount DECIMAL(14,2), stock_qty DECIMAL(12,2),
+    part_number VARCHAR(128) NOT NULL, quantity DECIMAL(12,4) NOT NULL,
+    price DECIMAL(12,4), total_amount DECIMAL(14,2), stock_qty DECIMAL(12,4),
     replenish_reason VARCHAR(32), replenish_reason_other VARCHAR(256),
     requester VARCHAR(64) NOT NULL, request_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(20) NOT NULL DEFAULT 'pending_approval',
