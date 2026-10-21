@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 # 导出上限：超出截断（文件名标注）
 EXPORT_MAX_ROWS = 50000
 
+# 同步状态标签：0 待同步 / 1 成功 / 2 人工失败。
+# 例外：is_sync=2 但业务状态为 CANCELLED（人工取消）时显示「已取消」，
+# 避免用户把「已取消」误读成「同步失败、不可重发」。
 SYNC_LABELS = {0: '待同步', 1: '成功', 2: '人工失败'}
+CANCELLED_SYNC_LABEL = '已取消'
 ALLOWED_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'SUCCESS', 'FAILED_MANUAL',
                   'REVERSED', 'CANCELLED')
 
@@ -175,6 +179,8 @@ def _to_dict(row):
         elif val is not None:
             d[key] = str(val)
     d['is_sync_label'] = SYNC_LABELS.get(d.get('is_sync'), str(d.get('is_sync') or ''))
+    if str(d.get('status') or '').upper() == 'CANCELLED':
+        d['is_sync_label'] = CANCELLED_SYNC_LABEL
     return d
 
 
