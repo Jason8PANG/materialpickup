@@ -154,15 +154,20 @@ payload 由 `_build_payload()` 组装（`app/csi_sync_worker.py:283-298`），�
 
 - `CSI_WAREHOUSE_MAP = {'310': 'C1M1', '410': 'M1M1'}`，可被 `CSI_WAREHOUSE_310/410` 覆盖（`app/config.py:83-84`）。
 
-**`location` —— 发料库位（最容易搞错的一个）**
+**`location` —— 发料库位（最容易搞错的一个，且**按入口不同规则不同**）**
 
-> ⚠️ **`location` = 批次/卷标当前所在库位（扣库存的那个库位），不是车间线边的 `Floor-Core`。**
+| 入口 | `location` 取值 | 代码位置 | 适用场景 |
+|---|---|---|---|
+| **外部系统 `POST /api/external/job-issue`** | **固定 `Floor-Core`**（`Config.CSI_TO_LOCATION`），**不允许传其他库位** | `app/routes/external.py:1120`、`:1198-1199` | 线边仓（Floor-Core）已有实物，按工单发料扣账 |
+| 看板内部「完成备料」 | **批次/卷标当前所在库位**（如 `RM-B009-4`） | `app/services/csi_interface.py:258-263` | 从仓库库位直接发料到工单，跳过线边仓 |
+
+> ⚠️ **外部调用者只允许 `Floor-Core`。** 传别的一律不符合契约——外部接口不接受库位入参，`to_location` 由服务端写死 `Config.CSI_TO_LOCATION`。
 >
-> payload 里的 `location` 取自接口表 `to_location` 列（`app/csi_sync_worker.py:294`）。而 job-issue 行入队时写的是：
-> `from_location = None`，`to_location = 批次/卷标库位`（`app/services/csi_interface.py:258-263`）。
-> 这叫法是反的：**被「发料扣减」的库位存到了 `to_location` 列**。看表时不要按列名的字面意思理解。
+> ⚠️ 内部申请单链路相反：`location` 必须是批次/卷标所在库位（`kr_wire_coil.loc` / `kr_request_item_lot.loc`），写死 `Floor-Core` 会导致「批次存货 0」。
+>
+> payload 里的 `location` 取自接口表 `to_location` 列（`app/csi_sync_worker.py:294`）；job-issue 行入队时 `from_location` 恒为 `None`。看表时不要按列名字面理解。
 
-历史事故：早期实现把 `location` 固定写成 `Config.CSI_TO_LOCATION`（`Floor-Core`），批次实际存放在 `RM-B009-4` 等仓库库位，平台按 `Floor-Core` 扣库存时该批次可用量为 0，返回 `转移数量 X 大于批次存货 0`。已改为取批次库位（见第 10 章变更记录）。
+历史事故：内部链路早期把 `location` 固定写成 `Floor-Core`，批次实际在 `RM-B009-4`，平台按 `Floor-Core` 扣库存时该批次可用量为 0，返回 `转移数量 X 大于批次存货 0`。内部已改为取批次库位（见第 10 章变更记录）；**外部入口保持 `Floor-Core` 是设计约束，不是遗漏**。
 
 ### 3.3 接口表 → payload 字段映射（排错用）
 
@@ -490,7 +495,9 @@ kr_csi_interface: api_name='sl-job-issue', job='ENG0001317-0000',
 宝鼎 sl-job-issue
 ```
 
-> 待确认：`POST /api/external/job-issue` 目前仍把 `to_location` 写成 `Config.CSI_TO_LOCATION`（`Floor-Core`，`app/routes/external.py:1120`、`1198-1199`），与「location = 批次库位」的新口径不一致。该入口若用于有库位要求的批次，需先确认是否已整改。
+> ✅ **外部入口的库位规则（设计约束，不是缺陷）**：`POST /api/external/job-issue` 的 `to_location` **固定写为 `Config.CSI_TO_LOCATION`（`Floor-Core`）**（`app/routes/external.py:1120`、`1198-1199`），服务端不接受库位入参。外部系统只负责「线边仓 → 工单」的扣账，实物必须已经在 Floor-Core。
+>
+> 只有看板内部「完成备料」链路才使用批次实际库位（`app/services/csi_interface.py:258-263`）。两条路径不要混用。
 
 ---
 
@@ -507,7 +514,7 @@ kr_csi_interface: api_name='sl-job-issue', job='ENG0001317-0000',
 | `quantity` | number | 是 | > 0；≤4 位小数 | 超发 → `本次要发的数量比工单还能发的数量多 N`；0 → 本地直接转人工 |
 | `lot` | string | 是 | 与库存批次一致 | 批号错 → `转移数量 X 大于批次存货 0` |
 | `warehouse` | string | 是 | `C1M1`(310) / `M1M1`(410) | 与 `site` 不匹配 → 库存查不到 |
-| `location` | string | 是 | **批次/卷标所在库位**，非 `Floor-Core` | 写成 `Floor-Core` → `转移数量 X 大于批次存货 0` |
+| `location` | string | 是 | **外部入口固定 `Floor-Core`**（服务端写死，不收此参数）；内部链路才是批次库位 | 外部传其他库位 → 不符合契约；内部写成 `Floor-Core` → `转移数量 X 大于批次存货 0` |
 
 ---
 
@@ -517,7 +524,10 @@ kr_csi_interface: api_name='sl-job-issue', job='ENG0001317-0000',
 2. **幂等键这样生成**：`traceId = f"JI{job}-{item}-{uuid4().hex[:12]}"`，`job` 用完整工单号（含 `-0000`）。生成一次就**存下来**，重试/重发沿用；只有「换一笔业务」时才生成新的。
 3. **`documentNumber` 一旦提交就不要改**。长度 ≤12；失败后改数量重投必然 409。失败要处置时改的是数据（批次/库位/数量），走「重新发送」。
 4. **数量精度 4 位**：`round(qty, 4)`；整数提交为 int（`4` 而不是 `4.0`）；必须 > 0。
-5. **`location` 取批次实际所在库位**，从 `kr_wire_coil.loc` / `kr_request_item_lot.loc` 来，**绝不写死 `Floor-Core`**。写之前确认该库位该批次有库存。
+5. **库位规则按入口区分（重要）**：
+   - 走 **`/api/external/job-issue`（外部同事常用）** → **不要传 location，也不要想当然填仓库库位**。服务端固定用 `Floor-Core`，前提是实物已在线边仓。
+   - 走 **看板内部「完成备料」** → `location` 取批次实际库位（`kr_wire_coil.loc` / `kr_request_item_lot.loc`），**绝不写死 `Floor-Core`**，且写之前确认该库位该批次有库存。
+   - 混用后果：外部把仓库库位当 Floor-Core 传 → 平台扣不到库存，报 `转移数量 X 大于批次存货 0`。
 6. **工单号拆分**：`job` 取最后一个 `-` 前的主号，`suffix` 取其后的 1~4 位纯数字；不符合形态就整串当 `job` 传、不传 `suffix`。
 7. **失败先读 `errormessage`**：
    - 前缀是 `网络/服务异常重试` → 网络问题，可继续同 traceId 重试或查连通性；
@@ -538,3 +548,4 @@ kr_csi_interface: api_name='sl-job-issue', job='ENG0001317-0000',
 | 2026-10-21 | 新增本文档 | 依据 `csi_sync_worker.py` / `csi_interface.py` 现行实现整理 |
 | 2026-10-21 | **`location` 改为批次/卷标库位** | 由固定 `Floor-Core` 改为取批次实际库位（`app/services/csi_interface.py:258-263`）。原因：批次不在 `Floor-Core` 时扣不到库存，报 `转移数量 X 大于批次存货 0` |
 | 2026-10-21 | **停止实时库位纠正** | 同步器不再调用 `get_lot_location` 校正/兜底库位，一律用接口表行内值；行内为空即转人工（`app/csi_sync_worker.py:29-34`、`698-707`）。原因：同一批次可能同时在车间与仓库有量，实时查询只返回一处，覆盖后会误判 NOOP（id=51 案例） |
+| 2026-10-21 | **明确外部入口库位固定 `Floor-Core`** | 业务确认：`POST /api/external/job-issue` 只允许线边仓发料，服务端写死 `Config.CSI_TO_LOCATION`（`app/routes/external.py:1120`、`1198-1199`），**不接受库位入参**。与内部「完成备料」用批次库位是两条独立路径，勿混用 |
