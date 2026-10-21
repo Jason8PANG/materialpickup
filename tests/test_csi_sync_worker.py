@@ -6,8 +6,8 @@
   2. HTTP 400 入队被拒 → 失败即转人工：单号与 traceId 均不变、is_sync=2/FAILED_MANUAL
   3. HTTP 409 CONFLICT → 同上（不再自动换 traceId 重投）
   4. 一次失败即 FAILED_MANUAL + 邮件一次，之后不再被扫描；「重新发送」重置后可再次提交
-  5. from_location：行内有值一律以行内（申请单源库位）为准，qty-move 不查实时库位；
-     仅当行内为空时查 CSI 库位补值，仍查不到则终态失败
+  5. 库位一律取接口表行内值（生成时写入的批次/卷标库位），同步器不再查 CSI 实时库位：
+     from_location / to_location 为空即 FAILED_MANUAL，get_lot_location 调用次数为 0
   5b. sl-misc-receipt / sl-misc-issue（盘点差异调整）：按行 api_name 组装 location/account 契约
   6. 并发抢占 → 同一行只提交一次
   7. 真实库：2967/2973 两条 PENDING 行能被选中；条件 UPDATE 具备抢占语义
@@ -154,9 +154,8 @@ def _fast_config(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_real_csi(monkeypatch):
-    """默认不访问真实 CSI：实时库位查不到 → 走行内快照兜底（与原语义一致）。
-
-    需要实时库位的用例在用例内再 patch app.csi_sync_worker.CSIClient 覆盖本 fixture。
+    """默认不访问真实 CSI。同步器已停用实时库位查询，此处给 get_lot_location
+    一个可返回值，任何命中都意味着生产路径仍在查询——用例会断言调用次数为 0。
     """
     client = MagicMock()
     client.get_lot_location.return_value = None
@@ -423,24 +422,32 @@ class TestTransient:
 
 
 # ====================================================================== #
-#  6. from_location 补值（仅行内为空时）
+#  6. from_location 缺值：不再实时补值，直接转人工
 # ====================================================================== #
 class TestFromLocation:
-    def test_empty_from_location_looked_up(self):
+    def test_empty_from_location_fails_without_lookup(self):
+        """行内 from 为空 → 不查实时库位、不发请求，直接 FAILED_MANUAL"""
         repo = FakeRepo([_row(from_location=None)])
-        with patch('app.csi_sync_worker._http_post',
-                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
+        with patch('app.csi_sync_worker._http_post') as post, \
+             patch('app.csi_sync_worker._live_location') as live, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker.send_email') as mail:
+            # 实时库位可查也不得使用
             client_cls.return_value.get_lot_location.return_value = 'B-02-03'
-            _run(repo)
+            stats = _run(repo)
 
-        client_cls.return_value.get_lot_location.assert_called_once_with('A000871', '202510210000006')
-        assert post.call_args.kwargs['json']['fromLocation'] == 'B-02-03'
-        assert repo.row(1)['from_location'] == 'B-02-03'
-        assert repo.row(1)['is_sync'] == 1
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
+        post.assert_not_called()
+        row = repo.row(1)
+        assert row['retry_count'] == 1
+        assert row['errormessage'] == '缺少源库位（from_location 为空）'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert stats['manual'] == 1 and stats['success'] == 0
+        assert mail.call_count == 1
 
     def test_lookup_failure_is_terminal(self):
-        """行内 from 为空且 CSI 查不到库位 → 源库位缺失，终态失败（不发出必然失败的请求）"""
+        """行内 from 为空 → 无论 CSI 是否可查都终态失败（不发出必然失败的请求）"""
         repo = FakeRepo([_row(from_location='')])
         with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
@@ -448,11 +455,11 @@ class TestFromLocation:
             client_cls.return_value.get_lot_location.return_value = None
             stats = _run(repo)
 
-        client_cls.return_value.get_lot_location.assert_called_once()
+        client_cls.return_value.get_lot_location.assert_not_called()
         post.assert_not_called()          # 不发出必然失败的请求
         row = repo.row(1)
         assert row['retry_count'] == 1
-        assert '无法获取源库位' in row['errormessage']
+        assert '缺少源库位' in row['errormessage']
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
         assert stats['manual'] == 1 and stats['success'] == 0
         assert mail.call_count == 1
@@ -528,17 +535,36 @@ class TestQtyMoveKeepsRowLocation:
         assert repo.fetch_candidates() == []
         assert _run(repo)['scanned'] == 0
 
-    def test_misc_issue_location_overridden(self):
-        """盘点盘亏行 to=RM-P015-1（旧），CSI 实际 Floor-Core → payload location 用实时值"""
+    def test_misc_issue_uses_row_location(self):
+        """盘点盘亏行 to=RM-P015-1：直用行内库位，不再被 CSI 实时值（Floor-Core）覆盖"""
         repo = FakeRepo([_misc_row(api_name=w.API_MISC_ISSUE, to_location='RM-P015-1')])
         with patch('app.csi_sync_worker._http_post',
                    return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker._live_location') as live, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             client_cls.return_value.get_lot_location.return_value = 'Floor-Core'
             stats = _run(repo)
 
-        assert post.call_args.kwargs['json']['location'] == 'Floor-Core'
-        assert repo.row(2)['to_location'] == 'Floor-Core'
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
+        assert post.call_args.kwargs['json']['location'] == 'RM-P015-1'
+        assert repo.row(2)['to_location'] == 'RM-P015-1'
+        assert stats['success'] == 1
+
+    def test_misc_receipt_uses_row_location(self):
+        """盘点盘盈行 to=C-03-02：直用行内库位，不查实时库位"""
+        repo = FakeRepo([_misc_row(to_location='C-03-02')])
+        with patch('app.csi_sync_worker._http_post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+             patch('app.csi_sync_worker._live_location') as live, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls:
+            client_cls.return_value.get_lot_location.return_value = 'RM-B009-2-001'
+            stats = _run(repo)
+
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
+        assert post.call_args.kwargs['json']['location'] == 'C-03-02'
+        assert repo.row(2)['to_location'] == 'C-03-02'
         assert stats['success'] == 1
 
     def test_multi_row_round_never_queries_live_location(self):
@@ -610,20 +636,25 @@ class TestRowLocationAuthoritative:
         assert repo.row(13)['from_location'] == 'RM-B009-2-001'
         assert stats['success'] == 1 and stats['noop'] == 0
 
-    def test_return_row_without_from_location_looks_up_live(self):
-        """撤回行 from_location 为空 → 才查实时库位兜底"""
+    def test_return_row_without_from_location_fails(self):
+        """撤回行 from_location 为空 → 不查实时库位，直接 FAILED_MANUAL"""
         repo = FakeRepo([_row(id=14, documentnumber='MP2973B06', direction='B',
                               from_location=None, to_location='RM-B009-2-001')])
-        with patch('app.csi_sync_worker._http_post',
-                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
+        with patch('app.csi_sync_worker._http_post') as post, \
+             patch('app.csi_sync_worker._live_location') as live, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
+            # 实时库位可查（RM-B009-9-999）也不得采用
             client_cls.return_value.get_lot_location.return_value = 'RM-B009-9-999'
             stats = _run(repo)
 
-        client_cls.return_value.get_lot_location.assert_called_once()
-        assert post.call_args.kwargs['json']['fromLocation'] == 'RM-B009-9-999'
-        assert repo.row(14)['from_location'] == 'RM-B009-9-999'
-        assert stats['success'] == 1
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
+        post.assert_not_called()
+        row = repo.row(14)
+        assert row['from_location'] is None
+        assert row['errormessage'] == '缺少源库位（from_location 为空）'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert stats['manual'] == 1 and stats['success'] == 0
 
     def test_is_return_direction_helper(self):
         """判定口径：源为车间库位、目标为仓库库位（RM / 非车间库位）"""
@@ -712,22 +743,28 @@ class TestMiscReceiptAndIssue:
                              'warehouse', 'fromLocation', 'toLocation', 'lot', 'reasonCode'}
         assert body['fromLocation'] == 'A-01-01' and body['toLocation'] == 'Floor-Core'
 
-    def test_empty_location_looked_up_and_written_back(self):
-        """location 为空 → 查 CSI 库位补值并写回 to_location"""
+    def test_empty_location_fails_without_lookup(self):
+        """行内 location 为空 → 不查实时库位，直接 FAILED_MANUAL"""
         repo = FakeRepo([_misc_row(to_location=None)])
-        with patch('app.csi_sync_worker._http_post',
-                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
+        with patch('app.csi_sync_worker._http_post') as post, \
+             patch('app.csi_sync_worker._live_location') as live, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker.send_email') as mail:
+            # 实时库位可查（C-09-09）也不得采用
             client_cls.return_value.get_lot_location.return_value = 'C-09-09'
             _run(repo)
 
-        client_cls.return_value.get_lot_location.assert_called_once_with('A000871', '202510210000006')
-        assert post.call_args.kwargs['json']['location'] == 'C-09-09'
-        assert repo.row(2)['to_location'] == 'C-09-09'
-        assert repo.row(2)['is_sync'] == 1
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
+        post.assert_not_called()
+        row = repo.row(2)
+        assert row['to_location'] is None
+        assert row['errormessage'] == '杂项收发缺少库位（to_location 为空）'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert mail.call_count == 1
 
     def test_location_lookup_failure_is_terminal(self):
-        """库位补不到 → 不提交、直接转人工（FAILED_MANUAL）"""
+        """库位为空 → 不提交、直接转人工（FAILED_MANUAL），且不查实时库位"""
         repo = FakeRepo([_misc_row(to_location='')])
         with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
@@ -735,10 +772,11 @@ class TestMiscReceiptAndIssue:
             client_cls.return_value.get_lot_location.return_value = None
             _run(repo)
 
+        client_cls.return_value.get_lot_location.assert_not_called()
         post.assert_not_called()
         row = repo.row(2)
         assert row['retry_count'] == 1
-        assert row['errormessage'] == '无法获取 Lot 库位'
+        assert row['errormessage'] == '杂项收发缺少库位（to_location 为空）'
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_empty_account_blocks_request_then_manual_with_email(self):
@@ -846,23 +884,29 @@ class TestJobIssue:
         body = w._build_payload(_job_issue_row())
         assert 'suffix' not in body
 
-    def test_location_empty_looked_up_and_written_back(self):
-        """to_location 为空 → 实时查 Lot 库位兜底并写回"""
+    def test_location_empty_fails_without_lookup(self):
+        """to_location 为空 → 不查实时库位、不发请求，直接 FAILED_MANUAL"""
         repo = FakeRepo([_job_issue_row(to_location=None)])
-        with patch('app.csi_sync_worker._http_post',
-                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post, \
-             patch('app.csi_sync_worker.CSIClient') as client_cls:
+        with patch('app.csi_sync_worker._http_post') as post, \
+             patch('app.csi_sync_worker._live_location') as live, \
+             patch('app.csi_sync_worker.CSIClient') as client_cls, \
+             patch('app.csi_sync_worker.send_email') as mail:
+            # 实时库位可查（C-09-09）也不得采用
             client_cls.return_value.get_lot_location.return_value = 'C-09-09'
             client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             _run(repo)
 
-        client_cls.return_value.get_lot_location.assert_called_once_with('B052552', '202505090000036')
-        assert post.call_args.kwargs['json']['location'] == 'C-09-09'
-        assert repo.row(3)['to_location'] == 'C-09-09'
-        assert repo.row(3)['is_sync'] == 1
+        live.assert_not_called()
+        client_cls.return_value.get_lot_location.assert_not_called()
+        post.assert_not_called()
+        row = repo.row(3)
+        assert row['to_location'] is None
+        assert row['errormessage'] == '工单发料缺少库位（to_location 为空）'
+        assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
+        assert mail.call_count == 1
 
     def test_location_lookup_failure_is_terminal(self):
-        """库位补不到 → 不发请求、直接转人工"""
+        """库位为空 → 不发请求、直接转人工，且不查实时库位"""
         repo = FakeRepo([_job_issue_row(to_location='')])
         with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker.CSIClient') as client_cls, \
@@ -871,10 +915,11 @@ class TestJobIssue:
             client_cls.return_value.clear_job_matl_backflush.return_value = (True, BF_MSG_ALREADY_ZERO)
             _run(repo)
 
+        client_cls.return_value.get_lot_location.assert_not_called()
         post.assert_not_called()
         row = repo.row(3)
         assert row['retry_count'] == 1
-        assert '库位' in row['errormessage']
+        assert row['errormessage'] == '工单发料缺少库位（to_location 为空）'
         assert row['is_sync'] == 2 and row['status'] == 'FAILED_MANUAL'
 
     def test_missing_job_blocks_request(self):

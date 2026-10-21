@@ -26,12 +26,12 @@
   2 / FAILED_MANUAL 提交失败，已发邮件转人工（不再自动重试；仅「重新发送」可复活）
   2 / NOOP          物料已在目标库位（fromLocation == toLocation），不发请求、不告警
 
-库位口径：接口表里的 from_location / to_location 只是入队时的本地快照。
-  - 正向备料（仓库 → Floor-Core）：提交前以 CSI 实时查询（get_lot_location）为准并回写，
-    用于纠正库存快照过期；查询不到才用行内值兜底。
-  - 撤回/退料（Floor-Core → 仓库库位）：保留行内 from_location，不用实时库位覆盖。
-    同一 Lot 同时在车间和仓库有量时，实时查询只会返回其中一处，覆盖会把
-    from 改成 to 从而误判 NOOP（id=51 的失败原因）。
+库位口径：库位一律取接口表行内值（生成时写入的批次/卷标库位），不做实时校正。
+  同步器不再调用 CSI 实时库位查询（get_lot_location）纠正或兜底库位：行内
+  from_location / to_location 为空即判失败转人工，由人工核对接口表数据后重投。
+  原因：同一 Lot 可能同时在车间与仓库两个库位有量，实时查询只返回其中一处，
+  覆盖行内值会把 from 改成 to 从而误判 NOOP（id=51 的失败原因），也会与生成端
+  「以批次库位为准」的判定口径不一致。
 
 并发安全：多进程/多线程可能同时扫描到同一行，靠 claim() 的条件 UPDATE
 （WHERE status IN (...) AND is_sync=0）保证只有 rowcount==1 的一方处理。
@@ -453,10 +453,11 @@ def _submit_and_poll(payload, api_name=API_QTY_MOVE, sleep_func=time.sleep):
 
 
 # ====================================================================== #
-#  库位实时查询（以 CSI 为准，本地快照仅兜底）
+#  库位实时查询（已停用：同步器一律使用接口表行内库位，不再实时校正）
+#  仅保留函数定义以兼容既有调用方签名与测试，生产路径不再调用。
 # ====================================================================== #
 def _lookup_lot_location(row):
-    """查该 Lot 在 CSI 的实际库位；取不到返回 None"""
+    """查该 Lot 在 CSI 的实际库位；取不到返回 None（生产路径已不再调用）"""
     siteref = str(row.get('siteRef') or '').strip() or '410'
     item = (row.get('item') or '').strip()
     lot = (row.get('lot') or '').strip()
@@ -473,8 +474,11 @@ def _lookup_lot_location(row):
 def _live_location(row, cache=None):
     """取该行的 CSI 实时库位，同一轮内同 (item, lot) 只查一次。
 
+    已停用：同步器不再做实时库位校正，库位一律取接口表行内值。
+    保留本函数仅为兼容既有调用方签名（含 loc_cache 参数）与历史测试。
+
     cache 为 {(item, lot): loc|None}：查询结果（含失败）都缓存，
-    单轮最多查 MAX_LOCATION_LOOKUPS 个不重复 lot，超出部分直接用行内值兜底。
+    单轮最多查 MAX_LOCATION_LOOKUPS 个不重复 lot。
     """
     item = (row.get('item') or '').strip()
     lot = (row.get('lot') or '').strip()
@@ -691,60 +695,28 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
         return
     stats['claimed'] += 1
 
-    # 1. 库位：
-    #    sl-qty-move  一律以「申请单源库位」from_location 为准，不查 CSI 实时库位
-    #                 （同一 lot 跨两个库位时，实时查询可能返回目标库位 → 误判 NOOP）；
-    #                 仅当 from_location 为空时才兜底查一次。
-    #    sl-job-issue 的 to_location 是发料库位（批次/卷标所在库位），行内有值直用，
-    #                 只有为空时才实时查 Lot 现库位兜底。
-    #    sl-misc-*    的 location 存于 to_location，仍按 CSI 实时库位校正。
-    live = None
+    # 1. 库位：一律取接口表行内值（生成时写入的批次/卷标库位），不做实时校正。
+    #    三个分支都不再调用 _live_location / get_lot_location；行内为空即失败转人工。
+    #    sl-qty-move  from_location = 申请单源库位（可追溯、不受实时查询单点返回影响）。
+    #    sl-job-issue to_location   = 工单发料库位。
+    #    sl-misc-*    to_location   = 杂项收发的实际库位（接口字段 location）。
     if api == API_JOB_ISSUE:
         loc = (row.get('to_location') or '').strip()
         if not loc:
-            loc = _live_location(row, loc_cache) or ''
-            if loc:
-                row['to_location'] = loc
-                repo.update(row_id, to_location=loc)
-                logger.info('CSI 同步：工单发料补库位 id=%s doc=%s item=%s lot=%s → %s',
-                            row_id, row.get('documentnumber'), row.get('item'), row.get('lot'), loc)
-        if not loc:
-            _fail(repo, row, '工单发料缺少库位（to_location 为空且 CSI 无该批次库位）', stats)
+            _fail(repo, row, '工单发料缺少库位（to_location 为空）', stats)
             return
     elif api in MISC_APIS:
-        live = _live_location(row, loc_cache)
-        old_loc = (row.get('to_location') or '').strip()
-        loc = live or old_loc
+        loc = (row.get('to_location') or '').strip()
         if not loc:
-            _fail(repo, row, '无法获取 Lot 库位', stats)
+            _fail(repo, row, '杂项收发缺少库位（to_location 为空）', stats)
             return
-        row['to_location'] = loc
-        if not _same_loc(loc, old_loc):
-            repo.update(row_id, to_location=loc)
-            logger.info('CSI 同步：库位校正 id=%s api=%s request=%s doc=%s item=%s lot=%s %s → %s',
-                        row_id, api, row.get('request_id'), row.get('documentnumber'),
-                        row.get('item'), row.get('lot'), old_loc or '(空)', loc)
     else:
-        old_loc = (row.get('from_location') or '').strip()
+        loc = (row.get('from_location') or '').strip()
         to_loc = (row.get('to_location') or Config.CSI_TO_LOCATION or '').strip()
-        # 库位转移一律以「申请单源库位」为准，不查 CSI 实时库位。
-        # 原因：同一 lot 可能同时存在于仓库与 Floor-Core 两个库位，
-        # get_lot_location 只返回其中一处；一旦返回的是目标库位，
-        # from 会被改得与 to 相同，误判成 NOOP「物料已在目标库位」。
-        loc = old_loc
+        # 库位转移以「申请单源库位」为准：同一 lot 可能同时存在于仓库与 Floor-Core，
+        # 实时查询只返回其中一处，一旦返回目标库位就会把 from 改成 to、误判 NOOP。
         if not loc:
-            # 行内源库位为空（历史数据）才兜底查一次实时库位
-            live = _live_location(row, loc_cache)
-            loc = live or ''
-            if loc:
-                row['from_location'] = loc
-                repo.update(row_id, from_location=loc)
-                logger.info('CSI 同步：源库位为空，用 CSI 实时库位兜底 id=%s api=%s request=%s '
-                            'doc=%s item=%s lot=%s → %s',
-                            row_id, api, row.get('request_id'), row.get('documentnumber'),
-                            row.get('item'), row.get('lot'), loc)
-        if not loc:
-            _fail(repo, row, '无法获取源库位（from_location 为空且 CSI 无该批次库位）', stats)
+            _fail(repo, row, '缺少源库位（from_location 为空）', stats)
             return
         row['from_location'] = loc
 
