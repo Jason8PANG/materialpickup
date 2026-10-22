@@ -165,6 +165,15 @@ body {
 /* ========== 导航栏 ========== */
 .navbar {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    /* 必须显式抬高层级：否则页面内的卡片/表格（有定位或 sticky 单元格）
+       DOM 在后，会把展开的下拉菜单盖住 */
+    position: relative;
+    z-index: 1030;
+}
+
+/* 下拉面板再抬高一层，确保压过表格 sticky 列/z-index 内容 */
+.navbar .dropdown-menu {
+    z-index: 1055;
 }
 
 .role-badge {
