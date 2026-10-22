@@ -111,8 +111,21 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                 </tbody>
             </table>
         </div>
-        <div class="d-flex justify-content-between align-items-center mt-3">
-            <small class="text-muted" id="pageInfo"></small>
+        <div class="d-flex justify-content-between align-items-center mt-3 flex-wrap gap-2">
+            <div class="d-flex align-items-center gap-3 flex-wrap">
+                <small class="text-muted" id="pageInfo"></small>
+                <div class="d-flex align-items-center gap-1">
+                    <small class="text-muted" data-i18n="csi.page_size">每页</small>
+                    <select class="form-select form-select-sm" id="pageSizeSel" style="width:auto;"
+                            onchange="changePageSize(this.value)">
+                        <option value="20">20</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="200">200</option>
+                    </select>
+                    <small class="text-muted" data-i18n="csi.page_size_unit">条</small>
+                </div>
+            </div>
             <nav>
                 <ul class="pagination pagination-sm mb-0">
                     <li class="page-item" id="prevLi"><a class="page-link" href="#" onclick="changePage(-1);return false;" data-i18n="csi.prev">上一页</a></li>
@@ -339,6 +352,15 @@ function changePage(delta) {
     var next = CSI_STATE.page + delta;
     if (next < 1 || next > pages) return;
     CSI_STATE.page = next;
+    loadCsi();
+}
+
+// 切换每页条数：重置到第 1 页，后端 size 上限 200
+function changePageSize(value) {
+    var n = parseInt(value, 10);
+    if (!n || n < 1) return;
+    CSI_STATE.size = Math.min(n, 200);
+    CSI_STATE.page = 1;
     loadCsi();
 }
 
