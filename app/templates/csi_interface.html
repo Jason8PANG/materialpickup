@@ -229,14 +229,17 @@ function csiStatusBadge(status) {
     return '<span class="badge ' + cls + '">' + csiEsc(label) + '</span>';
 }
 
-// 失败/终止态才可重发（与后端 csi_interface.py:227 RESEND_FAILED_STATUS 保持一致）
+// 失败/终止态才可重发；CANCELLED 例外（已取消是业务终态，前端隐藏 + 后端 400 双保险）
 var CSI_RESEND_STATUSES = ['FAILED_MANUAL', 'NOOP', 'CANCELLED', 'FAILED'];
 // 未成功过账才可取消（与后端 csi_interface.py:374 CANCEL_ALLOWED_STATUS 保持一致）
 var CSI_CANCEL_STATUSES = ['PENDING', 'QUEUED', 'SUBMITTING', 'FAILED_MANUAL', 'NOOP', 'FAILED'];
 
 function csiCanResend(r) {
+    var st = String(r.status || '').toUpperCase();
+    // 已取消的记录不允许重发：取消是业务上的终态，重发会让用户以为还能救回来
+    if (st === 'CANCELLED') return false;
     if (r.is_sync === 2) return true;
-    return CSI_RESEND_STATUSES.indexOf(String(r.status || '').toUpperCase()) >= 0;
+    return CSI_RESEND_STATUSES.indexOf(st) >= 0;
 }
 
 function csiCanCancel(r) {

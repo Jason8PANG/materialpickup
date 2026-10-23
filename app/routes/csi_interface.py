@@ -231,6 +231,8 @@ def api_list():
 # ====================================================================== #
 # 可重发的「终止态」：与管理端筛选项保持一致（FAILED 为平台显式返回的失败状态）
 RESEND_FAILED_STATUS = ('FAILED_MANUAL', 'NOOP', 'CANCELLED', 'FAILED')
+# 注意：CANCELLED 虽在此元组内，但 api_resend 会在前面显式拦截（已取消不允许重发），
+# 保留它只为兼容历史调用；真正的放行集合 = 元组 - {CANCELLED}
 
 
 def _empty_stats():
@@ -299,6 +301,9 @@ def api_resend(row_id):
         api_name = sync_worker._row_api(row)
         if is_sync == 1:
             return jsonify({'success': False, 'message': '该记录已成功过账，不允许重发'}), 400
+        # 已取消是业务终态，不允许重发（要与前端 csiCanResend 保持一致）
+        if status == 'CANCELLED':
+            return jsonify({'success': False, 'message': '该记录已取消，不允许重新发送'}), 400
         if not (is_sync == 2 or status in RESEND_FAILED_STATUS):
             return jsonify({'success': False, 'message': '该记录正在同步中，请稍后再试'}), 400
 
