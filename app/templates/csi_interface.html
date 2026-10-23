@@ -2,16 +2,24 @@
 {% block title %}同步接口查询 - 物料领取看板{% endblock %}
 {% block content %}
 <style>
-/* 操作列固定右侧：19 列横向滚动时「重新发送 / 取消」始终可见（不改变列序与列宽） */
+/* 操作列固定右侧：20 列横向滚动时图标按钮始终可见 */
 .csi-action-col {
     position: sticky;
     right: 0;
     background: #fff;
     z-index: 2;
     box-shadow: -4px 0 6px -4px rgba(0, 0, 0, .15);
+    width: 76px;
+    min-width: 76px;
+    max-width: 76px;
+    white-space: nowrap;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
 }
 thead .csi-action-col { z-index: 3; background: #f8f9fa; }
 .table-hover > tbody > tr:hover > .csi-action-col { background: #ececec; }
+/* 操作按钮纯图标：固定方块尺寸，悬停显示 title */
+.csi-action-col .btn { width: 30px; height: 26px; line-height: 1; }
 </style>
 <div class="card shadow-sm">
     <div class="card-header bg-white py-3">
@@ -85,29 +93,30 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
             <table class="table table-sm table-bordered table-hover align-middle text-nowrap small">
                 <thead class="table-light">
                     <tr>
-                        <th data-i18n="csi.col_request">申请单号</th>
-                        <th data-i18n="csi.col_api">接口</th>
-                        <th data-i18n="csi.col_item">物料号</th>
-                        <th data-i18n="csi.col_lot">批次</th>
-                        <th data-i18n="csi.col_qty">数量</th>
-                        <th data-i18n="csi.col_um">单位(um)</th>
-                        <th data-i18n="csi.col_warehouse">仓库</th>
-                        <th data-i18n="csi.col_from_location">源库位</th>
-                        <th data-i18n="csi.col_to_location">目的库位</th>
-                        <th data-i18n="csi.col_reasoncode">原因码</th>
-                        <th data-i18n="csi.col_account">科目</th>
-                        <th data-i18n="csi.col_trace">traceId</th>
-                        <th data-i18n="csi.col_sync">同步状态</th>
-                        <th data-i18n="csi.col_status">状态</th>
-                        <th data-i18n="csi.col_retry">重试次数</th>
-                        <th data-i18n="csi.col_error">错误信息</th>
-                        <th data-i18n="csi.col_submitted">提交时间</th>
-                        <th data-i18n="csi.col_last_poll">最后轮询</th>
-                        <th class="csi-action-col" data-i18n="csi.col_action">操作</th>
+                        <th style="width:58px;">ID</th>
+                        <th style="width:88px;" data-i18n="csi.col_request">申请单号</th>
+                        <th style="width:108px;" data-i18n="csi.col_api">接口</th>
+                        <th style="width:118px;" data-i18n="csi.col_item">物料号</th>
+                        <th style="width:140px;" data-i18n="csi.col_lot">批次</th>
+                        <th style="width:76px;" data-i18n="csi.col_qty">数量</th>
+                        <th style="width:58px;" data-i18n="csi.col_um">单位(um)</th>
+                        <th style="width:64px;" data-i18n="csi.col_warehouse">仓库</th>
+                        <th style="width:116px;" data-i18n="csi.col_from_location">源库位</th>
+                        <th style="width:96px;" data-i18n="csi.col_to_location">目的库位</th>
+                        <th style="width:74px;" data-i18n="csi.col_reasoncode">原因码</th>
+                        <th style="width:74px;" data-i18n="csi.col_account">科目</th>
+                        <th style="width:258px;" data-i18n="csi.col_trace">traceId</th>
+                        <th style="width:86px;" data-i18n="csi.col_sync">同步状态</th>
+                        <th style="width:92px;" data-i18n="csi.col_status">状态</th>
+                        <th style="width:68px;" data-i18n="csi.col_retry">重试次数</th>
+                        <th style="width:210px;" data-i18n="csi.col_error">错误信息</th>
+                        <th style="width:136px;" data-i18n="csi.col_submitted">提交时间</th>
+                        <th style="width:136px;" data-i18n="csi.col_last_poll">最后轮询</th>
+                        <th class="csi-action-col" style="width:76px;" data-i18n="csi.col_action">操作</th>
                     </tr>
                 </thead>
                 <tbody id="csiBody">
-                    <tr><td colspan="19" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                    <tr><td colspan="20" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -220,14 +229,14 @@ function csiCanCancel(r) {
 function csiActionCell(r) {
     var btns = '';
     if (csiCanCancel(r)) {
-        btns += '<button type="button" class="btn btn-outline-secondary btn-sm csi-cancel-btn" data-id="' +
-            csiEsc(r.id) + '"><i class="fas fa-ban me-1"></i>' +
-            csiEsc(__('csi.cancel')) + '</button>';
+        btns += '<button type="button" class="btn btn-outline-secondary btn-sm px-2 py-0 csi-cancel-btn" data-id="' +
+            csiEsc(r.id) + '" title="' + csiEsc(__('csi.cancel')) + '" aria-label="' +
+            csiEsc(__('csi.cancel')) + '"><i class="fas fa-ban"></i></button>';
     }
     if (csiCanResend(r)) {
-        btns += '<button type="button" class="btn btn-outline-warning btn-sm csi-resend-btn" data-id="' +
-            csiEsc(r.id) + '"><i class="fas fa-redo me-1"></i>' +
-            csiEsc(__('csi.resend')) + '</button>';
+        btns += '<button type="button" class="btn btn-outline-warning btn-sm px-2 py-0 csi-resend-btn" data-id="' +
+            csiEsc(r.id) + '" title="' + csiEsc(__('csi.resend')) + '" aria-label="' +
+            csiEsc(__('csi.resend')) + '"><i class="fas fa-redo"></i></button>';
     }
     if (!btns) return '<td class="text-center csi-action-col">-</td>';
     return '<td class="text-center csi-action-col"><div class="d-flex gap-1 justify-content-center">' + btns + '</div></td>';
@@ -287,7 +296,7 @@ function csiResend(btn) {
 
 function loadCsi() {
     var tb = document.getElementById('csiBody');
-    tb.innerHTML = '<tr><td colspan="19" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="20" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
         var summary = resp.summary || {};
@@ -297,7 +306,7 @@ function loadCsi() {
             ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
             ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
         if (!resp.data || resp.data.length === 0) {
-            tb.innerHTML = '<tr><td colspan="19" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="20" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
         } else {
             tb.innerHTML = resp.data.map(function (r) {
                 var trace = csiEsc(r.traceid);
@@ -305,6 +314,7 @@ function loadCsi() {
                 var syncCell = (r.is_sync === null || r.is_sync === undefined)
                     ? '-' : csiSyncBadge(r.is_sync, r.is_sync_label);
                 return '<tr>' +
+                    '<td class="text-muted">' + csiEsc(r.id) + '</td>' +
                     '<td>' + csiVal(r.request_id) + '</td>' +
                     '<td>' + csiVal(r.api_name) + '</td>' +
                     '<td>' + csiVal(r.item) + '</td>' +
