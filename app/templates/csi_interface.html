@@ -9,9 +9,9 @@
     background: #fff;
     z-index: 2;
     box-shadow: -4px 0 6px -4px rgba(0, 0, 0, .15);
-    width: 76px;
-    min-width: 76px;
-    max-width: 76px;
+    width: 84px;
+    min-width: 84px;
+    max-width: 84px;
     white-space: nowrap;
     padding-left: 4px !important;
     padding-right: 4px !important;
@@ -19,7 +19,26 @@
 thead .csi-action-col { z-index: 3; background: #f8f9fa; }
 .table-hover > tbody > tr:hover > .csi-action-col { background: #ececec; }
 /* 操作按钮纯图标：固定方块尺寸，悬停显示 title */
-.csi-action-col .btn { width: 30px; height: 26px; line-height: 1; }
+.csi-action-col .btn {
+    width: 32px;
+    height: 28px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    padding: 0 !important;
+}
+/* 重发按钮用实心黄底，避免 outline 在白底上几乎看不见 */
+.csi-action-col .csi-resend-btn { color: #212529; border-color: #ffc107; }
+.csi-action-col .csi-resend-btn:hover { background: #ffca2c; color: #000; }
+/* traceId 完整显示：不截断、不换行，超长靠横向滚动 */
+.csi-trace {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: nowrap;
+    word-break: keep-all;
+}
 </style>
 <div class="card shadow-sm">
     <div class="card-header bg-white py-3">
@@ -105,14 +124,14 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                         <th style="width:96px;" data-i18n="csi.col_to_location">目的库位</th>
                         <th style="width:74px;" data-i18n="csi.col_reasoncode">原因码</th>
                         <th style="width:74px;" data-i18n="csi.col_account">科目</th>
-                        <th style="width:258px;" data-i18n="csi.col_trace">traceId</th>
+                        <th style="width:300px;" data-i18n="csi.col_trace">traceId</th>
                         <th style="width:86px;" data-i18n="csi.col_sync">同步状态</th>
                         <th style="width:92px;" data-i18n="csi.col_status">状态</th>
                         <th style="width:68px;" data-i18n="csi.col_retry">重试次数</th>
                         <th style="width:210px;" data-i18n="csi.col_error">错误信息</th>
                         <th style="width:136px;" data-i18n="csi.col_submitted">提交时间</th>
                         <th style="width:136px;" data-i18n="csi.col_last_poll">最后轮询</th>
-                        <th class="csi-action-col" style="width:76px;" data-i18n="csi.col_action">操作</th>
+                        <th class="csi-action-col" style="width:84px;" data-i18n="csi.col_action">操作</th>
                     </tr>
                 </thead>
                 <tbody id="csiBody">
@@ -231,12 +250,12 @@ function csiActionCell(r) {
     if (csiCanCancel(r)) {
         btns += '<button type="button" class="btn btn-outline-secondary btn-sm px-2 py-0 csi-cancel-btn" data-id="' +
             csiEsc(r.id) + '" title="' + csiEsc(__('csi.cancel')) + '" aria-label="' +
-            csiEsc(__('csi.cancel')) + '"><i class="fas fa-ban"></i></button>';
+            csiEsc(__('csi.cancel')) + '"><i class="fas fa-ban fa-fw"></i></button>';
     }
     if (csiCanResend(r)) {
-        btns += '<button type="button" class="btn btn-outline-warning btn-sm px-2 py-0 csi-resend-btn" data-id="' +
+        btns += '<button type="button" class="btn btn-warning btn-sm px-2 py-0 csi-resend-btn" data-id="' +
             csiEsc(r.id) + '" title="' + csiEsc(__('csi.resend')) + '" aria-label="' +
-            csiEsc(__('csi.resend')) + '"><i class="fas fa-redo"></i></button>';
+            csiEsc(__('csi.resend')) + '"><i class="fas fa-redo fa-fw"></i></button>';
     }
     if (!btns) return '<td class="text-center csi-action-col">-</td>';
     return '<td class="text-center csi-action-col"><div class="d-flex gap-1 justify-content-center">' + btns + '</div></td>';
@@ -326,11 +345,11 @@ function loadCsi() {
                     '<td>' + csiVal(r.to_location) + '</td>' +
                     '<td>' + csiVal(r.reasoncode) + '</td>' +
                     '<td>' + csiVal(r.account) + '</td>' +
-                    '<td><span class="d-inline-block text-truncate" style="max-width:180px" title="' + trace + '">' + (trace || '-') + '</span></td>' +
+                    '<td class="csi-trace">' + (trace || '-') + '</td>' +
                     '<td>' + syncCell + '</td>' +
                     '<td>' + csiStatusBadge(r.status) + '</td>' +
                     '<td class="text-end">' + csiVal(r.retry_count) + '</td>' +
-                    '<td><span class="d-inline-block text-truncate" style="max-width:120px" title="' + err + '">' + (err || '-') + '</span></td>' +
+                    '<td><span class="d-inline-block text-truncate" style="max-width:200px" title="' + err + '">' + (err || '-') + '</span></td>' +
                     '<td>' + csiVal(r.submitted_at) + '</td>' +
                     '<td>' + csiVal(r.last_poll_at) + '</td>' +
                     csiActionCell(r) +
