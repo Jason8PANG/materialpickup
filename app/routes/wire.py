@@ -311,13 +311,25 @@ def api_coil_history(coil_id):
             unit = r.get('unit') or ''
             job = (r.get('job_order') or '').strip()
             if 'scrap' in ctype_l:
-                qty = r.get('scrap_length_actual')
-                if qty is None:
-                    qty = r.get('out_length')
+                scrap_mm = r.get('scrap_length_actual')
+                if scrap_mm is None:
+                    scrap_mm = r.get('out_length')
+                # out_length / scrap_length_actual 存的是 mm；converted_* 才是业务单位（FT 等）
+                conv = r.get('converted_length')
+                out_mm = r.get('out_length')
+                conv_unit = (r.get('converted_unit') or '').strip() or unit
+                qty, qty_unit, mm_txt = scrap_mm, 'mm', ''
+                if conv is not None and out_mm and scrap_mm is not None:
+                    try:
+                        qty = float(scrap_mm) * float(conv) / float(out_mm)
+                        qty_unit = conv_unit
+                        mm_txt = f"（{_fmt_qty(scrap_mm)} mm）"
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
                 if job:
-                    detail = f"工单 {job} 报废 {_fmt_qty(qty)} {unit}{stage_txt}"
+                    detail = f"工单 {job} 报废 {_fmt_qty(qty)} {qty_unit}{mm_txt}{stage_txt}"
                 else:
-                    detail = f"报废 {_fmt_qty(qty)} {unit}{stage_txt}"
+                    detail = f"报废 {_fmt_qty(qty)} {qty_unit}{mm_txt}{stage_txt}"
                 timeline.append({
                     'time': _iso(r.get('created_at')),
                     'type': 'scrap',
@@ -325,15 +337,23 @@ def api_coil_history(coil_id):
                     'title': '报废',
                     'detail': detail,
                     'qty': _r4(qty),
-                    'unit': r.get('unit'),
+                    'unit': qty_unit,
                 })
                 continue
-            qty = r.get('out_length')
+            # 消耗：out_length 是 mm，converted_length 才是业务单位，别再拿 unit 套 mm 数值
+            out_mm = r.get('out_length')
+            conv = r.get('converted_length')
+            conv_unit = (r.get('converted_unit') or '').strip() or unit
+            if conv is not None:
+                qty, qty_unit = conv, conv_unit
+                mm_txt = f"（{_fmt_qty(out_mm)} mm）" if out_mm is not None else ''
+            else:
+                qty, qty_unit, mm_txt = out_mm, 'mm', ''
             title = '工单消耗' if ctype_l in ('consumption', 'issue') else f'消耗（{ctype}）'
             if job:
-                detail = f"工单 {job} 消耗 {_fmt_qty(qty)} {unit}{stage_txt}"
+                detail = f"工单 {job} 消耗 {_fmt_qty(qty)} {qty_unit}{mm_txt}{stage_txt}"
             else:
-                detail = f"消耗 {_fmt_qty(qty)} {unit}{stage_txt}"
+                detail = f"消耗 {_fmt_qty(qty)} {qty_unit}{mm_txt}{stage_txt}"
             timeline.append({
                 'time': _iso(r.get('created_at')),
                 'type': 'consume',
@@ -341,7 +361,7 @@ def api_coil_history(coil_id):
                 'title': title,
                 'detail': detail,
                 'qty': _r4(qty),
-                'unit': r.get('unit'),
+                'unit': qty_unit,
             })
 
         # 3) 退料
