@@ -498,11 +498,53 @@ def records():
         conditions.append("r.request_time <= %s")
         params.append(f"{date_to} 23:59:59")
 
+    # 单号（精确，数字）
+    rid = (request.args.get('id') or '').strip()
+    if rid:
+        if not rid.isdigit():
+            return jsonify({'success': False, 'message': '单号必须为数字'}), 400
+        conditions.append("r.id = %s")
+        params.append(int(rid))
+
+    # 申请人（模糊）
+    requester = (request.args.get('requester') or '').strip()
+    if requester:
+        conditions.append("r.requester LIKE %s")
+        params.append(f'%{requester}%')
+
+    # 状态（精确，必须在 STATUS_LABELS 的 key 内）
+    status = (request.args.get('status') or '').strip()
+    if status:
+        if status not in STATUS_LABELS:
+            return jsonify({'success': False, 'message': '状态参数非法'}), 400
+        conditions.append("r.status = %s")
+        params.append(status)
+
+    # 工单号（模糊，明细表）
+    job_order = (request.args.get('job_order') or '').strip()
+    if job_order:
+        conditions.append("i.job_order LIKE %s")
+        params.append(f'%{job_order}%')
+
+    # 物料 / Part Number（模糊，明细表）
+    part_number = (request.args.get('part_number') or '').strip()
+    if part_number:
+        conditions.append("i.part_number LIKE %s")
+        params.append(f'%{part_number}%')
+
     where = " AND ".join(conditions)
+
+    # 明细表条件（工单号/物料）会引用 i.*，COUNT 查询也需带上同一 JOIN
+    item_join = ""
+    if job_order or part_number:
+        item_join = "LEFT JOIN kr_request_item i ON i.request_id = r.id"
 
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute(f"SELECT COUNT(DISTINCT r.id) as total FROM kr_material_request r WHERE {where}", params)
+        cursor.execute(
+            f"SELECT COUNT(DISTINCT r.id) as total FROM kr_material_request r {item_join} WHERE {where}",
+            params
+        )
         total = cursor.fetchone()['total']
 
         offset = (page - 1) * size

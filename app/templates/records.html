@@ -9,18 +9,49 @@
             </div>
             <div class="col-md-10 mt-2 mt-md-0">
                 <div class="row g-2 align-items-end">
-                    <div class="col-3">
+                    <div class="col-2">
+                        <label class="form-label small mb-1" data-i18n="records.title">单号</label>
+                        <input type="number" min="1" class="form-control form-control-sm" id="fId" placeholder="精确匹配">
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1" data-i18n="approve.requester">申请人</label>
+                        <input type="text" class="form-control form-control-sm" id="fRequester" placeholder="模糊匹配">
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1" data-i18n="admin.col_status">状态</label>
+                        <select class="form-select form-select-sm" id="fStatus">
+                            <option value="">全部</option>
+                            {% for key, label in status_labels.items() %}
+                            <option value="{{ key }}">{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1" data-i18n="form.job_order">工单号</label>
+                        <input type="text" class="form-control form-control-sm" id="fJobOrder" placeholder="模糊匹配">
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1">物料 / Part No.</label>
+                        <input type="text" class="form-control form-control-sm" id="fPartNumber" placeholder="模糊匹配">
+                    </div>
+                    <div class="col-2">
                         <label class="form-label small mb-1" data-i18n="records.date_from">创建时间起</label>
                         <input type="date" class="form-control form-control-sm" id="dateFrom">
                     </div>
-                    <div class="col-3">
+                    <div class="col-2">
                         <label class="form-label small mb-1" data-i18n="records.date_to">创建时间止</label>
                         <input type="date" class="form-control form-control-sm" id="dateTo">
                     </div>
                     <div class="col-2">
                         <label class="form-label small mb-1">&nbsp;</label>
-                        <button class="btn btn-primary btn-sm w-100" onclick="loadRecords()">
+                        <button class="btn btn-primary btn-sm w-100" onclick="doSearch()">
                             <i class="fas fa-search me-1"></i><span data-i18n="common.search">查询</span>
+                        </button>
+                    </div>
+                    <div class="col-2">
+                        <label class="form-label small mb-1">&nbsp;</label>
+                        <button class="btn btn-outline-secondary btn-sm w-100" onclick="resetFilters()">
+                            <i class="fas fa-rotate-left me-1"></i>重置
                         </button>
                     </div>
                     <div class="col-2">
@@ -75,22 +106,57 @@
 <script>
 let recordsPage = 1;
 
-document.addEventListener('DOMContentLoaded', function () {
-    // 默认最近7天
+function setDefaultDateRange() {
     var now = new Date();
     var weekAgo = new Date(now);
     weekAgo.setDate(weekAgo.getDate() - 7);
     document.getElementById('dateFrom').value = weekAgo.toISOString().slice(0,10);
     document.getElementById('dateTo').value = now.toISOString().slice(0,10);
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    setDefaultDateRange();
     loadRecords();
 });
 
+// 拼接筛选参数（空值不传），loadRecords / exportCSV 共用
+function buildRecordQuery() {
+    var map = {
+        id: 'fId',
+        requester: 'fRequester',
+        status: 'fStatus',
+        job_order: 'fJobOrder',
+        part_number: 'fPartNumber',
+        date_from: 'dateFrom',
+        date_to: 'dateTo'
+    };
+    var parts = [];
+    Object.keys(map).forEach(function (param) {
+        var el = document.getElementById(map[param]);
+        if (!el) return;
+        var val = (el.value || '').trim();
+        if (val) parts.push(encodeURIComponent(param) + '=' + encodeURIComponent(val));
+    });
+    return parts.length ? '&' + parts.join('&') : '';
+}
+
+function doSearch() {
+    recordsPage = 1;
+    loadRecords();
+}
+
+function resetFilters() {
+    ['fId', 'fRequester', 'fStatus', 'fJobOrder', 'fPartNumber'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    setDefaultDateRange();
+    recordsPage = 1;
+    loadRecords();
+}
+
 function loadRecords() {
-    var dateFrom = document.getElementById('dateFrom').value;
-    var dateTo = document.getElementById('dateTo').value;
-    var url = '/api/records?page=' + recordsPage + '&size=100';
-    if (dateFrom) url += '&date_from=' + dateFrom;
-    if (dateTo) url += '&date_to=' + dateTo;
+    var url = '/api/records?page=' + recordsPage + '&size=100' + buildRecordQuery();
 
     apiGet(url, function (resp) {
         renderRecords(resp);
@@ -156,10 +222,7 @@ function statusColor(status) {
 
 function exportCSV() {
     var dateFrom = document.getElementById('dateFrom').value;
-    var dateTo = document.getElementById('dateTo').value;
-    var url = '/api/records?page=1&size=100000';
-    if (dateFrom) url += '&date_from=' + dateFrom;
-    if (dateTo) url += '&date_to=' + dateTo;
+    var url = '/api/records?page=1&size=100000' + buildRecordQuery();
 
     showToast('info', '正在导出...');
     apiGet(url, function (resp) {

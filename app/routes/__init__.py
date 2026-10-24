@@ -103,7 +103,8 @@ def admin_printers_page():
 def records_page():
     if not session.get('user'):
         return redirect(url_for('pages.login_page'))
-    return render_template('records.html')
+    from app.models import STATUS_LABELS
+    return render_template('records.html', status_labels=STATUS_LABELS)
 
 
 @pages.route('/cutting/specs')
