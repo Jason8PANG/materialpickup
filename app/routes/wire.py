@@ -292,7 +292,7 @@ def api_coil_history(coil_id):
                 'type': 'issue',
                 'ref': req_no,
                 'title': '发出',
-                'detail': f"申请单 {req_no} 发出 {_fmt_qty(coil.get('coil_length'))} {unit}".strip(),
+                'detail': f"{req_no} 发出 {_fmt_qty(coil.get('coil_length'))} {unit}".strip(),
                 'qty': _r4(coil.get('coil_length')),
                 'unit': coil.get('unit'),
             })
@@ -360,7 +360,7 @@ def api_coil_history(coil_id):
                 'type': 'return',
                 'ref': rno,
                 'title': '退回',
-                'detail': f"退回申请单 {rno} 剩余 {_fmt_qty(qty)} {unit}（{review_txt}）",
+                'detail': f"退回{rno}，剩余 {_fmt_qty(qty)} {unit}（{review_txt}）",
                 'qty': _r4(qty),
                 'unit': r.get('unit'),
             })
