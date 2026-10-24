@@ -580,29 +580,67 @@ def adjust_page():
 
 
 def _resolve_adjust_location(cur, siteref, coil_id, part_number, lot_no):
-    """盘点差异调整的 CSI 库位：以 CSI 实时查询为准，本地卷标库位仅作兜底。
+    """盘点差异调整的 CSI 库位：以「这一卷」的实际位置为准，不用 lot 库位。
 
     顺序：
-      1. CSI 实时查询 get_lot_location(part_number, lot_no)；
-      2. 查询失败/返回空 → 回退 kr_wire_coil.loc（该列只在退料/维护时写入，
-         领用出库到车间后不会更新，故不可作为首选）；
-      3. 两者都空 → 返回 None（杂项收发必须带库位，由调用方报错回滚整单）。
+      1. 卷标 status = 'in_shop'（已领用到车间）→ Config.CSI_TO_LOCATION（Floor-Core）
+      2. 卷标 status = 'in_stock'（在仓）→ kr_wire_coil.loc
+      3. 卷标 loc 为空 → 该卷标最近一条 SUCCESS 的 sl-qty-move 的 to_location
+      4. 全部失败 → CSI get_lot_location 兜底（并记 warning，说明可能是跨库位 lot）
+      5. 仍为空 → None（调用方报错回滚）
+
+    背景：同一 lot 拆多卷后可能分别位于不同库位，SLLots.Loc 只是 lot 主记录的
+    「最后位置」，按 lot 取库位会导致账实不符（如卷标 261022017 已在 Floor-Core，
+    lot 库位仍返回 RM-P040-1）。
     """
-    try:
-        loc = str(CSIClient(siteref).get_lot_location(part_number, lot_no) or '').strip()
-    except Exception as e:
-        logger.warning('[盘点差异调整] CSI 库位查询失败 item=%s lot=%s: %s', part_number, lot_no, e)
-        loc = ''
+    cur.execute(
+        "SELECT status, loc FROM kr_wire_coil WHERE coil_id = %s ORDER BY is_deleted LIMIT 1",
+        (coil_id,)
+    )
+    row = cur.fetchone() or {}
+    if not row:
+        logger.warning('[盘点差异调整] 卷标不存在，无法确定库位 coil_id=%s', coil_id)
+        return None
+    status = str(row.get('status') or '').strip().lower()
+    loc = str(row.get('loc') or '').strip()
+
+    # 1. 已领用到车间：实物必在车间库位，无需再查任何 CSI 接口
+    if status == 'in_shop':
+        shop_loc = (Config.CSI_TO_LOCATION or '').strip()
+        if shop_loc:
+            return shop_loc
+        logger.warning('[盘点差异调整] 未配置 CSI_TO_LOCATION，车间卷标无库位 coil_id=%s', coil_id)
+        return None
+
+    # 2. 在仓（或其他状态）：以卷标自身库位为准
     if loc:
         return loc
 
-    cur.execute("SELECT loc FROM kr_wire_coil WHERE coil_id = %s ORDER BY is_deleted LIMIT 1",
-                (coil_id,))
-    row = cur.fetchone() or {}
-    loc = str(row.get('loc') or '').strip()
+    # 3. 卷标库位为空：取该卷标最近一次成功的库位转移目标
+    cur.execute(
+        "SELECT to_location FROM kr_csi_interface "
+        "WHERE coil_id = %s AND api_name = 'sl-qty-move' AND status = 'SUCCESS' "
+        "ORDER BY id DESC LIMIT 1",
+        (coil_id,)
+    )
+    moved = cur.fetchone() or {}
+    loc = str(moved.get('to_location') or '').strip()
     if loc:
-        logger.warning('[盘点差异调整] CSI 无库位，回退本地卷标库位 coil_id=%s loc=%s', coil_id, loc)
-    return loc or None
+        logger.warning('[盘点差异调整] 卷标无本地库位，采用最近一次库位转移目标 coil_id=%s loc=%s',
+                       coil_id, loc)
+        return loc
+
+    # 4. 兜底：lot 库位（同一 lot 可跨多库位，仅供最后兜底）
+    try:
+        lot_loc = str(CSIClient(siteref).get_lot_location(part_number, lot_no) or '').strip()
+    except Exception as e:
+        logger.warning('[盘点差异调整] CSI 库位查询失败 item=%s lot=%s: %s', part_number, lot_no, e)
+        lot_loc = ''
+    if lot_loc:
+        logger.warning('[盘点差异调整] 跨库位 lot，回退 lot 库位 coil_id=%s item=%s lot=%s loc=%s',
+                       coil_id, part_number, lot_no, lot_loc)
+        return lot_loc
+    return None
 
 
 @wire_bp.route('/api/wire/adjust/preview', methods=['GET'])
