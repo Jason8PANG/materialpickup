@@ -697,6 +697,107 @@ def api_count_adjust_preview():
     }})
 
 
+def _execute_count_adjust(cur, count, items, operator, siteref, now):
+    """执行盘点差异调整：写卷标消耗 + CSI 杂项收发交易（不 commit，异常向上抛）。
+
+    调用方负责：事务提交/回滚、重复执行校验、站点仓库映射的 400 前置校验。
+    返回 {'consume_inserted': n, 'csi_inserted': m}。
+    ValueError 表示业务性失败（单号超长 / 无法确定库位 / 缺仓库映射），由调用方转 400。
+    """
+    count_no = count['count_no']
+    warehouse = Config.CSI_WAREHOUSE_MAP.get(siteref)
+    if not warehouse:
+        raise ValueError(f'站点 {siteref} 未配置 CSI 仓库映射，无法生成杂项交易')
+
+    inserted = 0
+    csi_inserted = 0
+    # 行号续接该盘点单已用过的最大行号（冲销后重调时避免与已过账单号冲突）
+    cur.execute(
+        "SELECT documentnumber FROM kr_csi_interface WHERE documentnumber LIKE %s",
+        (f'{count_no}%',)
+    )
+    used_seqs = []
+    for r in cur.fetchall():
+        suffix = (r.get('documentnumber') or '')[-3:]
+        if suffix.isdigit():
+            used_seqs.append(int(suffix))
+    line_no = max(used_seqs) if used_seqs else 0
+
+    for it in items:
+        diff_mm = it.get('diff_mm')
+        if diff_mm is None or float(diff_mm) == 0:
+            continue  # 无差异不写消耗
+        # 正确语义：count_adjust = 账面剩余R - 盘点实际A = -diff（取反）
+        # 剩余 = 卷长 - 消耗 - (-diff) = R + diff = A（精确等于盘点实际值）
+        # 若直接写 diff 会导致剩余 = 2R - A（A=0 时翻倍）
+        adjust_mm = -float(diff_mm)
+        adjust_converted = it.get('diff_converted')
+        if adjust_converted is not None:
+            adjust_converted = -float(adjust_converted)
+        cur.execute(
+                """INSERT INTO kr_wire_coil_consumption
+                   (coil_id, job_order, part_number, consume_type, out_length, unit,
+                    converted_length, converted_unit, operator, remark, created_at, is_manual, siteref)
+                   VALUES (%s, %s, %s, 'count_adjust', %s, %s, %s, %s, %s, %s, %s, 1, %s)""",
+                (it['coil_id'], count_no, it.get('part_number'),
+                 adjust_mm, it.get('unit'),
+                 adjust_converted, it.get('unit'),
+                 operator, f'盘点差异调整（{count_no}）', now,
+                 count.get('siteref') or siteref)
+            )
+        inserted += 1
+
+        # ---- CSI 杂项收发交易（与消耗记录同事务）----
+        # diff_converted 为空（计量单位无换算系数）时无法折算，跳过该卷
+        diff_converted = it.get('diff_converted')
+        if diff_converted is None:
+            continue
+        diff_converted = float(diff_converted)
+        quantity = round(abs(diff_converted), 4)
+        if quantity <= 0:
+            continue
+        api_name = (COUNT_ADJUST_API_POSITIVE if diff_converted > 0
+                    else COUNT_ADJUST_API_NEGATIVE)
+        line_no += 1
+        documentnumber = f'{count_no}{line_no:03d}'
+        if len(documentnumber) > CSI_DOC_MAX_LEN:
+            raise ValueError(
+                f'CSI 单据号 {documentnumber} 长度 {len(documentnumber)} 位，'
+                f'超过接口上限 {CSI_DOC_MAX_LEN} 位（盘点单 {count_no}）'
+            )
+        to_location = _resolve_adjust_location(
+            cur, siteref, it['coil_id'], it.get('part_number'), it.get('lot_no'))
+        if not to_location:
+            raise ValueError(
+                f'无法确定 CSI 库位：卷标 {it["coil_id"]}'
+                f'（物料 {it.get("part_number")} / Lot {it.get("lot_no")}）'
+            )
+        traceid = f'{documentnumber}-{it["coil_id"]}-{uuid.uuid4().hex[:12]}'
+        cur.execute(
+            """INSERT INTO kr_csi_interface
+               (request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity,
+                um, warehouse, from_location, to_location, reasoncode, account,
+                unitcode1, unitcode2, documentnumber, line_seq, direction,
+                is_sync, status, retry_count, traceid, createdate, createby)
+               VALUES (NULL, %s, %s, NULL, %s, %s, %s, %s, %s,
+                       %s, %s, NULL, %s, %s, %s,
+                       NULL, NULL, %s, %s, 'F',
+                       0, 'PENDING', 0, %s, %s, %s)""",
+            (it['id'], it['coil_id'], api_name, int(siteref),
+             it.get('part_number'), it.get('lot_no'), quantity,
+             it.get('unit'), warehouse, to_location, COUNT_ADJUST_REASON_CODE,
+             COUNT_ADJUST_ACCOUNT, documentnumber, line_no,
+             traceid, now, operator)
+        )
+        csi_inserted += 1
+    # 差异调整完成 → 盘点单置为已完成（completed_at 保留盘点完成时间）
+    cur.execute(
+        "UPDATE kr_inventory_count SET status = 'completed' WHERE id = %s AND status = 'pending_adjust'",
+        (count['id'],)
+    )
+    return {'consume_inserted': inserted, 'csi_inserted': csi_inserted}
+
+
 @wire_bp.route('/api/wire/adjust', methods=['POST'])
 def api_count_adjust():
     """仓库人员输入盘点单号 → 将盘点差异写入卷标消耗表（consume_type='count_adjust'），
@@ -761,92 +862,8 @@ def api_count_adjust():
             return jsonify({'success': False,
                             'message': f'站点 {siteref} 未配置 CSI 仓库映射，无法生成杂项交易'}), 400
 
-        inserted = 0
-        csi_inserted = 0
-        # 行号续接该盘点单已用过的最大行号（冲销后重调时避免与已过账单号冲突）
-        cur.execute(
-            "SELECT documentnumber FROM kr_csi_interface WHERE documentnumber LIKE %s",
-            (f'{count_no}%',)
-        )
-        used_seqs = []
-        for r in cur.fetchall():
-            suffix = (r.get('documentnumber') or '')[-3:]
-            if suffix.isdigit():
-                used_seqs.append(int(suffix))
-        line_no = max(used_seqs) if used_seqs else 0
         try:
-            for it in items:
-                diff_mm = it.get('diff_mm')
-                if diff_mm is None or float(diff_mm) == 0:
-                    continue  # 无差异不写消耗
-                # 正确语义：count_adjust = 账面剩余R - 盘点实际A = -diff（取反）
-                # 剩余 = 卷长 - 消耗 - (-diff) = R + diff = A（精确等于盘点实际值）
-                # 若直接写 diff 会导致剩余 = 2R - A（A=0 时翻倍）
-                adjust_mm = -float(diff_mm)
-                adjust_converted = it.get('diff_converted')
-                if adjust_converted is not None:
-                    adjust_converted = -float(adjust_converted)
-                cur.execute(
-                        """INSERT INTO kr_wire_coil_consumption
-                           (coil_id, job_order, part_number, consume_type, out_length, unit,
-                            converted_length, converted_unit, operator, remark, created_at, is_manual, siteref)
-                           VALUES (%s, %s, %s, 'count_adjust', %s, %s, %s, %s, %s, %s, %s, 1, %s)""",
-                        (it['coil_id'], count_no, it.get('part_number'),
-                         adjust_mm, it.get('unit'),
-                         adjust_converted, it.get('unit'),
-                         operator, f'盘点差异调整（{count_no}）', now,
-                         count.get('siteref') or user.get('siteref'))
-                    )
-                inserted += 1
-
-                # ---- CSI 杂项收发交易（与消耗记录同事务）----
-                # diff_converted 为空（计量单位无换算系数）时无法折算，跳过该卷
-                diff_converted = it.get('diff_converted')
-                if diff_converted is None:
-                    continue
-                diff_converted = float(diff_converted)
-                quantity = round(abs(diff_converted), 4)
-                if quantity <= 0:
-                    continue
-                api_name = (COUNT_ADJUST_API_POSITIVE if diff_converted > 0
-                            else COUNT_ADJUST_API_NEGATIVE)
-                line_no += 1
-                documentnumber = f'{count_no}{line_no:03d}'
-                if len(documentnumber) > CSI_DOC_MAX_LEN:
-                    raise ValueError(
-                        f'CSI 单据号 {documentnumber} 长度 {len(documentnumber)} 位，'
-                        f'超过接口上限 {CSI_DOC_MAX_LEN} 位（盘点单 {count_no}）'
-                    )
-                to_location = _resolve_adjust_location(
-                    cur, siteref, it['coil_id'], it.get('part_number'), it.get('lot_no'))
-                if not to_location:
-                    raise ValueError(
-                        f'无法确定 CSI 库位：卷标 {it["coil_id"]}'
-                        f'（物料 {it.get("part_number")} / Lot {it.get("lot_no")}）'
-                    )
-                traceid = f'{documentnumber}-{it["coil_id"]}-{uuid.uuid4().hex[:12]}'
-                cur.execute(
-                    """INSERT INTO kr_csi_interface
-                       (request_id, item_id, coil_id, lot_id, api_name, siteRef, item, lot, quantity,
-                        um, warehouse, from_location, to_location, reasoncode, account,
-                        unitcode1, unitcode2, documentnumber, line_seq, direction,
-                        is_sync, status, retry_count, traceid, createdate, createby)
-                       VALUES (NULL, %s, %s, NULL, %s, %s, %s, %s, %s,
-                               %s, %s, NULL, %s, %s, %s,
-                               NULL, NULL, %s, %s, 'F',
-                               0, 'PENDING', 0, %s, %s, %s)""",
-                    (it['id'], it['coil_id'], api_name, int(siteref),
-                     it.get('part_number'), it.get('lot_no'), quantity,
-                     it.get('unit'), warehouse, to_location, COUNT_ADJUST_REASON_CODE,
-                     COUNT_ADJUST_ACCOUNT, documentnumber, line_no,
-                     traceid, now, operator)
-                )
-                csi_inserted += 1
-            # 差异调整完成 → 盘点单置为已完成（completed_at 保留盘点完成时间）
-            cur.execute(
-                "UPDATE kr_inventory_count SET status = 'completed' WHERE id = %s AND status = 'pending_adjust'",
-                (count['id'],)
-            )
+            result = _execute_count_adjust(cur, count, items, operator, siteref, now)
             db.commit()
         except Exception as e:
             db.rollback()
@@ -854,6 +871,8 @@ def api_count_adjust():
             cur.close()
             return jsonify({'success': False, 'message': f'差异调整失败，已回滚：{e}'}), 500
         cur.close()
+    inserted = result['consume_inserted']
+    csi_inserted = result['csi_inserted']
     return jsonify({'success': True,
                     'message': f'盘点单 {count_no} 共 {len(items)} 卷，{inserted} 卷有差异：'
                                f'已生成 CSI 库存调整交易 {csi_inserted} 条'
@@ -881,6 +900,24 @@ def _gen_count_no(cur):
         if len(suffix) == 4 and suffix.isdigit():
             max_seq = max(max_seq, int(suffix))
     return f'{prefix}{max_seq + 1:04d}'
+
+
+def _gen_gain_count_no(cur):
+    """生成盘盈自动盘点单号：IS + 年份后两位 + 5 位年度流水（如 IS2600001，共 9 位）。
+
+    流水号取该年度已有 IS 单号的最大后缀 + 1（年度内递增，不按日重置、不复用）。
+    """
+    prefix = datetime.now().strftime('IS%y')
+    cur.execute(
+        "SELECT count_no FROM kr_inventory_count WHERE count_no LIKE %s",
+        (prefix + '%',)
+    )
+    max_seq = 0
+    for r in cur.fetchall():
+        suffix = (r.get('count_no') or '')[len(prefix):]
+        if len(suffix) == 5 and suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+    return f'{prefix}{max_seq + 1:05d}'
 
 
 def _calc_item_metrics(coil, used_mm):

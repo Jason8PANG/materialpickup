@@ -17,6 +17,7 @@ Base：/api/external/
   GET  /api/external/cutting-ref?job_order=&part_number=  裁剪参数查询
   POST /api/external/minpack-request            创建最小包装申请单（X-API-Key + X-Site-Ref）
   POST /api/external/job-issue                  工单发料（写 kr_csi_interface，由同步器提交 sl-job-issue）
+  POST /api/external/count-gain                 卷标盘盈（自动建盘盈盘点单 IS+年份+5位流水 → 自动录入 → 自动调整）
 """
 import re
 import uuid
@@ -26,6 +27,8 @@ from flask import Blueprint, jsonify, request
 
 from app.config import Config
 from app.models import get_db_connection
+from app.routes.wire import (_calc_item_metrics, _execute_count_adjust,
+                             _gen_gain_count_no)
 
 external_bp = Blueprint('external', __name__)
 
@@ -41,6 +44,29 @@ def _check_api_key():
     key = (request.headers.get('X-API-Key') or '').strip()
     if not EXTERNAL_KEY or key != EXTERNAL_KEY:
         return jsonify({'success': False, 'error': 'API Key 无效'}), 401
+    return None
+
+
+def _normalize_site(raw_val):
+    """站点标识规范化：'310'/'410' 或公司码 NAIGROUP_PRD_XXX → 站点号，无法识别返回 None"""
+    raw = (raw_val or '').strip().upper().replace(' ', '')
+    if raw in Config.SITE_CONFIG:
+        return raw
+    # 公司码匹配：NAIGROUP_PRD_XXX / NAIGROUP_PROD_XXX（容错 PRD/PROD、单/双下划线）
+    compact = raw.replace('_', '')
+    if compact:
+        for code, snum in Config.SITE_CSI_COMPANY.items():
+            if compact.replace('PROD', 'PRD') == code.upper().replace('_', ''):
+                return snum
+        # 去掉 'NAIGROUP_PRD_'/'NAIGROUP_PROD_' 前缀后的纯站点号（如 '410'）
+        if compact.startswith('NAIGROUP'):
+            rest = compact[len('NAIGROUP'):]
+            for pre in ('PRD', 'PROD'):
+                if rest.startswith(pre):
+                    rest = rest[len(pre):].lstrip('_')
+                    break
+            if rest in Config.SITE_CONFIG:
+                return rest
     return None
 
 
@@ -60,24 +86,9 @@ def _resolve_site():
     if not site_val and request.method in ('POST', 'DELETE'):
         b = request.get_json(silent=True) or {}
         site_val = str(b.get('site') or '').strip()
-    raw = (site_val or '').upper().replace(' ', '')
-    if raw in Config.SITE_CONFIG:
-        return raw, None
-    # 公司码匹配：NAIGROUP_PRD_XXX / NAIGROUP_PROD_XXX（容错 PRD/PROD、单/双下划线）
-    compact = raw.replace('_', '')
-    if compact:
-        for code, snum in Config.SITE_CSI_COMPANY.items():
-            if compact.replace('PROD', 'PRD') == code.upper().replace('_', ''):
-                return snum, None
-        # 去掉 'NAIGROUP_PRD_'/'NAIGROUP_PROD_' 前缀后的纯站点号（如 '410'）
-        if compact.startswith('NAIGROUP'):
-            rest = compact[len('NAIGROUP'):]
-            for pre in ('PRD', 'PROD'):
-                if rest.startswith(pre):
-                    rest = rest[len(pre):].lstrip('_')
-                    break
-            if rest in Config.SITE_CONFIG:
-                return rest, None
+    site = _normalize_site(site_val)
+    if site:
+        return site, None
     return None, '缺少或无效的站点标识（X-Site-Ref），可选站点: 310, 410'
 
 
@@ -1210,3 +1221,161 @@ def ext_create_job_issue():
         'documentnumber': doc_no,
         'message': '已入队',
     }), 201
+
+
+# ================================================================== #
+#  卷标盘盈（自动建盘点单 + 自动录入 + 自动执行差异调整）
+# ================================================================== #
+@external_bp.route('/api/external/count-gain', methods=['POST'])
+def ext_count_gain():
+    """外部系统提交卷标盘盈：自动建盘点单 → 落明细 → 执行差异调整（同一事务）。
+
+    鉴权：X-API-Key + X-Site-Ref（复用 _check_api_key / _resolve_site）。
+    入参 JSON：coil_id 必填；gain_mm 必填且 > 0（盘盈增量 mm，最多 4 位小数）；
+              operator 建议必填（写 created_by / measured_by，缺省 apiuser）；note 可选。
+    语义：actual_mm = 当前剩余 remain_mm + gain_mm，diff_mm = +gain_mm。
+    落库：kr_inventory_count（IS + 年份后两位 + 5 位年度流水，终态 completed）、
+          kr_inventory_count_item、kr_wire_coil_consumption（count_adjust，-gain_mm）、
+          kr_csi_interface（sl-misc-receipt，单号 = count_no + 3 位行号）。
+    幂等：不做拦截（同一卷允许多次盘盈），返回 count_no 便于追溯。
+    """
+    err = _check_api_key()
+    if err:
+        return err
+
+    site, site_err = _resolve_site()
+    if site_err:
+        return jsonify({'success': False, 'message': site_err}), 400
+
+    b = request.get_json(silent=True) or {}
+    body_site_raw = str(b.get('site') or '').strip()
+    if body_site_raw:
+        body_site = _normalize_site(body_site_raw)
+        if not body_site or body_site != site:
+            return jsonify({'success': False,
+                            'message': f'body.site（{body_site_raw}）与 X-Site-Ref（{site}）不一致'}), 400
+
+    coil_id = str(b.get('coil_id') or '').strip()
+    if not coil_id:
+        return jsonify({'success': False, 'message': '缺少必填项：coil_id'}), 400
+
+    gain_raw = b.get('gain_mm')
+    if isinstance(gain_raw, bool) or gain_raw is None or gain_raw == '':
+        return jsonify({'success': False, 'message': 'gain_mm 必须为数字且大于0'}), 400
+    try:
+        gain_mm = round(float(gain_raw), 4)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'gain_mm 必须为数字且大于0'}), 400
+    if gain_mm <= 0:
+        return jsonify({'success': False, 'message': 'gain_mm 必须为数字且大于0'}), 400
+
+    operator = str(b.get('operator') or '').strip() or 'apiuser'
+    note = str(b.get('note') or '').strip()
+    now = datetime.now()
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
+            (coil_id,)
+        )
+        coil = cur.fetchone()
+        if not coil:
+            cur.close()
+            return jsonify({'success': False, 'message': f'卷标 {coil_id} 不存在或已删除'}), 404
+        if str(coil.get('status') or '') == 'scrapped':
+            cur.close()
+            return jsonify({'success': False, 'message': f'卷标 {coil_id} 已报废，不能盘盈'}), 400
+        if str(coil.get('siteref') or '') != site:
+            cur.close()
+            return jsonify({'success': False,
+                            'message': f'卷标 {coil_id} 属于站点 {coil.get("siteref")}，'
+                                       f'与请求站点 {site} 不一致'}), 400
+        factor = _factor(coil.get('unit'))
+        if not factor:
+            cur.close()
+            return jsonify({'success': False,
+                            'message': f'卷标 {coil_id} 计量单位 {coil.get("unit")} 无换算系数，无法盘盈'}), 400
+        if not Config.CSI_WAREHOUSE_MAP.get(site):
+            cur.close()
+            return jsonify({'success': False,
+                            'message': f'站点 {site} 未配置 CSI 仓库映射，无法生成杂项交易'}), 400
+
+        try:
+            count_no = _gen_gain_count_no(cur)
+            cur.execute(
+                "INSERT INTO kr_inventory_count "
+                "(count_no, status, siteref, created_by, note, started_at) "
+                "VALUES (%s, 'pending_adjust', %s, %s, %s, %s)",
+                (count_no, site, operator, note or None, now)
+            )
+            count_id = cur.lastrowid
+
+            # 与建盘点单一致：已用长度含正常消耗与历史盘点调整
+            cur.execute(
+                "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption "
+                "WHERE coil_id = %s AND consume_type IN ('consumption','count_adjust')",
+                (coil_id,)
+            )
+            used_mm = float(cur.fetchone()['used'] or 0)
+            m = _calc_item_metrics(coil, used_mm)
+            remain_mm = m['remain_mm']
+            actual_mm = round(remain_mm + gain_mm, 4)
+            diff_converted = round(gain_mm / factor, 4)
+
+            cur.execute(
+                "INSERT INTO kr_inventory_count_item "
+                "(count_id, coil_id, part_number, lot_no, unit, original_qty, used_mm, remain_mm, "
+                " actual_mm, diff_mm, diff_converted, measured_by, measured_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (count_id, coil_id, coil.get('part_number'), coil.get('lot_no'),
+                 m['unit'], m['original_qty'], m['used_mm'], remain_mm,
+                 actual_mm, gain_mm, diff_converted, operator, now)
+            )
+            item_id = cur.lastrowid
+
+            _execute_count_adjust(
+                cur,
+                {'id': count_id, 'count_no': count_no, 'siteref': site},
+                [{'id': item_id, 'coil_id': coil_id,
+                  'part_number': coil.get('part_number'), 'lot_no': coil.get('lot_no'),
+                  'unit': m['unit'], 'diff_mm': gain_mm, 'diff_converted': diff_converted}],
+                operator, site, now
+            )
+            cur.execute(
+                "UPDATE kr_inventory_count SET status = 'completed', completed_at = %s WHERE id = %s",
+                (now, count_id)
+            )
+            cur.execute(
+                "SELECT id, api_name, documentnumber FROM kr_csi_interface "
+                "WHERE documentnumber LIKE %s ORDER BY id LIMIT 1",
+                (count_no + '%',)
+            )
+            csi_row = cur.fetchone() or {}
+            db.commit()
+        except ValueError as e:
+            db.rollback()
+            cur.close()
+            return jsonify({'success': False, 'message': str(e)}), 400
+        except Exception as e:
+            db.rollback()
+            cur.close()
+            return jsonify({'success': False, 'message': f'盘盈处理失败，已回滚：{e}'}), 500
+        cur.close()
+
+    return jsonify({
+        'success': True,
+        'count_no': count_no,
+        'count_id': count_id,
+        'coil_id': coil_id,
+        'remain_mm': remain_mm,
+        'gain_mm': gain_mm,
+        'actual_mm': actual_mm,
+        'diff_converted': diff_converted,
+        'csi': {
+            'documentnumber': csi_row.get('documentnumber'),
+            'api_name': csi_row.get('api_name'),
+            'id': csi_row.get('id'),
+        } if csi_row else None,
+        'message': '盘盈已入账',
+    })
