@@ -201,6 +201,224 @@ def api_coils():
     return jsonify({'success': True, 'data': data, 'total': len(data)})
 
 
+# ------------------------------------------------------------------ #
+#  卷标生命周期详情（发出 / 消耗 / 退料 / 盘点）
+# ------------------------------------------------------------------ #
+RETURN_REVIEW_LABELS = {None: '待审核', 'confirmed': '已审核', 'rejected': '已驳回'}
+
+
+def _r4(value):
+    """统一保留 4 位小数（项目全链路 4 位精度）"""
+    if value is None or value == '':
+        return None
+    return round(float(value), 4)
+
+
+def _fmt_qty(value):
+    """数量展示：4 位小数，去掉无意义的尾随 0"""
+    num = _r4(value)
+    if num is None:
+        return '-'
+    return f'{num:.4f}'.rstrip('0').rstrip('.')
+
+
+def _iso(dt):
+    return dt.strftime('%Y-%m-%dT%H:%M:%S') if dt else None
+
+
+def _request_no(cur, request_id, cache=None):
+    """申请单号：取 kr_csi_interface 已生成的 CSI 单据号
+    （MP{request_id}{line_seq:02d}，见 services/csi_interface._document_number），
+    查不到时回落为「申请单 {id}」，不臆造单号。"""
+    if not request_id:
+        return None
+    if cache is not None and request_id in cache:
+        return cache[request_id]
+    cur.execute(
+        "SELECT documentnumber FROM kr_csi_interface "
+        "WHERE request_id = %s AND direction = 'F' "
+        "AND documentnumber IS NOT NULL AND documentnumber <> '' "
+        "ORDER BY id LIMIT 1",
+        (request_id,)
+    )
+    row = cur.fetchone()
+    no = (row.get('documentnumber') if row else None) or f'申请单 {request_id}'
+    if cache is not None:
+        cache[request_id] = no
+    return no
+
+
+@wire_bp.route('/api/wire/coils/<coil_id>/history', methods=['GET'])
+def api_coil_history(coil_id):
+    """单个卷标的完整生命周期：发出 → 工单消耗/报废 → 退料 → 盘点盈亏"""
+    user, err = _check_login()
+    if err:
+        return err
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT * FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
+            (coil_id,)
+        )
+        coil = cur.fetchone()
+        if not coil:
+            return jsonify({'success': False, 'message': '卷标不存在'}), 404
+        # 站点隔离：非 admin 或 admin 已选站点时，只允许访问本站点卷标
+        site_filter, site_params = get_site_filter(user)
+        if site_filter and coil.get('siteref') != site_params[0]:
+            return jsonify({'success': False, 'message': '无权访问该站点数据'}), 403
+
+        req_cache = {}
+        req_no = _request_no(cur, coil.get('request_id'), req_cache)
+        prev_req_no = _request_no(cur, coil.get('prev_request_id'), req_cache)
+
+        status_label = COIL_STATUS_LABELS.get(coil.get('status'), coil.get('status') or '')
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM kr_inventory_count_item i "
+            "JOIN kr_inventory_count c ON c.id = i.count_id "
+            "WHERE i.coil_id = %s AND c.status = 'counting'",
+            (coil_id,)
+        )
+        if cur.fetchone()['n'] > 0:
+            status_label = '盘点中'   # 派生状态：盘点中
+
+        timeline = []
+
+        # 1) 发出：卷标创建即所属申请单发出
+        if coil.get('request_id'):
+            unit = coil.get('unit') or ''
+            timeline.append({
+                'time': _iso(coil.get('created_at')),
+                'type': 'issue',
+                'ref': req_no,
+                'title': '发出',
+                'detail': f"申请单 {req_no} 发出 {_fmt_qty(coil.get('coil_length'))} {unit}".strip(),
+                'qty': _r4(coil.get('coil_length')),
+                'unit': coil.get('unit'),
+            })
+
+        # 2) 工单消耗 / 报废（consume_type 不做枚举硬编码，未知类型原样显示）
+        cur.execute(
+            "SELECT * FROM kr_wire_coil_consumption WHERE coil_id = %s "
+            "ORDER BY created_at, id",
+            (coil_id,)
+        )
+        for r in cur.fetchall():
+            ctype = (r.get('consume_type') or '').strip()
+            ctype_l = ctype.lower()
+            stage = (r.get('stage') or '').strip()
+            stage_txt = f'（{stage}）' if stage else ''
+            unit = r.get('unit') or ''
+            job = (r.get('job_order') or '').strip()
+            if 'scrap' in ctype_l:
+                qty = r.get('scrap_length_actual')
+                if qty is None:
+                    qty = r.get('out_length')
+                if job:
+                    detail = f"工单 {job} 报废 {_fmt_qty(qty)} {unit}{stage_txt}"
+                else:
+                    detail = f"报废 {_fmt_qty(qty)} {unit}{stage_txt}"
+                timeline.append({
+                    'time': _iso(r.get('created_at')),
+                    'type': 'scrap',
+                    'ref': job or ctype,
+                    'title': '报废',
+                    'detail': detail,
+                    'qty': _r4(qty),
+                    'unit': r.get('unit'),
+                })
+                continue
+            qty = r.get('out_length')
+            title = '工单消耗' if ctype_l in ('consumption', 'issue') else f'消耗（{ctype}）'
+            if job:
+                detail = f"工单 {job} 消耗 {_fmt_qty(qty)} {unit}{stage_txt}"
+            else:
+                detail = f"消耗 {_fmt_qty(qty)} {unit}{stage_txt}"
+            timeline.append({
+                'time': _iso(r.get('created_at')),
+                'type': 'consume',
+                'ref': job or ctype,
+                'title': title,
+                'detail': detail,
+                'qty': _r4(qty),
+                'unit': r.get('unit'),
+            })
+
+        # 3) 退料
+        cur.execute(
+            "SELECT * FROM kr_return_item WHERE coil_id = %s ORDER BY created_at, id",
+            (coil_id,)
+        )
+        for r in cur.fetchall():
+            rno = _request_no(cur, r.get('request_id'), req_cache)
+            review = r.get('review_status')
+            review_txt = RETURN_REVIEW_LABELS.get(review, review or '待审核')
+            qty = r.get('remain_length')
+            unit = r.get('unit') or ''
+            timeline.append({
+                'time': _iso(r.get('created_at')),
+                'type': 'return',
+                'ref': rno,
+                'title': '退回',
+                'detail': f"退回申请单 {rno} 剩余 {_fmt_qty(qty)} {unit}（{review_txt}）",
+                'qty': _r4(qty),
+                'unit': r.get('unit'),
+            })
+
+        # 4) 盘点盈亏：diff_mm > 0 盘盈，< 0 盘亏，= 0 忽略
+        cur.execute(
+            "SELECT i.*, c.count_no FROM kr_inventory_count_item i "
+            "LEFT JOIN kr_inventory_count c ON c.id = i.count_id "
+            "WHERE i.coil_id = %s ORDER BY i.id",
+            (coil_id,)
+        )
+        for r in cur.fetchall():
+            diff = _r4(r.get('diff_mm')) or 0
+            if diff == 0:
+                continue
+            gain = diff > 0
+            ref = r.get('count_no') or f"盘点单#{r.get('count_id')}"
+            sign = '+' if gain else ''
+            detail = (
+                f"实测 {_fmt_qty(r.get('actual_mm'))}，"
+                f"差异 {sign}{_fmt_qty(diff)}（换算 {sign}{_fmt_qty(r.get('diff_converted'))}）"
+            )
+            timeline.append({
+                'time': _iso(r.get('measured_at') or r.get('created_at')),
+                'type': 'count_gain' if gain else 'count_loss',
+                'ref': ref,
+                'title': '盘盈' if gain else '盘亏',
+                'detail': detail,
+                'qty': abs(diff),
+                'unit': 'mm',
+            })
+
+    timeline.sort(key=lambda e: (e['time'] is None, e['time'] or ''))
+
+    return jsonify({
+        'success': True,
+        'coil': {
+            'coil_id': coil.get('coil_id'),
+            'part_number': coil.get('part_number'),
+            'lot_no': coil.get('lot_no'),
+            'coil_length': _r4(coil.get('coil_length')),
+            'unit': coil.get('unit'),
+            'loc': coil.get('loc'),
+            'status': coil.get('status'),
+            'status_label': status_label,
+            'request_id': coil.get('request_id'),
+            'request_no': req_no,
+            'prev_request_id': coil.get('prev_request_id'),
+            'prev_request_no': prev_req_no,
+            'operator': coil.get('operator'),
+            'remark': coil.get('remark'),
+            'created_at': _iso(coil.get('created_at')),
+            'updated_at': _iso(coil.get('updated_at')),
+        },
+        'timeline': timeline,
+    })
+
+
 @wire_bp.route('/api/wire/coils/export', methods=['GET'])
 def export_coils():
     user, err = _check_login()

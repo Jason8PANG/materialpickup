@@ -1,6 +1,23 @@
 {% extends "base.html" %}
 {% block title %}卷标查询 - 物料领取看板{% endblock %}
 {% block content %}
+<style>
+    /* 卷标生命周期时间线 */
+    .coil-timeline { position: relative; padding-left: 4px; }
+    .coil-timeline-item { position: relative; padding-left: 30px; padding-bottom: 18px; }
+    .coil-timeline-item:last-child { padding-bottom: 0; }
+    .coil-timeline-item::before {
+        content: ''; position: absolute; left: 9px; top: 20px; bottom: 0;
+        width: 2px; background: #e9ecef;
+    }
+    .coil-timeline-item:last-child::before { display: none; }
+    .coil-timeline-marker {
+        position: absolute; left: 0; top: 0; width: 20px; height: 20px;
+        border-radius: 50%; background: #fff; border: 2px solid currentColor;
+        display: flex; align-items: center; justify-content: center; font-size: 10px;
+    }
+    .coil-timeline-item .badge { font-weight: 500; }
+</style>
 <div class="card shadow-sm">
     <div class="card-header bg-white py-3">
         <h5 class="mb-0"><i class="fas fa-tags me-2 text-info"></i><span data-i18n="wire.coils_title">卷标查询</span></h5>
@@ -46,12 +63,32 @@
                         <th>卷标ID</th><th>物料</th><th>Lot</th><th>卷长</th><th>单位</th>
                         <th>状态</th><th>站点</th><th>申请单</th><th>使用(mm)</th>
                         <th>剩余长度MM</th><th>剩余长度</th><th>创建时间</th><th>最后更新时间</th>
+                        <th style="width:64px">详情</th>
                     </tr>
                 </thead>
                 <tbody id="coilBody">
-                    <tr><td colspan="13" class="text-center text-muted py-4">加载中...</td></tr>
+                    <tr><td colspan="14" class="text-center text-muted py-4">加载中...</td></tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<!-- 卷标生命周期详情弹窗 -->
+<div class="modal fade" id="coilHistoryModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="coilHistoryTitle">卷标详情</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <div id="coilHistoryInfo" class="row g-2 small mb-3"></div>
+                <div id="coilHistoryBody"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">关闭</button>
+            </div>
         </div>
     </div>
 </div>
@@ -74,8 +111,8 @@ function loadCoils() {
         .then(r => r.json())
         .then(resp => {
             const tb = document.getElementById('coilBody');
-            if (!resp.success) { tb.innerHTML = '<tr><td colspan="13" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
-            if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="13" class="text-center text-muted">无数据</td></tr>'; return; }
+            if (!resp.success) { tb.innerHTML = '<tr><td colspan="14" class="text-center text-danger">' + resp.message + '</td></tr>'; return; }
+            if (resp.data.length === 0) { tb.innerHTML = '<tr><td colspan="14" class="text-center text-muted">无数据</td></tr>'; return; }
             tb.innerHTML = resp.data.map(c => {
                 // 盘点中（派生状态）优先于"已消完"显示
                 const isCounting = c.status_label === '盘点中';
@@ -93,14 +130,104 @@ function loadCoils() {
                 <td>${c.remain_mm != null ? c.remain_mm : '-'}</td><td>${c.remain_orig != null ? c.remain_orig : '-'}</td>
                 <td>${(c.created_at || '').slice(0, 19).replace('T', ' ')}</td>
                 <td>${(c.updated_at || '').slice(0, 19).replace('T', ' ')}</td>
+                <td class="text-center">
+                    <button class="btn btn-outline-info btn-sm px-2 py-0" title="查看卷标生命周期" data-coil="${c.coil_id}">
+                        <i class="fas fa-info-circle"></i>
+                    </button>
+                </td>
             </tr>`;
             }).join('');
         })
-        .catch(() => { document.getElementById('coilBody').innerHTML = '<tr><td colspan="13" class="text-center text-danger">加载失败</td></tr>'; });
+        .catch(() => { document.getElementById('coilBody').innerHTML = '<tr><td colspan="14" class="text-center text-danger">加载失败</td></tr>'; });
 }
 document.getElementById('exportBtn').addEventListener('click', function () {
     this.href = '/api/wire/coils/export?' + coilQuery();
 });
+
+// ------------------- 卷标生命周期详情 -------------------
+const TYPE_META = {
+    issue:      { icon: 'fa-arrow-right',  color: 'primary' },
+    consume:    { icon: 'fa-cut',          color: 'warning' },
+    return:     { icon: 'fa-undo',         color: 'info' },
+    scrap:      { icon: 'fa-trash',        color: 'danger' },
+    count_gain: { icon: 'fa-plus-circle',  color: 'success' },
+    count_loss: { icon: 'fa-minus-circle', color: 'danger' }
+};
+let coilHistoryModal = null;
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function fmtTime(t) { return (t || '').slice(0, 19).replace('T', ' '); }
+function fmtQty(v, unit) {
+    if (v == null) return '-';
+    return Number(v).toFixed(4).replace(/\.?0+$/, '') + (unit ? ' ' + unit : '');
+}
+
+function infoItem(label, value) {
+    return `<div class="col-6 col-md-4"><span class="text-muted">${label}：</span><span class="fw-semibold">${esc(value || '-')}</span></div>`;
+}
+
+function renderCoilHistory(resp) {
+    const c = resp.coil || {};
+    document.getElementById('coilHistoryInfo').innerHTML = [
+        infoItem('物料', c.part_number),
+        infoItem('批次', c.lot_no),
+        infoItem('库位', c.loc),
+        infoItem('状态', c.status_label),
+        infoItem('发出申请', c.request_no),
+        infoItem('前置申请', c.prev_request_no)
+    ].join('');
+
+    const list = resp.timeline || [];
+    const body = document.getElementById('coilHistoryBody');
+    if (!list.length) {
+        body.innerHTML = '<div class="text-center text-muted py-4">暂无流转记录</div>';
+        return;
+    }
+    body.innerHTML = '<div class="coil-timeline">' + list.map(t => {
+        const meta = TYPE_META[t.type] || { icon: 'fa-circle', color: 'secondary' };
+        return `<div class="coil-timeline-item">
+            <div class="coil-timeline-marker text-${meta.color}"><i class="fas ${meta.icon}"></i></div>
+            <div class="d-flex justify-content-between align-items-start gap-2">
+                <div>
+                    <span class="badge bg-${meta.color}${meta.color === 'warning' ? ' text-dark' : ''} me-1">${esc(t.title)}</span>
+                    <span class="fw-semibold">${esc(t.ref || '-')}</span>
+                </div>
+                <small class="text-muted text-nowrap">${fmtTime(t.time)}</small>
+            </div>
+            <div class="small text-muted mt-1">${esc(t.detail)}</div>
+            ${t.qty != null ? `<div class="small mt-1">数量：<span class="fw-semibold">${fmtQty(t.qty, t.unit)}</span></div>` : ''}
+        </div>`;
+    }).join('') + '</div>';
+}
+
+function openCoilHistory(coilId) {
+    document.getElementById('coilHistoryTitle').textContent = '卷标详情 · ' + coilId;
+    document.getElementById('coilHistoryInfo').innerHTML = '';
+    document.getElementById('coilHistoryBody').innerHTML =
+        '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm me-2"></span>加载中...</div>';
+    const modalEl = document.getElementById('coilHistoryModal');
+    if (!coilHistoryModal) coilHistoryModal = new bootstrap.Modal(modalEl);
+    coilHistoryModal.show();
+
+    fetch('/api/wire/coils/' + encodeURIComponent(coilId) + '/history')
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+            if (!ok || !j.success) throw new Error(j.message || '加载失败');
+            renderCoilHistory(j);
+        })
+        .catch(e => {
+            document.getElementById('coilHistoryBody').innerHTML =
+                `<div class="text-center text-danger py-4"><i class="fas fa-exclamation-triangle me-1"></i>${esc(e.message || '加载失败')}</div>`;
+        });
+}
+
+document.getElementById('coilBody').addEventListener('click', function (e) {
+    const btn = e.target.closest('button[data-coil]');
+    if (btn) openCoilHistory(btn.dataset.coil);
+});
+
 document.addEventListener('DOMContentLoaded', loadCoils);
 </script>
 {% endblock %}
