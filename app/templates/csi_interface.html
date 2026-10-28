@@ -218,6 +218,10 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
 {% block scripts %}
 <script>
 var CSI_STATE = { page: 1, size: 50, total: 0 };
+// 当前登录角色：控制操作按钮（重发仅 admin，取消 admin/warehouse）
+var CSI_USER_ROLE = '{{ session.user.role }}';
+var CSI_CAN_RESEND = CSI_USER_ROLE === 'admin';
+var CSI_CAN_CANCEL = CSI_USER_ROLE === 'admin' || CSI_USER_ROLE === 'warehouse';
 
 function csiEsc(v) {
     if (v === null || v === undefined) return '';
@@ -304,12 +308,12 @@ function csiActionCell(r) {
         csiEsc(r.id) + '" data-doc="' + csiEsc(r.documentnumber || '') + '" title="' +
         csiEsc(__('csi.log')) + '" aria-label="' + csiEsc(__('csi.log')) +
         '"><i class="fas fa-history fa-fw"></i></button>';
-    if (csiCanCancel(r)) {
+    if (CSI_CAN_CANCEL && csiCanCancel(r)) {
         btns += '<button type="button" class="btn btn-outline-secondary btn-sm px-2 py-0 csi-cancel-btn" data-id="' +
             csiEsc(r.id) + '" title="' + csiEsc(__('csi.cancel')) + '" aria-label="' +
             csiEsc(__('csi.cancel')) + '"><i class="fas fa-ban fa-fw"></i></button>';
     }
-    if (csiCanResend(r)) {
+    if (CSI_CAN_RESEND && csiCanResend(r)) {
         btns += '<button type="button" class="btn btn-warning btn-sm px-2 py-0 csi-resend-btn" data-id="' +
             csiEsc(r.id) + '" title="' + csiEsc(__('csi.resend')) + '" aria-label="' +
             csiEsc(__('csi.resend')) + '"><i class="fas fa-redo fa-fw"></i></button>';

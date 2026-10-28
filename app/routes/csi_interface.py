@@ -282,8 +282,8 @@ def api_resend(row_id):
     user, err = _check_login()
     if err:
         return err
-    if (user or {}).get('role') not in ('warehouse', 'admin'):
-        return jsonify({'success': False, 'message': '权限不足'}), 403
+    if (user or {}).get('role') != 'admin':
+        return jsonify({'success': False, 'message': '仅管理员可重新发送'}), 403
 
     operator = user.get('username') or user.get('display_name') or 'system'
     conn = get_db()
