@@ -22,6 +22,7 @@ from pymysql.err import IntegrityError
 from app.config import Config
 from app.models import get_db_connection, get_site_filter
 from app.services.csi_service import CSIClient
+from app.services.operation_log import log_from_request
 from app.utils import WhereBuilder, is_en
 
 wire_bp = Blueprint('wire', __name__)
@@ -1129,6 +1130,13 @@ def api_count_adjust():
         cur.close()
     inserted = result['consume_inserted']
     csi_inserted = result['csi_inserted']
+    # 审计：盘点差异调整成功（事务已提交，日志独立写入，不影响业务结果）
+    log_from_request(
+        'wire_count', 'count_adjust',
+        siteref=siteref, target_type='inventory_count', target_id=count.get('id'),
+        target_key=count_no, operator=operator, result='ok',
+        detail={'total_items': len(items), 'items': inserted, 'csi': csi_inserted},
+    )
     return jsonify({'success': True,
                     'message': f'盘点单 {count_no} 共 {len(items)} 卷，{inserted} 卷有差异：'
                                f'已生成 CSI 库存调整交易 {csi_inserted} 条'

@@ -134,11 +134,21 @@ CREATE_TABLES = [
       action          VARCHAR(64)     NOT NULL COMMENT '操作类型',
       detail          TEXT            DEFAULT NULL COMMENT '操作详情（JSON格式）',
       ip_address      VARCHAR(45)     DEFAULT NULL COMMENT '操作IP',
+      siteref         VARCHAR(16)     NOT NULL DEFAULT '' COMMENT '站点',
+      module          VARCHAR(32)     NOT NULL DEFAULT '' COMMENT '业务模块 csi_interface/sync_worker/wire_count/external',
+      target_type     VARCHAR(32)     NOT NULL DEFAULT '' COMMENT '目标表 csi_interface/inventory_count/coil',
+      target_id       BIGINT          DEFAULT NULL COMMENT '目标表主键',
+      target_key      VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '业务单号 documentnumber/count_no/coil_id',
+      operator_ip     VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '客户端IP',
+      result          VARCHAR(16)     NOT NULL DEFAULT 'ok' COMMENT 'ok/fail',
       created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
       INDEX idx_request_id (request_id),
       INDEX idx_operator (operator),
-      INDEX idx_created_at (created_at)
+      INDEX idx_created_at (created_at),
+      INDEX idx_target (target_type, target_id),
+      INDEX idx_key (target_key),
+      INDEX idx_module_action (module, action)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作日志表'
     """,
 ]

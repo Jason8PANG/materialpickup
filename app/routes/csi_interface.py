@@ -17,7 +17,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from app import csi_sync_worker as sync_worker
-from app.models import get_db, get_db_connection
+from app.models import get_db, get_db_connection, get_site_filter
+from app.services.operation_log import log_from_request, log_operation
 from app.utils import WhereBuilder
 
 csi_interface_bp = Blueprint('csi_interface', __name__)
@@ -307,6 +308,22 @@ def api_resend(row_id):
         if not (is_sync == 2 or status in RESEND_FAILED_STATUS):
             return jsonify({'success': False, 'message': '该记录正在同步中，请稍后再试'}), 400
 
+        # 审计：记录操作前的原值与操作人，供事后调查（日志写入失败不影响重发）
+        old_status = status
+        old_traceid = row.get('traceid') or ''
+        audit_site = str(row.get('siteRef') or row.get('siteref') or '')
+        audit_key = str(row.get('documentnumber') or '')
+
+        def _audit_resend(audit_result, new_trace='', extra=None):
+            detail = {'old_status': old_status, 'old_traceid': old_traceid,
+                      'new_traceid': new_trace}
+            if extra:
+                detail.update(extra)
+            log_from_request('csi_interface', 'resend', siteref=audit_site,
+                             target_type='csi_interface', target_id=row_id,
+                             target_key=audit_key, operator=operator,
+                             result=audit_result, detail=detail)
+
         trace = sync_worker._retry_trace_id(row)
         repo.update(row_id, is_sync=0, status='PENDING', retry_count=0, transient_count=0,
                     errormessage=None, submitted_at=None, last_poll_at=None,
@@ -329,6 +346,7 @@ def api_resend(row_id):
                             errormessage=message, last_poll_at=None)
             except Exception:
                 logger.exception('CSI 重发：异常回写失败 id=%s', row_id)
+            _audit_resend('fail', trace, {'message': message, 'stage': 'exception'})
             return jsonify({
                 'success': False, 'message': message,
                 'data': _resend_data(row_id, trace, api_name, 'FAILED_MANUAL', message, message),
@@ -336,6 +354,7 @@ def api_resend(row_id):
 
         if stats.get('skipped'):
             message = '该记录正在同步中，请稍后再试'
+            _audit_resend('fail', trace, {'message': message, 'stage': 'claim_skipped'})
             return jsonify({
                 'success': False, 'message': message,
                 'data': _resend_data(row_id, trace, api_name, 'SUBMITTING', message, message),
@@ -355,6 +374,7 @@ def api_resend(row_id):
 
         if final_status.upper() == 'SUCCESS' and final_is_sync == 1:
             message = '重新发送成功'
+            _audit_resend('ok', final_trace, {'new_status': final_status})
             return jsonify({
                 'success': True, 'message': message,
                 'data': _resend_data(row_id, final_trace, api_name, final_status, message, None),
@@ -367,6 +387,7 @@ def api_resend(row_id):
             error = db_error or '平台未返回终态'
             message = (f'提交已发出但未拿到终态（{final_status}）：{error}，'
                        f'记录保持待同步，后台同步器会继续轮询')
+        _audit_resend('fail', final_trace, {'new_status': final_status, 'error': error})
         return jsonify({
             'success': False, 'message': message,
             'data': _resend_data(row_id, final_trace, api_name, final_status, message, error),
@@ -445,6 +466,15 @@ def api_cancel(row_id):
 
         logger.info('CSI 取消：id=%s 原状态=%s trace=%s 操作人=%s',
                     row_id, status or '空', row.get('traceid'), operator)
+        log_from_request(
+            'csi_interface', 'cancel',
+            siteref=str(row.get('siteRef') or row.get('siteref') or ''),
+            target_type='csi_interface', target_id=row_id,
+            target_key=str(row.get('documentnumber') or ''),
+            operator=operator, result='ok',
+            detail={'old_status': status or '', 'old_traceid': row.get('traceid') or '',
+                    'new_status': 'CANCELLED', 'reason': '人工取消'},
+        )
         return jsonify({'success': True, 'message': '已取消',
                         'data': {'row_id': row_id, 'status': 'CANCELLED', 'message': '已取消'}})
     finally:
@@ -556,3 +586,99 @@ def api_export():
         as_attachment=True,
         download_name=_export_filename(truncated),
     )
+
+
+# ====================================================================== #
+#  操作审计日志查询（kr_operation_log）
+# ====================================================================== #
+# 页面「日志」按钮：按 target_id + target_type 取某条记录的操作时间线。
+# 参数全走 WhereBuilder 参数化，站点隔离与列表口径一致（非 admin 只看本站）。
+OPERATION_LOG_FIELDS = ('id, siteref, module, action, target_type, target_id, target_key, '
+                        'operator, operator_ip, result, detail, created_at')
+
+
+@csi_interface_bp.route('/api/operation-log', methods=['GET'])
+def api_operation_log():
+    """操作审计日志查询。
+
+    参数：target_key(LIKE) / target_id(精确) / target_type(精确) / module / action /
+          operator(LIKE) / date_from / date_to(YYYY-MM-DD) / page / size(≤500)
+    """
+    user, err = _check_login()
+    if err:
+        return err
+
+    target_key = (request.args.get('target_key') or '').strip()
+    target_type = (request.args.get('target_type') or '').strip()
+    module = (request.args.get('module') or '').strip()
+    action = (request.args.get('action') or '').strip()
+    operator = (request.args.get('operator') or '').strip()
+    date_from = (request.args.get('date_from') or '').strip()
+    date_to = (request.args.get('date_to') or '').strip()
+    target_id = request.args.get('target_id', type=int)
+    page = max(1, request.args.get('page', type=int) or 1)
+    size = min(max(request.args.get('size', type=int) or 100, 1), 500)
+
+    for label, value in (('date_from', date_from), ('date_to', date_to)):
+        if value:
+            try:
+                datetime.strptime(value, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'success': False, 'message': f'{label} 格式应为 YYYY-MM-DD'}), 400
+
+    wb = WhereBuilder(['1=1'])
+    if target_key:
+        wb.add('target_key LIKE %s', f'%{target_key}%')
+    if target_id is not None:
+        wb.add('target_id = %s', target_id)
+    if target_type:
+        wb.add('target_type = %s', target_type)
+    if module:
+        wb.add('module = %s', module)
+    if action:
+        wb.add('action = %s', action)
+    if operator:
+        wb.add('operator LIKE %s', f'%{operator}%')
+    if date_from:
+        wb.add('DATE(created_at) >= %s', date_from)
+    if date_to:
+        wb.add('DATE(created_at) <= %s', date_to)
+
+    # 站点隔离：admin（无 siteref）不过滤，可见 siteref='' 的系统日志；非 admin 只看本站
+    site_clause, site_params = get_site_filter(user)
+    if site_clause:
+        wb.add(site_clause, *site_params)
+
+    where_clause, params = wb.build()
+    offset = (page - 1) * size
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        try:
+            cur.execute(f'SELECT COUNT(*) AS total FROM kr_operation_log WHERE {where_clause}', params)
+            row = cur.fetchone() or {}
+            total = int(row.get('total') or 0)
+            cur.execute(
+                f'SELECT {OPERATION_LOG_FIELDS} FROM kr_operation_log '
+                f'WHERE {where_clause} ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s',
+                list(params) + [size, offset]
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+    data = []
+    for r in rows:
+        item = dict(r)
+        created = item.get('created_at')
+        item['created_at'] = created.isoformat() if hasattr(created, 'isoformat') else created
+        data.append(item)
+
+    return jsonify({
+        'success': True,
+        'data': data,
+        'total': total,
+        'page': page,
+        'size': size,
+        'total_pages': (total + size - 1) // size,
+    })

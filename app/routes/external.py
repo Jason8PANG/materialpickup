@@ -29,6 +29,7 @@ from app.config import Config
 from app.models import get_db_connection
 from app.routes.wire import (_calc_item_metrics, _execute_count_adjust,
                              _gen_gain_count_no)
+from app.services.operation_log import log_operation
 
 external_bp = Blueprint('external', __name__)
 
@@ -1363,6 +1364,14 @@ def ext_count_gain():
             return jsonify({'success': False, 'message': f'盘盈处理失败，已回滚：{e}'}), 500
         cur.close()
 
+    # 审计：外部系统盘盈已入账（operator 取请求体 operator，缺省 apiuser；IP 由请求上下文自动取）
+    log_operation(
+        'external', 'count_gain',
+        siteref=site, target_type='inventory_count', target_id=count_id,
+        target_key=count_no, operator=operator, result='ok',
+        detail={'items': 1, 'csi': 1 if csi_row else 0,
+                'coil_id': coil_id, 'gain_mm': gain_mm},
+    )
     return jsonify({
         'success': True,
         'count_no': count_no,

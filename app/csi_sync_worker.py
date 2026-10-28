@@ -47,6 +47,7 @@ from app.config import Config
 from app.models import get_db
 from app.services.csi_service import BF_MSG_CLEARED, CSIClient
 from app.services.email_service import send_email
+from app.services.operation_log import log_operation
 
 logger = logging.getLogger(__name__)
 
@@ -588,6 +589,16 @@ def _fail(repo, row, reason, stats):
     stats['manual'] += 1
     logger.error('CSI 同步失败，转人工（不自动重试）id=%s request=%s doc=%s 原因=%s',
                  row['id'], row.get('request_id'), row.get('documentnumber'), reason)
+    # 审计：失败原文入库（errormessage 列只有 255，这里保留完整 reason 片段便于追查）
+    log_operation(
+        'sync_worker', 'fail',
+        siteref=str(row.get('siteRef') or '').strip(),
+        target_type='csi_interface', target_id=row['id'],
+        target_key=str(row.get('documentnumber') or ''),
+        operator='SYSTEM', result='fail',
+        detail={'api_name': _row_api(row), 'traceid': row.get('traceid') or '',
+                'errormessage': reason, 'retry': retry},
+    )
     _send_failure_alert(row, retry, reason)
 
 
@@ -695,6 +706,17 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
         return
     stats['claimed'] += 1
 
+    # 审计：抢占成功即留痕（后台进程无会话，operator=SYSTEM、IP 留空）
+    log_operation(
+        'sync_worker', 'submit',
+        siteref=str(row.get('siteRef') or '').strip(),
+        target_type='csi_interface', target_id=row_id,
+        target_key=str(row.get('documentnumber') or ''),
+        operator='SYSTEM', result='ok',
+        detail={'api_name': api, 'traceid': row.get('traceid') or '',
+                'request_id': row.get('request_id')},
+    )
+
     # 1. 库位：一律取接口表行内值（生成时写入的批次/卷标库位），不做实时校正。
     #    三个分支都不再调用 _live_location / get_lot_location；行内为空即失败转人工。
     #    sl-qty-move  from_location = 申请单源库位（可追溯、不受实时查询单点返回影响）。
@@ -763,6 +785,16 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
 
     if kind == 'success':
         repo.update(row_id, is_sync=1, status='SUCCESS', errormessage=None, transient_count=0)
+        log_operation(
+            'sync_worker', 'success',
+            siteref=str(row.get('siteRef') or '').strip(),
+            target_type='csi_interface', target_id=row_id,
+            target_key=str(row.get('documentnumber') or ''),
+            operator='SYSTEM', result='ok',
+            detail={'api_name': api, 'traceid': row.get('traceid') or '',
+                    'retry_count': int(row.get('retry_count') or 0),
+                    'transient_count': int(row.get('transient_count') or 0)},
+        )
         stats['success'] += 1
         logger.info('CSI 同步成功 id=%s api=%s request=%s doc=%s', row_id, api,
                     row.get('request_id'), row.get('documentnumber'))

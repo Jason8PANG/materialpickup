@@ -9,9 +9,9 @@
     background: #fff;
     z-index: 2;
     box-shadow: -4px 0 6px -4px rgba(0, 0, 0, .15);
-    width: 84px;
-    min-width: 84px;
-    max-width: 84px;
+    width: 116px;
+    min-width: 116px;
+    max-width: 116px;
     white-space: nowrap;
     padding-left: 4px !important;
     padding-right: 4px !important;
@@ -38,6 +38,40 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
     font-size: 12px;
     white-space: nowrap;
     word-break: keep-all;
+}
+/* 操作日志时间线（弹窗内） */
+.csi-log-item {
+    position: relative;
+    margin-left: 6px;
+    padding-left: 18px;
+    padding-bottom: 14px;
+    border-left: 2px solid #e3e6ea;
+}
+.csi-log-item:last-child { border-left-color: transparent; padding-bottom: 0; }
+.csi-log-item::before {
+    content: '';
+    position: absolute;
+    left: -6px;
+    top: 3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #adb5bd;
+}
+.csi-log-item.csi-log-ok::before { background: #198754; }
+.csi-log-item.csi-log-fail::before { background: #dc3545; }
+.csi-log-meta { font-size: 12px; color: #6c757d; }
+.csi-log-detail {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin: 4px 0 0;
 }
 </style>
 <div class="card shadow-sm">
@@ -131,7 +165,7 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                         <th style="width:210px;" data-i18n="csi.col_error">错误信息</th>
                         <th style="width:136px;" data-i18n="csi.col_submitted">提交时间</th>
                         <th style="width:136px;" data-i18n="csi.col_last_poll">最后轮询</th>
-                        <th class="csi-action-col" style="width:84px;" data-i18n="csi.col_action">操作</th>
+                        <th class="csi-action-col" style="width:116px;" data-i18n="csi.col_action">操作</th>
                     </tr>
                 </thead>
                 <tbody id="csiBody">
@@ -161,6 +195,22 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                     <li class="page-item" id="nextLi"><a class="page-link" href="#" onclick="changePage(1);return false;" data-i18n="csi.next">下一页</a></li>
                 </ul>
             </nav>
+        </div>
+    </div>
+</div>
+
+<!-- 操作日志时间线弹窗：记录谁在什么时候对这条接口记录做了什么处理 -->
+<div class="modal fade" id="csiLogModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header py-2">
+                <h6 class="modal-title">
+                    <i class="fas fa-history me-2 text-secondary"></i><span data-i18n="csi.log">操作日志</span>
+                    <small class="text-muted ms-2" id="csiLogTitle"></small>
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="csiLogBody"></div>
         </div>
     </div>
 </div>
@@ -249,7 +299,11 @@ function csiCanCancel(r) {
 }
 
 function csiActionCell(r) {
-    var btns = '';
+    // 操作日志：任何状态都可查（审计入口，不受重发/取消状态限制）
+    var btns = '<button type="button" class="btn btn-outline-secondary btn-sm px-2 py-0 csi-log-btn" data-id="' +
+        csiEsc(r.id) + '" data-doc="' + csiEsc(r.documentnumber || '') + '" title="' +
+        csiEsc(__('csi.log')) + '" aria-label="' + csiEsc(__('csi.log')) +
+        '"><i class="fas fa-history fa-fw"></i></button>';
     if (csiCanCancel(r)) {
         btns += '<button type="button" class="btn btn-outline-secondary btn-sm px-2 py-0 csi-cancel-btn" data-id="' +
             csiEsc(r.id) + '" title="' + csiEsc(__('csi.cancel')) + '" aria-label="' +
@@ -260,7 +314,6 @@ function csiActionCell(r) {
             csiEsc(r.id) + '" title="' + csiEsc(__('csi.resend')) + '" aria-label="' +
             csiEsc(__('csi.resend')) + '"><i class="fas fa-redo fa-fw"></i></button>';
     }
-    if (!btns) return '<td class="text-center csi-action-col">-</td>';
     return '<td class="text-center csi-action-col"><div class="d-flex gap-1 justify-content-center">' + btns + '</div></td>';
 }
 
@@ -316,8 +369,71 @@ function csiResend(btn) {
     });
 }
 
-function loadCsi() {
-    var tb = document.getElementById('csiBody');
+// ===== 操作日志（审计时间线） =====
+var CSI_LOG_ACTION_LABELS = {
+    resend: '重发',
+    cancel: '取消',
+    submit: '系统提交',
+    success: '过账成功',
+    fail: '过账失败',
+    count_adjust: '盘点调整',
+    count_gain: '盘盈入账'
+};
+
+// 后端返回 ISO（2026-10-28T09:00:00），换行显示成 2026-10-28 09:00:00
+function csiLogTime(value) {
+    if (!value) return '';
+    return String(value).replace('T', ' ').replace(/\.[0-9]+.*$/, '');
+}
+
+// detail 是 JSON 字符串：能解析就格式化，不能解析就按原文（如错误信息）显示
+function csiLogDetailHtml(detail) {
+    if (!detail) return '';
+    var text = String(detail);
+    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { /* 非 JSON 原文 */ }
+    return '<pre class="csi-log-detail">' + csiEsc(text) + '</pre>';
+}
+
+function csiLogItemHtml(item) {
+    var isFail = String(item.result || 'ok') === 'fail';
+    var label = CSI_LOG_ACTION_LABELS[item.action] || item.action || '-';
+    var badge = isFail
+        ? '<span class="badge bg-danger">' + csiEsc(__('csi.log_fail')) + '</span>'
+        : '<span class="badge bg-success">' + csiEsc(__('csi.log_ok')) + '</span>';
+    var meta = csiEsc(item.operator || 'SYSTEM');
+    if (item.operator_ip) meta += ' · ' + csiEsc(item.operator_ip);
+    return '<div class="csi-log-item ' + (isFail ? 'csi-log-fail' : 'csi-log-ok') + '">' +
+        '<div class="d-flex justify-content-between align-items-start gap-2">' +
+        '<div><span class="fw-semibold">' + csiEsc(label) + '</span> ' + badge +
+        ' <span class="csi-log-meta ms-1">' + meta + '</span></div>' +
+        '<span class="csi-log-meta text-nowrap">' + csiEsc(csiLogTime(item.created_at)) + '</span>' +
+        '</div>' + csiLogDetailHtml(item.detail) + '</div>';
+}
+
+// 日志按钮：按 target_id + target_type 拉该记录的全部操作，渲染成时间线
+function csiShowLog(btn) {
+    var rowId = btn.getAttribute('data-id');
+    if (!rowId) return;
+    var doc = btn.getAttribute('data-doc') || '';
+    document.getElementById('csiLogTitle').textContent = '#' + rowId + (doc ? ' · ' + doc : '');
+    var body = document.getElementById('csiLogBody');
+    body.innerHTML = '<div class="text-center text-muted py-4">' +
+        '<span class="spinner-border spinner-border-sm me-2"></span>' + csiEsc(__('csi.loading')) + '</div>';
+    new bootstrap.Modal(document.getElementById('csiLogModal')).show();
+    apiGet('/api/operation-log?target_type=csi_interface&target_id=' + encodeURIComponent(rowId) + '&size=100',
+        function (resp) {
+            var rows = resp.data || [];
+            body.innerHTML = rows.length
+                ? rows.map(csiLogItemHtml).join('')
+                : '<div class="text-center text-muted py-4">' + csiEsc(__('csi.log_empty')) + '</div>';
+        },
+        function (resp) {
+            body.innerHTML = '<div class="text-center text-danger py-4">' +
+                csiEsc(resp.message || __('csi.log_failed')) + '</div>';
+        });
+}
+
+function loadCsi() {    var tb = document.getElementById('csiBody');
     tb.innerHTML = '<tr><td colspan="20" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
@@ -418,6 +534,8 @@ document.getElementById('csiBody').addEventListener('click', function (e) {
     if (!target || !target.closest) return;
     var btn = target.closest('.csi-resend-btn');
     if (btn) { csiResend(btn); return; }
+    btn = target.closest('.csi-log-btn');
+    if (btn) { csiShowLog(btn); return; }
     btn = target.closest('.csi-cancel-btn');
     if (btn) csiCancel(btn);
 });
