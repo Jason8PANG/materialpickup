@@ -653,12 +653,14 @@ let historyPage = 1;
 
 function loadHistory() {
     showLoading();
+    const reqId = (document.getElementById('searchRequestId') || {}).value ? document.getElementById('searchRequestId').value.trim() : '';
     const jobOrder = document.getElementById('searchJobOrder').value.trim();
     const status = document.getElementById('statusFilter').value;
     const dateFrom = document.getElementById('dateFrom').value;
     const dateTo = document.getElementById('dateTo').value;
 
     let url = '/api/requests/history?page=' + historyPage + '&size=20';
+    if (reqId) url += '&id=' + encodeURIComponent(reqId);
     if (jobOrder) url += '&job_order=' + encodeURIComponent(jobOrder);
     if (status) url += '&status=' + status;
     if (dateFrom) url += '&date_from=' + dateFrom;

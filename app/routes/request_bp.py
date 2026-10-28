@@ -407,6 +407,7 @@ def history():
     status = request.args.get('status')
     job_order = request.args.get('job_order')
     part_number = request.args.get('part_number')
+    req_id = (request.args.get('id') or '').strip()
     date_from = request.args.get('date_from')
     date_to = request.args.get('date_to')
     page = int(request.args.get('page', 1))
@@ -421,6 +422,10 @@ def history():
 
     if status:
         wb.add("r.status = %s", status)
+    if req_id:
+        if not req_id.isdigit():
+            return jsonify({'success': False, 'message': 'ID 必须为数字'}), 400
+        wb.add("r.id = %s", int(req_id))
     if job_order:
         wb.add("EXISTS (SELECT 1 FROM kr_request_item WHERE request_id = r.id AND job_order LIKE %s)", f"%{job_order}%")
     if part_number:

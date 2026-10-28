@@ -10,6 +10,10 @@
             <div class="col-md-10 mt-2 mt-md-0">
                 <div class="row g-2">
                     <div class="col-2">
+                        <input type="number" class="form-control form-control-sm" id="searchRequestId"
+                               placeholder="ID" min="1" title="申请单 ID">
+                    </div>
+                    <div class="col-2">
                         <input type="date" class="form-control form-control-sm" id="dateFrom">
                     </div>
                     <div class="col-2">
@@ -73,6 +77,12 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('searchJobOrder').addEventListener('keyup', function (e) {
         if (e.key === 'Enter') loadHistory();
     });
+    var idInput = document.getElementById('searchRequestId');
+    if (idInput) {
+        idInput.addEventListener('keyup', function (e) {
+            if (e.key === 'Enter') { historyPage = 1; loadHistory(); }
+        });
+    }
 });
 </script>
 {% endblock %}
