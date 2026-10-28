@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-header bg-white py-3">
-        <h5 class="mb-0"><i class="fas fa-recycle me-2 text-danger"></i>线材报废查询</h5>
+        <h5 class="mb-0"><i class="fas fa-recycle me-2 text-secondary"></i>线材报废查询</h5>
     </div>
     <div class="card-body">
         <div class="row g-2 mb-3">
@@ -158,7 +158,7 @@ function loadScrap() {
                 <td>${escHtml(r.job_order || '-')}</td>
                 <td>${escHtml(r.job_part_number || '-')}</td>
                 <td>${escHtml(r.part_number || '-')}</td>
-                <td><span class="badge bg-danger">${escHtml(r.reason_label || r.reason_code || '-')}</span></td>
+                <td>${escHtml(r.reason_label || r.reason_code || '-')}</td>
                 <td class="text-end">${fmtNum(r.scrap_length)}</td>
                 <td>${escHtml(r.operator || '-')}</td>
                 <td>${escHtml(r.checker || '-')}</td>
