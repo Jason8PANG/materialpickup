@@ -2,7 +2,8 @@
 线材管理路由（wire）：
   1. 卷标查询（kr_wire_coil）——筛选 + CSV 导出
   2. 线材消耗查询（kr_wire_coil_consumption）——筛选 + CSV 导出
-  3. 线材库存盘点（kr_inventory_count / kr_inventory_count_item）
+  3. 线材报废查询（kr_scrap_reason）——筛选 + 分页查询 API + Excel 导出
+  4. 线材库存盘点（kr_inventory_count / kr_inventory_count_item）
      - 选择卷标创建盘点单
      - 开启盘点后锁定卷标（不允许消耗）
      - 录入各卷标实际测量长度(mm)
@@ -79,6 +80,14 @@ def count_page():
         from flask import redirect, url_for
         return redirect(url_for('pages.login_page'))
     return render_template('wire_count.html')
+
+
+@wire_bp.route('/wire/scrap', methods=['GET'])
+def scrap_page():
+    if not session.get('user'):
+        from flask import redirect, url_for
+        return redirect(url_for('pages.login_page'))
+    return render_template('wire_scrap.html')
 
 
 # ================================================================== #
@@ -562,6 +571,215 @@ def export_consumption():
         '\ufeff' + buf.getvalue(),
         mimetype='text/csv; charset=utf-8',
         headers={'Content-Disposition': 'attachment; filename=consumption.csv'}
+    )
+
+
+# ================================================================== #
+#  线材报废查询（kr_scrap_reason）
+# ================================================================== #
+SCRAP_REASON_CODES = ('setup', 'tail', 'defect', 'other')
+SCRAP_REASON_LABELS = {
+    'setup': '调机报废', 'tail': '尾数报废', 'defect': '不良报废', 'other': '其他报废',
+}
+SCRAP_SELECT_COLUMNS = (
+    's.id, s.coil_id, s.job_order, s.job_part_number, s.part_number, '
+    's.reason_code, s.reason_label, s.scrap_length, s.operator, s.checker, '
+    's.siteref, s.created_at'
+)
+SCRAP_EXPORT_MAX_ROWS = 10000
+SCRAP_EXPORT_HEADERS = [
+    '站点', '卷标ID', '工单号', '成品料号', '线材料号',
+    '报废原因', '报废长度(mm)', '操作人', '确认人', '报废时间',
+]
+
+
+def _scrap_date_arg(name, label):
+    """日期参数校验：仅接受 YYYY-MM-DD，非法抛 ValueError（接口返回 400）"""
+    raw = (request.args.get(name) or '').strip()
+    if not raw:
+        return None
+    try:
+        datetime.strptime(raw, '%Y-%m-%d')
+    except ValueError:
+        raise ValueError(f'{label}格式应为 YYYY-MM-DD')
+    return raw
+
+
+def _build_scrap_query(user=None):
+    """解析报废查询参数，返回 (where_clause, params)；查询与导出共用"""
+    wb = WhereBuilder(['1=1'])
+    args = request.args
+    if args.get('coil_id'):
+        wb.add('s.coil_id LIKE %s', f"%{args['coil_id'].strip()}%")
+    if args.get('job_order'):
+        wb.add('s.job_order LIKE %s', f"%{args['job_order'].strip()}%")
+    reason = (args.get('reason_code') or '').strip()
+    if reason:
+        if reason not in SCRAP_REASON_CODES:
+            raise ValueError('报废原因参数非法，仅支持 setup / tail / defect / other')
+        wb.add('s.reason_code = %s', reason)
+    date_from = _scrap_date_arg('date_from', '报废时间起')
+    if date_from:
+        wb.add('DATE(s.created_at) >= %s', date_from)
+    date_to = _scrap_date_arg('date_to', '报废时间止')
+    if date_to:
+        wb.add('DATE(s.created_at) <= %s', date_to)
+    # 站点隔离：session 当前站点（get_site_filter 对无 siteref 的 admin 不过滤）
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        wb.add(f's.{site_filter}', *site_params)
+    return wb.build()
+
+
+def _scrap_row(r):
+    return {
+        'id': r.get('id'),
+        'coil_id': r.get('coil_id'),
+        'job_order': r.get('job_order'),
+        'job_part_number': r.get('job_part_number'),
+        'part_number': r.get('part_number'),
+        'reason_code': r.get('reason_code'),
+        'reason_label': r.get('reason_label') or SCRAP_REASON_LABELS.get(r.get('reason_code')),
+        'scrap_length': _r4(r.get('scrap_length')),
+        'operator': r.get('operator'),
+        'checker': r.get('checker'),
+        'siteref': r.get('siteref'),
+        'created_at': _iso(r.get('created_at')),
+    }
+
+
+@wire_bp.route('/api/wire/scrap', methods=['GET'])
+def api_scrap():
+    user, err = _check_login()
+    if err:
+        return err
+    try:
+        where, params = _build_scrap_query(user)
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    try:
+        page = max(int(request.args.get('page') or 1), 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        size = int(request.args.get('size') or 100)
+    except (TypeError, ValueError):
+        size = 100
+    size = min(max(size, 1), 500)
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"SELECT COUNT(*) AS cnt, COALESCE(SUM(s.scrap_length), 0) AS total_len "
+            f"FROM kr_scrap_reason s WHERE {where}",
+            params
+        )
+        agg = cur.fetchone() or {}
+        total = int(agg.get('cnt') or 0)
+        scrap_total = _r4(agg.get('total_len')) or 0
+        cur.execute(
+            f"SELECT {SCRAP_SELECT_COLUMNS} FROM kr_scrap_reason s WHERE {where} "
+            f"ORDER BY s.created_at DESC, s.id DESC LIMIT %s OFFSET %s",
+            params + [size, (page - 1) * size]
+        )
+        rows = cur.fetchall()
+
+    total_pages = (total + size - 1) // size if total else 0
+    return jsonify({
+        'success': True,
+        'data': [_scrap_row(r) for r in rows],
+        'total': total,
+        'page': page,
+        'size': size,
+        'total_pages': total_pages,
+        'summary': {'count': total, 'scrap_total': scrap_total},
+    })
+
+
+def _scrap_export_filename(truncated):
+    ts = datetime.now().strftime('%Y%m%d%H%M%S')
+    if truncated:
+        return f'线材报废查询_{ts}_前{SCRAP_EXPORT_MAX_ROWS}行.xlsx'
+    return f'线材报废查询_{ts}.xlsx'
+
+
+def _display_width(value):
+    """列宽估算：中文/全角字符按 2 个字符宽度计"""
+    text = str(value)
+    return sum(2 if ord(ch) > 127 else 1 for ch in text)
+
+
+@wire_bp.route('/api/wire/scrap/export', methods=['GET'])
+def export_scrap():
+    user, err = _check_login()
+    if err:
+        return err
+    try:
+        where, params = _build_scrap_query(user)
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"SELECT {SCRAP_SELECT_COLUMNS} FROM kr_scrap_reason s WHERE {where} "
+            f"ORDER BY s.created_at DESC, s.id DESC LIMIT %s",
+            params + [SCRAP_EXPORT_MAX_ROWS + 1]
+        )
+        rows = cur.fetchall()
+
+    truncated = len(rows) > SCRAP_EXPORT_MAX_ROWS
+    rows = rows[:SCRAP_EXPORT_MAX_ROWS]
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from flask import send_file
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '线材报废'
+    ws.append(SCRAP_EXPORT_HEADERS)
+
+    header_font = Font(bold=True, color='000000')
+    header_fill = PatternFill('solid', fgColor='D9E1F2')
+    for idx in range(1, len(SCRAP_EXPORT_HEADERS) + 1):
+        cell = ws.cell(row=1, column=idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    widths = [_display_width(h) for h in SCRAP_EXPORT_HEADERS]
+    for r in rows:
+        d = _scrap_row(r)
+        reason = d['reason_label'] or d['reason_code'] or ''
+        values = [
+            d['siteref'] or '', d['coil_id'] or '', d['job_order'] or '',
+            d['job_part_number'] or '', d['part_number'] or '',
+            reason,
+            float(d['scrap_length']) if d['scrap_length'] is not None else None,
+            d['operator'] or '', d['checker'] or '',
+            (r.get('created_at').strftime('%Y-%m-%d %H:%M:%S')
+             if r.get('created_at') else ''),
+        ]
+        ws.append(values)
+        for c_idx, val in enumerate(values, start=1):
+            if val is not None and val != '':
+                widths[c_idx - 1] = max(widths[c_idx - 1], _display_width(val) + 2)
+
+    for c_idx, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(c_idx)].width = min(max(width, 8), 60)
+    ws.freeze_panes = 'A2'
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=_scrap_export_filename(truncated),
     )
 
 

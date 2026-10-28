@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}线材报废查询 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0"><i class="fas fa-recycle me-2 text-danger"></i>线材报废查询</h5>
+    </div>
+    <div class="card-body">
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fCoilId" placeholder="卷标ID">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fJobOrder" placeholder="工单号">
+            </div>
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fReason">
+                    <option value="">全部报废原因</option>
+                    <option value="setup">调机报废</option>
+                    <option value="tail">尾数报废</option>
+                    <option value="defect">不良报废</option>
+                    <option value="other">其他报废</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="date" class="form-control form-control-sm" id="fDateFrom" title="报废时间起">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="date" class="form-control form-control-sm" id="fDateTo" title="报废时间止">
+            </div>
+            <div class="col-6 col-md-2">
+                <button class="btn btn-primary btn-sm w-100" id="btnSearch" onclick="searchScrap(1)">
+                    <i class="fas fa-search me-1"></i>查询
+                </button>
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <button class="btn btn-outline-secondary btn-sm w-100" id="btnReset" onclick="resetScrap()">
+                    <i class="fas fa-undo me-1"></i>重置
+                </button>
+            </div>
+            <div class="col-6 col-md-3">
+                <button class="btn btn-success btn-sm w-100" id="btnExport" onclick="exportScrap()">
+                    <i class="fas fa-file-excel me-1"></i>导出 Excel
+                </button>
+            </div>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+            <div class="small text-muted" id="scrapSummary">共 0 条 / 报废长度合计 0 mm</div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>站点</th><th>卷标ID</th><th>工单号</th><th>成品料号</th><th>线材料号</th>
+                        <th>报废原因</th><th>报废长度(mm)</th><th>操作人</th><th>确认人</th><th>报废时间</th>
+                    </tr>
+                </thead>
+                <tbody id="scrapBody">
+                    <tr><td colspan="10" class="text-center text-muted py-4">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-3 flex-wrap gap-2">
+            <div class="d-flex align-items-center gap-3 flex-wrap">
+                <small class="text-muted" id="pageInfo"></small>
+                <div class="d-flex align-items-center gap-1">
+                    <small class="text-muted">每页</small>
+                    <select class="form-select form-select-sm" id="pageSizeSel" style="width:auto;"
+                            onchange="changePageSize(this.value)">
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="200">200</option>
+                        <option value="500">500</option>
+                    </select>
+                    <small class="text-muted">条</small>
+                </div>
+            </div>
+            <nav>
+                <ul class="pagination pagination-sm mb-0">
+                    <li class="page-item" id="prevLi"><a class="page-link" href="#" onclick="changePage(-1);return false;">上一页</a></li>
+                    <li class="page-item disabled"><span class="page-link" id="pageNum">1</span></li>
+                    <li class="page-item" id="nextLi"><a class="page-link" href="#" onclick="changePage(1);return false;">下一页</a></li>
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const SCRAP_STATE = { page: 1, size: 100, total: 0, totalPages: 0 };
+
+function scrapQuery(includePaging) {
+    const p = new URLSearchParams();
+    const coil = document.getElementById('fCoilId').value.trim();
+    const job = document.getElementById('fJobOrder').value.trim();
+    const reason = document.getElementById('fReason').value;
+    const from = document.getElementById('fDateFrom').value;
+    const to = document.getElementById('fDateTo').value;
+    if (coil) p.set('coil_id', coil);
+    if (job) p.set('job_order', job);
+    if (reason) p.set('reason_code', reason);
+    if (from) p.set('date_from', from);
+    if (to) p.set('date_to', to);
+    if (includePaging) {
+        p.set('page', SCRAP_STATE.page);
+        p.set('size', SCRAP_STATE.size);
+    }
+    return p.toString();
+}
+
+function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function fmtTime(t) { return (t || '').slice(0, 19).replace('T', ' '); }
+function fmtNum(v) {
+    if (v == null) return '-';
+    return Number(v).toFixed(4).replace(/\.?0+$/, '');
+}
+
+function renderSummary(summary) {
+    const cnt = summary && summary.count != null ? summary.count : 0;
+    const len = summary && summary.scrap_total != null ? summary.scrap_total : 0;
+    document.getElementById('scrapSummary').textContent =
+        '共 ' + cnt + ' 条 / 报废长度合计 ' + fmtNum(len) + ' mm';
+}
+
+function renderPaging() {
+    const pages = Math.max(SCRAP_STATE.totalPages, SCRAP_STATE.total > 0 ? 1 : 0) || 1;
+    document.getElementById('pageNum').textContent = SCRAP_STATE.page + ' / ' + pages;
+    document.getElementById('pageInfo').textContent =
+        '共 ' + SCRAP_STATE.total + ' 条，每页 ' + SCRAP_STATE.size + ' 条';
+    document.getElementById('prevLi').classList.toggle('disabled', SCRAP_STATE.page <= 1);
+    document.getElementById('nextLi').classList.toggle('disabled', SCRAP_STATE.page >= pages);
+}
+
+function loadScrap() {
+    const tb = document.getElementById('scrapBody');
+    tb.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">加载中...</td></tr>';
+    fetch('/api/wire/scrap?' + scrapQuery(true))
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+            if (!ok || !j.success) throw new Error(j.message || '查询失败');
+            SCRAP_STATE.total = j.total || 0;
+            SCRAP_STATE.totalPages = j.total_pages || 0;
+            renderSummary(j.summary);
+            renderPaging();
+            if (!j.data || j.data.length === 0) {
+                tb.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">无数据，请调整筛选条件后重试</td></tr>';
+                return;
+            }
+            tb.innerHTML = j.data.map(r => `<tr>
+                <td>${escHtml(r.siteref || '-')}</td>
+                <td>${escHtml(r.coil_id || '-')}</td>
+                <td>${escHtml(r.job_order || '-')}</td>
+                <td>${escHtml(r.job_part_number || '-')}</td>
+                <td>${escHtml(r.part_number || '-')}</td>
+                <td><span class="badge bg-danger">${escHtml(r.reason_label || r.reason_code || '-')}</span></td>
+                <td class="text-end">${fmtNum(r.scrap_length)}</td>
+                <td>${escHtml(r.operator || '-')}</td>
+                <td>${escHtml(r.checker || '-')}</td>
+                <td>${escHtml(fmtTime(r.created_at))}</td>
+            </tr>`).join('');
+        })
+        .catch(e => {
+            renderSummary({ count: 0, scrap_total: 0 });
+            tb.innerHTML = '<tr><td colspan="10" class="text-center text-danger py-4">'
+                + escHtml(e.message || '加载失败') + '</td></tr>';
+            if (typeof showToast === 'function') showToast('error', e.message || '加载失败');
+        });
+}
+
+function searchScrap(page) {
+    SCRAP_STATE.page = page || 1;
+    loadScrap();
+}
+
+function resetScrap() {
+    document.getElementById('fCoilId').value = '';
+    document.getElementById('fJobOrder').value = '';
+    document.getElementById('fReason').value = '';
+    document.getElementById('fDateFrom').value = '';
+    document.getElementById('fDateTo').value = '';
+    searchScrap(1);
+}
+
+function changePage(delta) {
+    const pages = Math.max(SCRAP_STATE.totalPages, 1);
+    const next = SCRAP_STATE.page + delta;
+    if (next < 1 || next > pages) return;
+    SCRAP_STATE.page = next;
+    loadScrap();
+}
+
+function changePageSize(size) {
+    SCRAP_STATE.size = parseInt(size, 10) || 100;
+    SCRAP_STATE.page = 1;
+    loadScrap();
+}
+
+function exportScrap() {
+    const url = '/api/wire/scrap/export?' + scrapQuery(false);
+    window.location.href = url;
+}
+
+document.addEventListener('DOMContentLoaded', loadScrap);
+</script>
+{% endblock %}

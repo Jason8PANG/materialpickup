@@ -48,6 +48,7 @@
                         <ul class="dropdown-menu">
                             <li><a class="dropdown-item" href="/wire/coils"><i class="fas fa-tags me-2"></i><span data-i18n="nav.wire_coils">卷标查询</span></a></li>
                             <li><a class="dropdown-item" href="/wire/consumption"><i class="fas fa-chart-line me-2"></i><span data-i18n="nav.wire_consumption">线材消耗查询</span></a></li>
+                            <li><a class="dropdown-item" href="/wire/scrap"><i class="fas fa-recycle me-2"></i><span data-i18n="nav.wire_scrap">线材报废查询</span></a></li>
                             {% if session.user.role in ['warehouse', 'admin'] %}
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="/return/review"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.return_review">退料复核</span></a></li>
