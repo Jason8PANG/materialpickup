@@ -107,6 +107,34 @@ def records_page():
     return render_template('records.html', status_labels=STATUS_LABELS)
 
 
+@pages.route('/admin/roles')
+def admin_roles_page():
+    """角色权限管理：仅 admin（页面级矩阵，见 app/page_registry.py）"""
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    user = session['user']
+    if user['role'] != 'admin':
+        from app.page_registry import ROLE_LABELS
+        return render_template(
+            '403.html',
+            page_key='',
+            page_name='角色权限',
+            role=user['role'],
+            role_label=ROLE_LABELS.get(user['role'], user['role']),
+        ), 403
+
+    from app.page_registry import ROLES, EDITABLE_ROLES, ROLE_LABELS, pages_by_group
+    from app.services.permission_service import get_matrix
+    return render_template(
+        'admin_roles.html',
+        groups=pages_by_group(),
+        roles=ROLES,
+        editable_roles=EDITABLE_ROLES,
+        role_labels=ROLE_LABELS,
+        matrix=get_matrix(),
+    )
+
+
 @pages.route('/cutting/specs')
 def cutting_specs_page():
     if not session.get('user'):

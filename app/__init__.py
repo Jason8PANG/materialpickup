@@ -69,6 +69,59 @@ def create_app(config_class=Config):
     from app.routes import pages
     app.register_blueprint(pages)
 
+    # ===== 角色—页面权限（页面级：菜单显示 + 直输 URL 拦截） =====
+    # 矩阵存 kr_role_page_permission，读服务带 60s 进程内缓存（app/services/permission_service.py）。
+    # 只拦 GET 页面请求：/api/* 仍由各接口原有的角色校验负责，页面内按钮权限保持原硬编码不变。
+    from flask import render_template, request, session
+    from app.page_registry import ROLE_LABELS, match_path
+    from app.services.permission_service import (
+        can_access, can_access_page_for_session,
+    )
+    from app.services.operation_log import log_operation
+
+    # 模板里用 can_access_page('kanban') 判定菜单可见性（自动取当前登录用户）
+    app.jinja_env.globals['can_access_page'] = can_access_page_for_session
+    app.jinja_env.globals['role_label'] = lambda role: ROLE_LABELS.get(role, role)
+
+    @app.before_request
+    def _enforce_page_permission():
+        if request.method != 'GET':
+            return None
+        path = request.path
+        if path.startswith('/api/') or path.startswith('/static/'):
+            return None
+        user = session.get('user')
+        if not user:
+            return None                      # 未登录交给各页面路由跳登录页
+        try:
+            if can_access(user, path):
+                return None
+        except Exception as e:               # 判定异常时放行，绝不让权限服务拖垮页面
+            print(f'[权限] 页面判定异常（放行）{path}: {e}')
+            return None
+
+        page = match_path(path)
+        page_key = page['key'] if page else ''
+        role = user.get('role') or ''
+        # 审计：被拦截的直输 URL 访问（日志失败不影响响应）
+        try:
+            log_operation(
+                'permission', 'deny',
+                target_type='page', target_key=path,
+                operator=user.get('username') or 'SYSTEM',
+                result='fail',
+                detail={'role': role, 'page_key': page_key, 'path': path},
+            )
+        except Exception:
+            pass
+        return render_template(
+            '403.html',
+            page_key=page_key,
+            page_name=page['name'] if page else path,
+            role=role,
+            role_label=ROLE_LABELS.get(role, role or '未知'),
+        ), 403
+
     # 全局异常处理：API 错误统一返回 JSON，避免前端拿到 500 HTML 页面
     # 导致 "Unexpected token '<'" 解析错误（如数据库不可达时）
     from flask import jsonify

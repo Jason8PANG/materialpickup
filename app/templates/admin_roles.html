@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}角色权限 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-user-shield me-2 text-primary"></i>角色权限</h5>
+        <button class="btn btn-primary btn-sm" onclick="saveRoles()">
+            <i class="fas fa-save me-1"></i>保存
+        </button>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-light border small text-muted mb-3">
+            <i class="fas fa-info-circle me-1"></i>
+            这里控制的是<strong>页面级</strong>权限：菜单是否显示、直接输入网址是否放行。
+            <strong>管理员始终拥有全部页面权限</strong>，不参与勾选；页面内按钮的操作权限沿用原有规则，不在此处调整。
+        </div>
+        <div class="table-responsive">
+            <table class="table table-bordered table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:40%">页面</th>
+                        {% for role in roles %}
+                        <th class="text-center" style="width:12%">
+                            {{ role_labels[role] }}
+                            {% if role == 'admin' %}<br><small class="text-muted fw-normal">始终全开</small>{% endif %}
+                        </th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for group in groups %}
+                    <tr class="table-secondary">
+                        <td colspan="{{ roles|length + 1 }}" class="fw-semibold">{{ group.group }}</td>
+                    </tr>
+                    {% for page in group.pages %}
+                    <tr>
+                        <td>
+                            <span class="fw-semibold">{{ page.name }}</span>
+                            <div class="text-muted small"><code>{{ page.path }}</code></div>
+                        </td>
+                        {% for role in roles %}
+                        <td class="text-center">
+                            {% if role == 'admin' %}
+                            <input class="form-check-input" type="checkbox" checked disabled>
+                            {% else %}
+                            <input class="form-check-input perm-check" type="checkbox"
+                                   data-role="{{ role }}" data-page="{{ page.key }}"
+                                   {% if matrix[role][page.key] %}checked{% endif %}>
+                            {% endif %}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function collectPermissions() {
+    var payload = {};
+    document.querySelectorAll('.perm-check').forEach(function (el) {
+        var role = el.dataset.role;
+        if (!payload[role]) payload[role] = [];
+        if (el.checked) payload[role].push(el.dataset.page);
+    });
+    return payload;
+}
+
+function saveRoles() {
+    var payload = collectPermissions();
+    showLoading();
+    fetch('/api/admin/roles/permissions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        hideLoading();
+        if (data.success) {
+            showToast('success', data.message || '权限已保存');
+            setTimeout(function () { location.reload(); }, 600);
+        } else {
+            showToast('error', data.message || '保存失败');
+        }
+    })
+    .catch(function (e) {
+        hideLoading();
+        showToast('error', '保存失败: ' + e);
+    });
+}
+</script>
+{% endblock %}

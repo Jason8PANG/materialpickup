@@ -448,3 +448,67 @@ def test_site_printer_print(printer_id):
         'printer_name': row['printer_name'],
         'channel': row['channel'],
     })
+
+
+# ============================================================
+#  角色—页面权限（5 角色 × 18 页面矩阵，admin 恒全开）
+# ============================================================
+@admin_bp.route('/api/admin/roles/permissions', methods=['GET'])
+def get_role_permissions_api():
+    """读取当前矩阵（管理页渲染兜底用）"""
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    from app.page_registry import ROLES, ROLE_LABELS, PAGES
+    from app.services.permission_service import get_matrix
+    return jsonify({
+        'success': True,
+        'roles': ROLES,
+        'role_labels': ROLE_LABELS,
+        'pages': [{'key': p['key'], 'name': p['name'], 'group': p['group']} for p in PAGES],
+        'matrix': get_matrix(),
+    })
+
+
+@admin_bp.route('/api/admin/roles/permissions', methods=['POST'])
+def save_role_permissions():
+    """保存矩阵：body = {"warehouse": ["kanban", ...], "requester": [...]}（不含 admin）
+
+    每个角色全量覆盖；保存后清缓存立即生效，并写 kr_operation_log（含前后差异）。
+    """
+    user, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return jsonify({'success': False, 'message': '请求体应为 {角色: [页面key,...]}'}), 400
+
+    from app.page_registry import EDITABLE_ROLES
+    from app.services.permission_service import set_role_permissions
+
+    unknown = [r for r in data if r not in EDITABLE_ROLES]
+    if unknown:
+        return jsonify({'success': False,
+                        'message': f'不可编辑的角色: {", ".join(unknown)}（admin 始终全开）'}), 400
+    for role, keys in data.items():
+        if not isinstance(keys, (list, tuple)):
+            return jsonify({'success': False, 'message': f'角色 {role} 的权限应为数组'}), 400
+
+    try:
+        results = [
+            set_role_permissions(role, keys, operator=user.get('username') or 'SYSTEM')
+            for role, keys in data.items()
+        ]
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'保存失败: {e}'}), 500
+
+    return jsonify({
+        'success': True,
+        'message': '权限已保存',
+        'changed': [{'role': r['role'], 'added': r['added'], 'removed': r['removed']}
+                    for r in results],
+    })

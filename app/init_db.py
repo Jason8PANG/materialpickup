@@ -151,6 +151,22 @@ CREATE_TABLES = [
       INDEX idx_module_action (module, action)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作日志表'
     """,
+
+    # 6. kr_role_page_permission（角色—页面权限矩阵，admin 不落库、恒全开）
+    #    默认值由 python -m app.services.permission_service --init 灌入（5 角色 × 18 页面）
+    """
+    CREATE TABLE kr_role_page_permission (
+      id          BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+      role        VARCHAR(32)   NOT NULL COMMENT '角色: admin/warehouse/requester/supervisor/me_engineer',
+      page_key    VARCHAR(64)   NOT NULL COMMENT '页面标识，见 app/page_registry.py',
+      allowed     TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否允许访问该页面',
+      updated_by  VARCHAR(64)   DEFAULT '' COMMENT '最后修改人',
+      updated_at  DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_role_page (role, page_key),
+      KEY idx_role (role)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色页面权限'
+    """,
 ]
 
 
