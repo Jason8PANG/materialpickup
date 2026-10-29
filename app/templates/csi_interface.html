@@ -343,25 +343,17 @@ function csiCancel(btn) {
     });
 }
 
-// 重发：确认 → loading（单次最长约 30 秒）→ 结果 toast（失败可再次点击重试）
+// 重发：确认 → 按钮转圈 → 完成后静默刷新列表（状态与轮询时间由后端更新，不弹成功提示）
 function csiResend(btn) {
     var rowId = btn.getAttribute('data-id');
     if (!rowId) return;
     if (!window.confirm(__('csi.resend_confirm'))) return;
 
-    var cell = btn.parentNode;
     var originalHtml = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' +
-        csiEsc(__('csi.resending'));
-    var hint = document.createElement('div');
-    hint.className = 'small text-muted mt-1';
-    hint.textContent = __('csi.resending_hint');
-    cell.appendChild(hint);
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
 
     apiPost('/api/csi-interface/' + rowId + '/resend', {}, function (resp) {
-        var d = resp.data || {};
-        showToast('success', d.message || __('csi.resend_ok'));
         loadCsi();
     }, function (resp) {
         var d = resp.data || {};
@@ -369,7 +361,6 @@ function csiResend(btn) {
         // 失败：恢复按钮，允许再次点击重试
         btn.disabled = false;
         btn.innerHTML = originalHtml;
-        if (hint.parentNode) hint.parentNode.removeChild(hint);
     });
 }
 

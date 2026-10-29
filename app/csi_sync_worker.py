@@ -40,6 +40,7 @@ import html
 import logging
 import time
 import uuid
+from datetime import datetime
 
 import requests
 
@@ -584,7 +585,7 @@ def _fail(repo, row, reason, stats):
         status='FAILED_MANUAL',
         errormessage=reason,
         transient_count=0,
-        last_poll_at=None,
+        last_poll_at=datetime.now(),
     )
     stats['manual'] += 1
     logger.error('CSI 同步失败，转人工（不自动重试）id=%s request=%s doc=%s 原因=%s',
@@ -784,7 +785,8 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
     kind = result['kind']
 
     if kind == 'success':
-        repo.update(row_id, is_sync=1, status='SUCCESS', errormessage=None, transient_count=0)
+        repo.update(row_id, is_sync=1, status='SUCCESS', errormessage=None, transient_count=0,
+                    last_poll_at=datetime.now())
         log_operation(
             'sync_worker', 'success',
             siteref=str(row.get('siteRef') or '').strip(),
