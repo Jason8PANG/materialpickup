@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+{% block title %}邮件发送日志 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm mb-3">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <h5 class="mb-0"><i class="fas fa-envelope-circle-check me-2 text-primary"></i>邮件发送日志</h5>
+            <small class="text-muted">系统所有外发邮件（告警 / 提醒 / 审批 / 定时汇总）的发送记录，含跳过与失败</small>
+        </div>
+        <div id="summaryBar" class="d-flex gap-2">
+            <span class="badge bg-success">成功 <span id="sumOk">0</span></span>
+            <span class="badge bg-danger">失败 <span id="sumFail">0</span></span>
+            <span class="badge bg-secondary">跳过 <span id="sumSkip">0</span></span>
+        </div>
+    </div>
+    <div class="card-body">
+        <form class="row g-2 align-items-end mb-3" onsubmit="event.preventDefault(); applyFilter();">
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">来源模块</label>
+                <select class="form-select form-select-sm" id="fModule">
+                    <option value="">全部</option>
+                    <option value="csi_alert">CSI 单条失败告警</option>
+                    <option value="csi_alert_scheduler">CSI 定时汇总</option>
+                    <option value="request_notify">申请金额提醒</option>
+                    <option value="approval">领料审批</option>
+                    <option value="manual">手动/其他</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">结果</label>
+                <select class="form-select form-select-sm" id="fResult">
+                    <option value="">全部</option>
+                    <option value="ok">成功</option>
+                    <option value="fail">失败</option>
+                    <option value="skip">跳过</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">收件人</label>
+                <input type="text" class="form-control form-control-sm" id="fToEmails" placeholder="包含关键词">
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">主题关键词</label>
+                <input type="text" class="form-control form-control-sm" id="fSubject" placeholder="包含关键词">
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">开始日期</label>
+                <input type="date" class="form-control form-control-sm" id="fDateFrom">
+            </div>
+            <div class="col-6 col-md-2">
+                <label class="form-label small mb-1">结束日期</label>
+                <input type="date" class="form-control form-control-sm" id="fDateTo">
+            </div>
+            <div class="col-12 d-flex gap-2 mt-2">
+                <button type="submit" class="btn btn-primary btn-sm">
+                    <i class="fas fa-search me-1"></i>查询
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetFilter()">
+                    <i class="fas fa-rotate-left me-1"></i>重置
+                </button>
+                <span class="ms-auto text-muted small align-self-center" id="totalInfo"></span>
+            </div>
+        </form>
+
+        <div class="table-responsive">
+            <table class="table table-sm table-hover table-bordered align-middle mb-2" id="logTable">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:150px">时间</th>
+                        <th style="width:140px">来源</th>
+                        <th style="width:200px">收件人</th>
+                        <th>主题</th>
+                        <th style="width:70px">结果</th>
+                        <th style="width:150px">关联单号</th>
+                        <th style="width:220px">错误信息</th>
+                    </tr>
+                </thead>
+                <tbody id="logTableBody">
+                    <tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="small text-muted" id="pageInfo"></div>
+            <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-secondary" id="prevBtn" onclick="gotoPage(-1)">上一页</button>
+                <button class="btn btn-outline-secondary" id="nextBtn" onclick="gotoPage(1)">下一页</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 详情弹窗：正文摘要 -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title" id="detailTitle">邮件详情</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <dl class="row small mb-0" id="detailMeta"></dl>
+                <hr class="my-2">
+                <div class="mb-1 text-muted small">正文摘要（纯文本，最多 2000 字）</div>
+                <pre class="bg-light border rounded p-2 small mb-0" id="detailBody" style="white-space:pre-wrap;word-break:break-word;max-height:50vh;overflow:auto;"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MODULE_LABELS = {
+    csi_alert: 'CSI 单条告警',
+    csi_alert_scheduler: 'CSI 定时汇总',
+    request_notify: '申请金额提醒',
+    approval: '领料审批',
+    manual: '手动/其他'
+};
+const RESULT_LABELS = { ok: '成功', fail: '失败', skip: '跳过' };
+
+let CUR_PAGE = 1;
+let CUR_PAGES = 1;
+let CUR_SIZE = 100;
+let ROW_CACHE = {};
+
+function badgeResult(r) {
+    if (r === 'ok') return '<span class="badge bg-success">成功</span>';
+    if (r === 'fail') return '<span class="badge bg-danger">失败</span>';
+    if (r === 'skip') return '<span class="badge bg-secondary">跳过</span>';
+    return '<span class="badge bg-light text-dark">' + escapeHtml(r || '-') + '</span>';
+}
+
+function buildQuery() {
+    const p = new URLSearchParams();
+    const map = {
+        module: 'fModule', result: 'fResult', to_emails: 'fToEmails',
+        subject: 'fSubject', date_from: 'fDateFrom', date_to: 'fDateTo'
+    };
+    Object.keys(map).forEach(function (k) {
+        const v = document.getElementById(map[k]).value.trim();
+        if (v) p.set(k, v);
+    });
+    p.set('page', CUR_PAGE);
+    p.set('size', CUR_SIZE);
+    return p.toString();
+}
+
+function loadLogs() {
+    const tbody = document.getElementById('logTableBody');
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>';
+    apiGet('/api/admin/email-log?' + buildQuery(), function (resp) {
+        const rows = resp.data || [];
+        ROW_CACHE = {};
+        CUR_PAGES = resp.total_pages || 1;
+        const sum = resp.summary || { ok: 0, fail: 0, skip: 0 };
+        document.getElementById('sumOk').textContent = sum.ok || 0;
+        document.getElementById('sumFail').textContent = sum.fail || 0;
+        document.getElementById('sumSkip').textContent = sum.skip || 0;
+        document.getElementById('totalInfo').textContent = '共 ' + (resp.total || 0) + ' 条';
+        document.getElementById('pageInfo').textContent =
+            '第 ' + (resp.page || 1) + ' / ' + CUR_PAGES + ' 页';
+        document.getElementById('prevBtn').disabled = (resp.page || 1) <= 1;
+        document.getElementById('nextBtn').disabled = (resp.page || 1) >= CUR_PAGES;
+
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无记录</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(function (r) {
+            ROW_CACHE[r.id] = r;
+            const related = [r.related_type, r.related_key || (r.related_id == null ? '' : r.related_id)]
+                .filter(Boolean).join(' / ');
+            return '<tr style="cursor:pointer" onclick="showDetail(' + r.id + ')">' +
+                '<td class="small text-muted">' + escapeHtml(r.created_at || '-') + '</td>' +
+                '<td class="small">' + escapeHtml(MODULE_LABELS[r.module] || r.module || '-') +
+                    (r.siteref ? ' <span class="badge bg-light text-dark">' + escapeHtml(r.siteref) + '</span>' : '') +
+                '</td>' +
+                '<td class="small">' + escapeHtml(r.to_emails || '-') + '</td>' +
+                '<td class="small">' + escapeHtml(r.subject || '-') + '</td>' +
+                '<td class="text-center">' + badgeResult(r.result) + '</td>' +
+                '<td class="small text-muted">' + escapeHtml(related || '-') + '</td>' +
+                '<td class="small text-danger">' + escapeHtml(r.errormessage || '') + '</td>' +
+            '</tr>';
+        }).join('');
+    }, function (resp) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">' +
+            escapeHtml((resp && resp.message) || '加载失败') + '</td></tr>';
+    });
+}
+
+function showDetail(id) {
+    const r = ROW_CACHE[id];
+    if (!r) return;
+    document.getElementById('detailTitle').textContent = r.subject || '邮件详情';
+    const meta = [
+        ['时间', r.created_at],
+        ['来源模块', (MODULE_LABELS[r.module] || r.module || '-') + (r.siteref ? '（站点 ' + r.siteref + '）' : '')],
+        ['收件人', r.to_emails],
+        ['结果', RESULT_LABELS[r.result] || r.result],
+        ['关联对象', [r.related_type, r.related_key || (r.related_id == null ? '' : r.related_id)]
+            .filter(Boolean).join(' / ') || '-'],
+        ['错误信息', r.errormessage || '-']
+    ];
+    document.getElementById('detailMeta').innerHTML = meta.map(function (kv) {
+        return '<dt class="col-sm-3">' + escapeHtml(kv[0]) + '</dt>' +
+               '<dd class="col-sm-9">' + escapeHtml(kv[1] == null || kv[1] === '' ? '-' : kv[1]) + '</dd>';
+    }).join('');
+    document.getElementById('detailBody').textContent = r.body_preview || '（无正文摘要）';
+    new bootstrap.Modal(document.getElementById('detailModal')).show();
+}
+
+function applyFilter() {
+    CUR_PAGE = 1;
+    loadLogs();
+}
+
+function resetFilter() {
+    ['fModule', 'fResult', 'fToEmails', 'fSubject', 'fDateFrom', 'fDateTo'].forEach(function (id) {
+        document.getElementById(id).value = '';
+    });
+    CUR_PAGE = 1;
+    loadLogs();
+}
+
+function gotoPage(delta) {
+    const next = CUR_PAGE + delta;
+    if (next < 1 || next > CUR_PAGES) return;
+    CUR_PAGE = next;
+    loadLogs();
+}
+
+document.addEventListener('DOMContentLoaded', loadLogs);
+</script>
+{% endblock %}

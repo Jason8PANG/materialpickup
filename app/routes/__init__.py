@@ -121,6 +121,28 @@ def admin_csi_alert_page():
     return render_template('admin_csi_alert.html', sites=Config.SITE_CONFIG)
 
 
+@pages.route('/admin/email-log')
+def admin_email_log_page():
+    """邮件发送日志查询（仅 admin）。
+
+    写入见 app/services/email_log.py（send_email 内部调用）；
+    页面级权限注册在 app/page_registry.py（page_key=admin_email_log）。
+    """
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    user = session['user']
+    if user['role'] != 'admin':
+        from app.page_registry import ROLE_LABELS
+        return render_template(
+            '403.html',
+            page_key='admin_email_log',
+            page_name='邮件发送日志',
+            role=user['role'],
+            role_label=ROLE_LABELS.get(user['role'], user['role']),
+        ), 403
+    return render_template('admin_email_log.html', sites=Config.SITE_CONFIG)
+
+
 @pages.route('/records')
 def records_page():
     if not session.get('user'):

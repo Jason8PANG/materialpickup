@@ -5,14 +5,29 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import Header
+
 from app.config import Config
+from app.services.email_log import log_email
 
 
-def send_email(to_email, subject, html_content):
-    """发送邮件"""
+def send_email(to_email, subject, html_content, *,
+               module='', siteref='', related_type='', related_id=None, related_key=''):
+    """发送邮件（每一次调用都会写 kr_email_log：ok / fail / skip）。
+
+    Args:
+        module: 来源模块 csi_alert/request_notify/approval/csi_alert_scheduler/manual
+        siteref: 站点 310/410
+        related_type/related_id/related_key: 关联对象（csi_interface/material_request）
+    日志写入失败不影响发信：log_email 内部吞掉所有异常。
+    """
+    log_kw = dict(module=module, subject=subject, to_emails=to_email, siteref=siteref,
+                  related_type=related_type, related_id=related_id,
+                  related_key=related_key, html_content=html_content)
+
     if not Config.SMTP_USER or not Config.SMTP_PASSWORD:
         print(f"[邮件] SMTP 未配置，跳过发送: {subject} -> {to_email}")
         print(f"[邮件] 内容预览: {html_content[:200]}...")
+        log_email(result='skip', errormessage='SMTP 未配置', **log_kw)
         return False
 
     try:
@@ -32,9 +47,11 @@ def send_email(to_email, subject, html_content):
         server.quit()
 
         print(f"[EMAIL] Sent OK: {subject} -> {to_email}")
+        log_email(result='ok', **log_kw)
         return True
     except Exception as e:
         print(f"[EMAIL] Send failed: {e}")
+        log_email(result='fail', errormessage=str(e)[:500], **log_kw)
         return False
 
 
@@ -93,4 +110,11 @@ def send_approval_email(request_info, approve_url, reject_url):
     </div>
     """
     
-    return send_email(request_info.get('supervisor_email', ''), subject, html)
+    return send_email(
+        request_info.get('supervisor_email', ''), subject, html,
+        module='approval',
+        siteref=str(request_info.get('siteref', '') or ''),
+        related_type='material_request',
+        related_id=request_info.get('request_id'),
+        related_key=str(request_info.get('request_id', '') or ''),
+    )

@@ -80,6 +80,8 @@ PAGES = [
      'default_roles': _ADMIN_ONLY},
     {'key': 'admin_csi_alert', 'path': '/admin/csi-alert', 'name': '失败邮件通知', 'group': '系统管理',
      'default_roles': _ADMIN_ONLY},
+    {'key': 'admin_email_log', 'path': '/admin/email-log', 'name': '邮件发送日志', 'group': '系统管理',
+     'default_roles': _ADMIN_ONLY},
 
     # 非菜单页面：申请详情，权限跟随新建申请
     {'key': 'request_detail', 'path': '/request/<int:request_id>', 'name': '申请详情（非菜单）', 'group': '其他',

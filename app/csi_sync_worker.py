@@ -720,7 +720,14 @@ def _send_failure_alert(row, retry, reason):
     </div>
     """
     try:
-        send_email(Config.CSI_ALERT_EMAIL, subject, body)
+        send_email(
+            Config.CSI_ALERT_EMAIL, subject, body,
+            module='csi_alert',
+            siteref=str(row.get('siteRef') or '').strip(),
+            related_type='csi_interface',
+            related_id=row.get('id'),
+            related_key=doc_no,
+        )
     except Exception as e:
         logger.error('CSI 同步：告警邮件发送失败 request=%s: %s', request_id, e)
 

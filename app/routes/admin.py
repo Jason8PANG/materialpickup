@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, session
 from datetime import datetime
 from pymysql.err import IntegrityError
-from app.models import get_db_connection
+from app.models import get_db_connection, get_site_filter
 from app.utils import WhereBuilder
 from app.config import Config
 from app.services.label_print_service import test_printer_connection, print_test_page
@@ -632,3 +632,106 @@ def list_csi_alert_logs():
     except Exception as e:
         return jsonify({'success': False, 'message': f'读取发送记录失败: {e}'}), 500
     return jsonify({'success': True, 'data': rows})
+
+
+# ============================================================
+#  邮件发送日志（kr_email_log）
+#  写入见 app/services/email_log.py（send_email 内部调用）；
+#  页面 /admin/email-log 仅 admin，接口按登录用户的站点隔离。
+# ============================================================
+@admin_bp.route('/api/admin/email-log', methods=['GET'])
+def list_email_logs():
+    """邮件发送日志查询。
+
+    参数：module / result（精确）、to_emails / subject / related_key（LIKE）、
+          date_from / date_to（DATE(created_at)）、page / size（默认 1/100，≤500）
+    """
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    from app.services.email_log import ensure_schema
+    ensure_schema()
+
+    wb = WhereBuilder(["1=1"])
+
+    module = (request.args.get('module') or '').strip()
+    if module:
+        wb.add("module = %s", module)
+    result = (request.args.get('result') or '').strip()
+    if result:
+        wb.add("result = %s", result)
+    to_emails = (request.args.get('to_emails') or '').strip()
+    if to_emails:
+        wb.add("to_emails LIKE %s", f"%{to_emails}%")
+    subject = (request.args.get('subject') or '').strip()
+    if subject:
+        wb.add("subject LIKE %s", f"%{subject}%")
+    related_key = (request.args.get('related_key') or '').strip()
+    if related_key:
+        wb.add("related_key LIKE %s", f"%{related_key}%")
+    date_from = (request.args.get('date_from') or '').strip()
+    if date_from:
+        wb.add("DATE(created_at) >= %s", date_from)
+    date_to = (request.args.get('date_to') or '').strip()
+    if date_to:
+        wb.add("DATE(created_at) <= %s", date_to)
+
+    # 站点隔离：admin 不过滤，其余角色只看本站
+    site_clause, site_params = get_site_filter(user)
+    if site_clause:
+        wb.add(site_clause, *site_params)
+
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        size = int(request.args.get('size', 100))
+    except (TypeError, ValueError):
+        size = 100
+    size = max(1, min(size, 500))
+
+    where_clause, params = wb.build()
+    offset = (page - 1) * size
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(f"SELECT COUNT(*) AS c FROM kr_email_log WHERE {where_clause}", params)
+        total = int(cursor.fetchone()['c'])
+
+        summary = {'ok': 0, 'fail': 0, 'skip': 0}
+        cursor.execute(
+            f"SELECT result, COUNT(*) AS c FROM kr_email_log WHERE {where_clause} GROUP BY result",
+            params,
+        )
+        for row in cursor.fetchall():
+            if row['result'] in summary:
+                summary[row['result']] = int(row['c'])
+
+        cursor.execute(
+            "SELECT id, module, subject, to_emails, siteref, related_type, related_id, "
+            "related_key, result, errormessage, body_preview, created_at "
+            f"FROM kr_email_log WHERE {where_clause} "
+            "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+            params + [size, offset],
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+
+    for r in rows:
+        if isinstance(r.get('created_at'), datetime):
+            r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        if r.get('related_id') is not None:
+            r['related_id'] = int(r['related_id'])
+
+    total_pages = (total + size - 1) // size if total else 0
+    return jsonify({
+        'success': True,
+        'data': rows,
+        'total': total,
+        'page': page,
+        'size': size,
+        'total_pages': total_pages,
+        'summary': summary,
+    })

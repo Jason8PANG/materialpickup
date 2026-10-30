@@ -475,8 +475,10 @@ def finish_log(send_date, slot, siteref, api_name, result, errormessage='', reco
 # --------------------------------------------------------------------------- #
 #  发送
 # --------------------------------------------------------------------------- #
-def _send_to_each(emails, subject, html_body):
+def _send_to_each(emails, subject, html_body, **log_kw):
     """逐个收件人发信（send_email 只接受单个地址，多地址逗号串会被 SMTP 当成一个非法 RCPT）。
+
+    log_kw 原样透传给 send_email，用于写 kr_email_log（module/siteref/related_*）。
 
     返回 (成功数, 失败明细)
     """
@@ -485,7 +487,7 @@ def _send_to_each(emails, subject, html_body):
     ok_count, errors = 0, []
     for addr in emails:
         try:
-            if send_email(addr, subject, html_body):
+            if send_email(addr, subject, html_body, **log_kw):
                 ok_count += 1
             else:
                 errors.append(f'{addr}: 发送失败')
@@ -522,7 +524,13 @@ def send_group(slot, siteref, api_name, rows, send_date=None, force=False, now=N
                 'count': len(rows), 'emails': emails_str}
 
     subject, html_body = build_email(siteref, api_name, rows, now=now)
-    ok_count, errors = _send_to_each(emails, subject, html_body)
+    ok_count, errors = _send_to_each(
+        emails, subject, html_body,
+        module='csi_alert_scheduler',
+        siteref=str(siteref),
+        related_type='csi_interface',
+        related_key=f'{siteref}/{api_name}',
+    )
     result = 'ok' if not errors else 'fail'
     finish_log(send_date, slot, siteref, api_name, result, '; '.join(errors), record_count=len(rows))
 

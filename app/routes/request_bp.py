@@ -209,7 +209,14 @@ def create_request():
             body += "</ul><p style='color:#999;font-size:12px;'>物料领取看板系统自动通知</p>"
             for email in sup_emails:
                 print(f"[NOTIFICATION] 发送提醒邮件至 {email}")
-                send_email(email, subject, body)
+                send_email(
+                    email, subject, body,
+                    module='request_notify',
+                    siteref=str(siteref or ''),
+                    related_type='material_request',
+                    related_id=request_id,
+                    related_key=str(request_id),
+                )
         else:
             print(f"[NOTIFICATION] 无触发条件，不发送邮件（共检查 {len(sup_emails)} 个主管邮箱）")
     except Exception as e:
