@@ -206,6 +206,36 @@ class _Repo:
         finally:
             cur.close()
 
+    def reset_for_resend(self, row_id, trace, operator, statuses):
+        """原子重置为待同步（CAS）：仅当记录仍处于「失败终态」时才成功。
+
+        防并发重复重发：两个人（或双击）同时点重发时，只有一个能把行从失败态
+        翻成 PENDING，另一个 rowcount=0 被拒，避免同一笔发料提交两次。
+
+        返回受影响行数（1=抢到，0=被别人处理/状态已变）。
+        """
+        statuses = tuple(statuses or ())
+        if not statuses:
+            return 0
+        ph = ', '.join(['%s'] * len(statuses))
+        sql = (
+            "UPDATE kr_csi_interface "
+            "SET is_sync = 0, status = 'PENDING', retry_count = 0, transient_count = 0, "
+            "    errormessage = NULL, submitted_at = NULL, last_poll_at = NULL, "
+            "    traceid = %s, updateby = %s, updatedate = NOW() "
+            f"WHERE id = %s AND is_sync <> 1 AND status IN ({ph})"
+        )
+        cur = self._cursor()
+        try:
+            affected = cur.execute(sql, (trace, operator, row_id) + statuses)
+            self.conn.commit()
+            return affected
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cur.close()
+
 
 # ====================================================================== #
 #  单号 / traceId 生成

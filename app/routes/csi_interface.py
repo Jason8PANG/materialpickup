@@ -325,9 +325,14 @@ def api_resend(row_id):
                              result=audit_result, detail=detail)
 
         trace = sync_worker._retry_trace_id(row)
-        repo.update(row_id, is_sync=0, status='PENDING', retry_count=0, transient_count=0,
-                    errormessage=None, submitted_at=None, last_poll_at=None,
-                    traceid=trace, updateby=operator)
+        # 原子重置（CAS）：同一行并发重发时只有一个能抢到，避免同一笔发料提交两次
+        reset_ok = repo.reset_for_resend(
+            row_id, trace, operator, ('FAILED_MANUAL', 'NOOP', 'FAILED'))
+        if not reset_ok:
+            message = '该记录正在被处理（可能已有人点了重发），请勿重复点击'
+            logger.warning('CSI 重发：并发被拒 id=%s 操作人=%s', row_id, operator)
+            _audit_resend('fail', trace, {'message': message, 'stage': 'concurrent_rejected'})
+            return jsonify({'success': False, 'message': message}), 409
         logger.info('CSI 重发：重置为待同步 id=%s api=%s trace=%s 操作人=%s',
                     row_id, api_name, trace, operator)
 
