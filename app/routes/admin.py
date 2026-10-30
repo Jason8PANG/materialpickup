@@ -512,3 +512,123 @@ def save_role_permissions():
         'changed': [{'role': r['role'], 'added': r['added'], 'removed': r['removed']}
                     for r in results],
     })
+
+
+# ============================================================
+#  CSI 失败记录定时邮件（收件人规则按「站点 + 接口名」配置）
+#  数据/发送逻辑见 app/services/csi_alert_service.py，
+#  时间判定与常驻循环见 app/csi_alert_scheduler.py。
+# ============================================================
+@admin_bp.route('/api/admin/csi-alert/rules', methods=['GET'])
+def list_csi_alert_rules():
+    """规则列表 + 前端下拉用的站点/接口候选"""
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    from app.services.csi_alert_service import ensure_schema, list_rules, api_names
+    try:
+        ensure_schema()
+        rules = list_rules()
+        apis = api_names()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'读取规则失败: {e}'}), 500
+
+    return jsonify({
+        'success': True,
+        'data': rules,
+        'apis': apis,
+        'sites': {k: v for k, v in Config.SITE_CONFIG.items()},
+    })
+
+
+@admin_bp.route('/api/admin/csi-alert/rules', methods=['POST'])
+def save_csi_alert_rule():
+    """新增/更新规则（body 含 id 则按 id 更新）"""
+    user, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': '请求体应为 JSON 对象'}), 400
+
+    from app.services.csi_alert_service import ensure_schema, save_rule, log_audit
+    try:
+        ensure_schema(with_default_rules=False)
+        ok, message, rule_id = save_rule(data, operator=user.get('username') or 'SYSTEM')
+    except Exception as e:
+        log_audit('save_rule', {'body': data, 'error': str(e)}, result='fail',
+                  operator=user.get('username') or 'SYSTEM', siteref=str(data.get('siteref') or ''))
+        return jsonify({'success': False, 'message': f'保存失败: {e}'}), 500
+
+    log_audit('save_rule', {'body': data, 'rule_id': rule_id, 'ok': ok, 'message': message},
+              result='ok' if ok else 'fail',
+              operator=user.get('username') or 'SYSTEM', siteref=str(data.get('siteref') or ''))
+    if not ok:
+        return jsonify({'success': False, 'message': message}), 400
+    return jsonify({'success': True, 'message': message, 'id': rule_id})
+
+
+@admin_bp.route('/api/admin/csi-alert/rules/<int:rule_id>', methods=['DELETE'])
+def delete_csi_alert_rule(rule_id):
+    user, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    from app.services.csi_alert_service import delete_rule, log_audit
+    try:
+        ok = delete_rule(rule_id)
+    except Exception as e:
+        log_audit('delete_rule', {'rule_id': rule_id, 'error': str(e)}, result='fail',
+                  operator=user.get('username') or 'SYSTEM')
+        return jsonify({'success': False, 'message': f'删除失败: {e}'}), 500
+
+    log_audit('delete_rule', {'rule_id': rule_id, 'deleted': ok},
+              result='ok' if ok else 'fail', operator=user.get('username') or 'SYSTEM')
+    if not ok:
+        return jsonify({'success': False, 'message': '规则不存在（可能已被删除）'}), 404
+    return jsonify({'success': True, 'message': '已删除'})
+
+
+@admin_bp.route('/api/admin/csi-alert/test', methods=['POST'])
+def test_csi_alert_send():
+    """立即测试发送：用当前规则实发一封（slot='manual'，force 语义绕过幂等）"""
+    user, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    from app.csi_alert_scheduler import run_slot
+    from app.services.csi_alert_service import log_audit
+    try:
+        summary = run_slot('manual', force=True)
+    except Exception as e:
+        log_audit('test_send', {'error': str(e)}, result='fail',
+                  operator=user.get('username') or 'SYSTEM')
+        return jsonify({'success': False, 'message': f'测试发送失败: {e}'}), 500
+
+    log_audit('test_send', summary, result='ok', operator=user.get('username') or 'SYSTEM')
+    sent = [g for g in summary['groups'] if g.get('status') == 'sent']
+    return jsonify({
+        'success': bool(sent),
+        'message': (f"已发送 {len(sent)} 封（共 {summary['total_rows']} 条失败记录）"
+                    if sent else ('当前没有待处理的失败记录' if summary['total_rows'] == 0
+                                  else '未发送，详见明细')),
+        'data': summary,
+    })
+
+
+@admin_bp.route('/api/admin/csi-alert/logs', methods=['GET'])
+def list_csi_alert_logs():
+    """最近发送记录（读 kr_csi_alert_log）"""
+    _, err_resp, err_code = check_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    from app.services.csi_alert_service import ensure_schema, list_logs
+    try:
+        ensure_schema(with_default_rules=False)
+        rows = list_logs(request.args.get('limit', 20))
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'读取发送记录失败: {e}'}), 500
+    return jsonify({'success': True, 'data': rows})

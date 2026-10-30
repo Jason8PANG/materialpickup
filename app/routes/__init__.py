@@ -99,6 +99,28 @@ def admin_printers_page():
     return render_template('admin_printers.html', sites=Config.SITE_CONFIG)
 
 
+@pages.route('/admin/csi-alert')
+def admin_csi_alert_page():
+    """CSI 失败记录定时邮件：收件人规则维护（仅 admin）。
+
+    页面级权限同时在 app/page_registry.py 注册（page_key=admin_csi_alert），
+    非 admin 直输 URL 由 before_request 统一拦成 403 页。
+    """
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    user = session['user']
+    if user['role'] != 'admin':
+        from app.page_registry import ROLE_LABELS
+        return render_template(
+            '403.html',
+            page_key='admin_csi_alert',
+            page_name='失败邮件通知',
+            role=user['role'],
+            role_label=ROLE_LABELS.get(user['role'], user['role']),
+        ), 403
+    return render_template('admin_csi_alert.html', sites=Config.SITE_CONFIG)
+
+
 @pages.route('/records')
 def records_page():
     if not session.get('user'):

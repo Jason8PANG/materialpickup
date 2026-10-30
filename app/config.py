@@ -84,6 +84,13 @@ class Config:
                          '410': os.environ.get('CSI_WAREHOUSE_410', 'M1M1')}
     CSI_ALERT_EMAIL = os.environ.get('CSI_ALERT_EMAIL', 'jason.pang@nai-group.com')
     CSI_SYNC_INTERVAL = int(os.environ.get('CSI_SYNC_INTERVAL', '60'))
+
+    # CSI 失败记录定时邮件（每天 09:00/12:00/15:00/17:00，收件人按「站点+接口」配置在
+    # kr_csi_alert_rule 表，由 /admin/csi-alert 维护）
+    CSI_ALERT_ENABLED = os.environ.get('CSI_ALERT_ENABLED', 'true').lower() == 'true'
+    CSI_ALERT_WINDOW_MINUTES = int(os.environ.get('CSI_ALERT_WINDOW_MINUTES', '5'))  # 命中窗口（分钟）
+    CSI_ALERT_MAX_ROWS = int(os.environ.get('CSI_ALERT_MAX_ROWS', '100'))           # 单封邮件最多行数
+    CSI_ALERT_CHECK_SECONDS = int(os.environ.get('CSI_ALERT_CHECK_SECONDS', '30'))  # 主循环检查间隔
     # 同步器调优（一般无需改动）
     CSI_SYNC_BATCH_SIZE = int(os.environ.get('CSI_SYNC_BATCH_SIZE', '20'))       # 单轮最多处理行数
     CSI_SYNC_STALE_SECONDS = int(os.environ.get('CSI_SYNC_STALE_SECONDS', '45'))  # 行被判定为「轮询超时」的秒数

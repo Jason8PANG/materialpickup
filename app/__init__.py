@@ -1,8 +1,10 @@
 from flask import Flask
+import sys
 from app.config import Config
 
 # 模块级标志：防止 Flask debug reload / 多次 create_app 重复起线程
 _CSI_SYNC_THREAD_STARTED = False
+_CSI_ALERT_THREAD_STARTED = False
 
 
 def _start_csi_sync_thread():
@@ -21,6 +23,29 @@ def _start_csi_sync_thread():
         threading.Thread(target=csi_sync_main, name='csi-sync', daemon=True).start()
     except Exception as e:  # 同步器起不来不影响 Web 服务
         print(f'[CSI 同步] 启动后台线程失败: {e}')
+
+
+def _start_csi_alert_thread():
+    """CSI 失败记录定时邮件调度器：CSI_ALERT_ENABLED=true 时以守护线程常驻。
+
+    注意：gunicorn -w 4 时 create_app() 会执行 4 次，本线程也就有 4 份；
+    重复发信由 kr_csi_alert_log 的唯一键 (send_date, slot, siteref, api_name)
+    在 INSERT IGNORE 时抢占（rowcount=1 的那份才发），不依赖内存标志。
+    这里的内存标志只防同一进程内 Flask reload 重复起线程。
+    测试进程（pytest）不起线程：避免后台线程用被 mock 的 pymysql 干扰用例。
+    """
+    global _CSI_ALERT_THREAD_STARTED
+    if _CSI_ALERT_THREAD_STARTED or not Config.CSI_ALERT_ENABLED:
+        return
+    if 'pytest' in sys.modules:
+        return
+    _CSI_ALERT_THREAD_STARTED = True
+    try:
+        import threading
+        from app.csi_alert_scheduler import main as csi_alert_main
+        threading.Thread(target=csi_alert_main, name='csi-alert', daemon=True).start()
+    except Exception as e:  # 邮件调度器起不来不影响 Web 服务
+        print(f'[CSI 告警] 启动后台线程失败: {e}')
 
 
 def create_app(config_class=Config):
@@ -136,5 +161,8 @@ def create_app(config_class=Config):
 
     # CSI 库位转移同步器（常驻守护线程，CSI_SYNC_ENABLED=false 时不启动）
     _start_csi_sync_thread()
+
+    # CSI 失败记录定时邮件（09:00/12:00/15:00/17:00，常驻守护线程）
+    _start_csi_alert_thread()
 
     return app

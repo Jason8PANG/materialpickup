@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% block title %}失败邮件通知 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm mb-3">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <div>
+            <h5 class="mb-0"><i class="fas fa-envelope-open-text me-2 text-primary"></i>失败邮件通知</h5>
+            <small class="text-muted">CSI 接口失败（需人工处理）记录，每天 09:00 / 12:00 / 15:00 / 17:00 自动发送</small>
+        </div>
+        <div>
+            <button class="btn btn-outline-info btn-sm me-2" onclick="testSend()">
+                <i class="fas fa-paper-plane me-1"></i>立即测试发送
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="showAddModal()">
+                <i class="fas fa-plus me-1"></i>新增规则
+            </button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover table-bordered align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:60px">ID</th>
+                        <th style="width:90px">站点</th>
+                        <th style="width:180px">接口</th>
+                        <th>收件人</th>
+                        <th style="width:80px">启用</th>
+                        <th>备注</th>
+                        <th style="width:120px">最后修改</th>
+                        <th style="width:130px">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="ruleTableBody">
+                    <tr><td colspan="8" class="text-center text-muted">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="alert alert-light border small mb-0">
+            <i class="fas fa-info-circle text-primary me-1"></i>
+            匹配优先级：<code>站点 + 接口名</code> 精确规则 &gt; <code>站点 + *</code>（全部接口）&gt; 系统默认邮箱。
+            精确规则被停用即该组不发信（不会回落到 <code>*</code>）。
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-history me-2 text-secondary"></i>最近发送记录</h5>
+        <button class="btn btn-outline-secondary btn-sm" onclick="loadLogs()">
+            <i class="fas fa-rotate me-1"></i>刷新
+        </button>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:70px">ID</th>
+                        <th style="width:105px">日期</th>
+                        <th style="width:80px">时段</th>
+                        <th style="width:80px">站点</th>
+                        <th style="width:170px">接口</th>
+                        <th style="width:70px">条数</th>
+                        <th>收件人</th>
+                        <th style="width:70px">结果</th>
+                        <th>错误</th>
+                        <th style="width:160px">创建时间</th>
+                    </tr>
+                </thead>
+                <tbody id="logTableBody">
+                    <tr><td colspan="10" class="text-center text-muted">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 新增/编辑弹窗 -->
+<div class="modal fade" id="ruleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="ruleModalTitle">新增收件人规则</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId" value="">
+                <div class="mb-3">
+                    <label class="form-label">站点 <span class="text-danger">*</span></label>
+                    <select class="form-select" id="fSiteref">
+                        {% for ref, name in sites.items() %}
+                        <option value="{{ ref }}">{{ name }} ({{ ref }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">接口名 <span class="text-danger">*</span></label>
+                    <select class="form-select" id="fApiName">
+                        <option value="*">全部接口（*）</option>
+                    </select>
+                    <div class="form-text">选「全部接口」后再用精确接口名单独建一条即可覆盖该接口的收件人。</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">收件人 <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="fEmails" placeholder="多个邮箱用逗号分隔，如 a@nai-group.com,b@nai-group.com">
+                    <div class="form-text text-danger d-none" id="emailError">邮箱格式不正确</div>
+                </div>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" class="form-check-input" id="fEnabled" checked>
+                    <label class="form-check-label" for="fEnabled">启用（停用后该组不再发信）</label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">备注</label>
+                    <input type="text" class="form-control" id="fRemark" maxlength="255">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="saveRuleBtn" onclick="saveRule()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SITE_LABELS = {{ sites|tojson }};
+const EMAIL_RE = /^[^@\s,;]+@[^@\s,;]+\.[A-Za-z]{2,}$/;
+let API_LIST = [];
+
+function escAttr(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function apiLabel(api) {
+    return api === '*' ? '全部接口' : api;
+}
+
+function splitEmails(raw) {
+    return String(raw || '').split(/[,;\s，；、]+/).map(s => s.trim()).filter(Boolean);
+}
+
+function loadRules() {
+    apiGet('/api/admin/csi-alert/rules', function (resp) {
+        API_LIST = resp.apis || [];
+        fillApiOptions();
+        const tbody = document.getElementById('ruleTableBody');
+        const rows = resp.data || [];
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无规则，请新增</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(function (r) {
+            const emails = splitEmails(r.emails).map(escapeHtml).join('<br>');
+            return '<tr>' +
+                '<td>' + r.id + '</td>' +
+                '<td><span class="badge bg-primary">' + escapeHtml(r.siteref) + '</span></td>' +
+                '<td>' + (r.api_name === '*'
+                    ? '<span class="badge bg-secondary">全部接口</span>'
+                    : escapeHtml(r.api_name)) + '</td>' +
+                '<td class="small">' + emails + '</td>' +
+                '<td>' + (r.enabled
+                    ? '<span class="badge bg-success">启用</span>'
+                    : '<span class="badge bg-secondary">停用</span>') + '</td>' +
+                '<td class="small">' + escapeHtml(r.remark || '-') + '</td>' +
+                '<td class="small text-muted">' + escapeHtml(r.updated_at || '-') +
+                    (r.updated_by ? '<br>' + escapeHtml(r.updated_by) : '') + '</td>' +
+                '<td class="text-center">' +
+                    '<button class="btn btn-sm btn-outline-primary me-1" title="编辑" ' +
+                        'data-id="' + escAttr(r.id) + '" ' +
+                        'data-siteref="' + escAttr(r.siteref) + '" ' +
+                        'data-api="' + escAttr(r.api_name) + '" ' +
+                        'data-emails="' + escAttr(r.emails) + '" ' +
+                        'data-enabled="' + (r.enabled ? '1' : '0') + '" ' +
+                        'data-remark="' + escAttr(r.remark || '') + '" ' +
+                        'onclick="showEditModal(this)"><i class="fas fa-edit"></i></button>' +
+                    '<button class="btn btn-sm btn-outline-danger" title="删除" ' +
+                        'onclick="deleteRule(' + r.id + ')"><i class="fas fa-trash"></i></button>' +
+                '</td>' +
+            '</tr>';
+        }).join('');
+    });
+}
+
+function fillApiOptions() {
+    const sel = document.getElementById('fApiName');
+    const current = sel.value;
+    const opts = ['<option value="*">全部接口（*）</option>'];
+    API_LIST.forEach(function (a) {
+        opts.push('<option value="' + escAttr(a) + '">' + escapeHtml(a) + '</option>');
+    });
+    sel.innerHTML = opts.join('');
+    if (current) sel.value = current;
+}
+
+function showAddModal() {
+    document.getElementById('ruleModalTitle').textContent = '新增收件人规则';
+    document.getElementById('editId').value = '';
+    document.getElementById('fSiteref').value = Object.keys(SITE_LABELS)[0] || '310';
+    document.getElementById('fApiName').value = '*';
+    document.getElementById('fEmails').value = '';
+    document.getElementById('fEnabled').checked = true;
+    document.getElementById('fRemark').value = '';
+    document.getElementById('emailError').classList.add('d-none');
+    new bootstrap.Modal(document.getElementById('ruleModal')).show();
+}
+
+function showEditModal(btn) {
+    document.getElementById('ruleModalTitle').textContent = '编辑收件人规则';
+    document.getElementById('editId').value = btn.dataset.id;
+    document.getElementById('fSiteref').value = btn.dataset.siteref;
+    if (btn.dataset.api && btn.dataset.api !== '*') {
+        if (API_LIST.indexOf(btn.dataset.api) < 0) {
+            API_LIST.push(btn.dataset.api);
+            fillApiOptions();
+        }
+        document.getElementById('fApiName').value = btn.dataset.api;
+    } else {
+        document.getElementById('fApiName').value = '*';
+    }
+    document.getElementById('fEmails').value = btn.dataset.emails || '';
+    document.getElementById('fEnabled').checked = btn.dataset.enabled === '1';
+    document.getElementById('fRemark').value = btn.dataset.remark || '';
+    document.getElementById('emailError').classList.add('d-none');
+    new bootstrap.Modal(document.getElementById('ruleModal')).show();
+}
+
+function saveRule() {
+    const emails = splitEmails(document.getElementById('fEmails').value);
+    const bad = emails.filter(function (e) { return !EMAIL_RE.test(e); });
+    const errEl = document.getElementById('emailError');
+    if (emails.length === 0 || bad.length > 0) {
+        errEl.textContent = emails.length === 0 ? '收件人不能为空' : ('邮箱格式不正确：' + bad.join(', '));
+        errEl.classList.remove('d-none');
+        return;
+    }
+    errEl.classList.add('d-none');
+
+    const idVal = document.getElementById('editId').value;
+    const payload = {
+        siteref: document.getElementById('fSiteref').value,
+        api_name: document.getElementById('fApiName').value,
+        emails: emails.join(','),
+        enabled: document.getElementById('fEnabled').checked,
+        remark: document.getElementById('fRemark').value
+    };
+    if (idVal) payload.id = parseInt(idVal, 10);
+
+    apiPost('/api/admin/csi-alert/rules', payload, function (resp) {
+        bootstrap.Modal.getInstance(document.getElementById('ruleModal')).hide();
+        showToast('success', resp.message || '保存成功');
+        loadRules();
+    });
+}
+
+function deleteRule(id) {
+    if (!confirm('确定删除这条收件人规则？删除后该站点将回落到兜底规则。')) return;
+    apiDelete('/api/admin/csi-alert/rules/' + id, function (resp) {
+        showToast('success', resp.message || '已删除');
+        loadRules();
+    });
+}
+
+function testSend() {
+    if (!confirm('将按当前规则立即发送一封测试邮件，确定继续？')) return;
+    showToast('info', '正在发送，请稍候...');
+    apiPost('/api/admin/csi-alert/test', {}, function (resp) {
+        showToast('success', resp.message || '已发送');
+        loadLogs();
+    }, function (resp) {
+        showToast('error', resp.message || '发送失败');
+        loadLogs();
+    });
+}
+
+function loadLogs() {
+    apiGet('/api/admin/csi-alert/logs?limit=20', function (resp) {
+        const tbody = document.getElementById('logTableBody');
+        const rows = resp.data || [];
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">暂无发送记录</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(function (r) {
+            const ok = r.result === 'ok';
+            return '<tr>' +
+                '<td>' + r.id + '</td>' +
+                '<td>' + escapeHtml(r.send_date) + '</td>' +
+                '<td>' + escapeHtml(r.slot) + '</td>' +
+                '<td>' + escapeHtml(r.siteref) + '</td>' +
+                '<td>' + escapeHtml(r.api_name) + '</td>' +
+                '<td>' + (r.record_count == null ? '-' : r.record_count) + '</td>' +
+                '<td class="small">' + escapeHtml(r.emails || '-') + '</td>' +
+                '<td>' + (ok ? '<span class="badge bg-success">成功</span>'
+                             : '<span class="badge bg-danger">失败</span>') + '</td>' +
+                '<td class="small text-danger">' + escapeHtml(r.errormessage || '') + '</td>' +
+                '<td class="small text-muted">' + escapeHtml(r.created_at || '-') + '</td>' +
+            '</tr>';
+        }).join('');
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadRules();
+    loadLogs();
+});
+</script>
+{% endblock %}

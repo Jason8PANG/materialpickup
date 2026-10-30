@@ -25,6 +25,8 @@ def get_connection():
 
 # ====== DROP 旧表（谨慎使用） ======
 DROP_TABLES = [
+    "DROP TABLE IF EXISTS kr_csi_alert_log",
+    "DROP TABLE IF EXISTS kr_csi_alert_rule",
     "DROP TABLE IF EXISTS kr_request_item",
     "DROP TABLE IF EXISTS kr_approval_token",
     "DROP TABLE IF EXISTS kr_operation_log",
@@ -167,6 +169,43 @@ CREATE_TABLES = [
       KEY idx_role (role)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色页面权限'
     """,
+
+    # 7. kr_csi_alert_rule（CSI 失败邮件收件人规则，按「站点 + 接口名」配置）
+    #    已在生产库运行时用 python -m app.csi_alert_scheduler --init 幂等建表，不跑本脚本
+    """
+    CREATE TABLE kr_csi_alert_rule (
+      id          BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+      siteref     VARCHAR(16)   NOT NULL COMMENT '站点 310/410',
+      api_name    VARCHAR(64)   NOT NULL DEFAULT '*' COMMENT '接口名，*=该站点全部接口',
+      emails      TEXT          NOT NULL COMMENT '收件人，逗号分隔',
+      enabled     TINYINT(1)    NOT NULL DEFAULT 1 COMMENT '是否启用',
+      remark      VARCHAR(255)  DEFAULT '' COMMENT '备注',
+      updated_by  VARCHAR(64)   DEFAULT '' COMMENT '最后修改人',
+      updated_at  DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_site_api (siteref, api_name),
+      KEY idx_site (siteref)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='CSI失败邮件收件人规则'
+    """,
+
+    # 8. kr_csi_alert_log（发送日志；唯一键 uk_slot 同时充当多 worker 的幂等锁）
+    """
+    CREATE TABLE kr_csi_alert_log (
+      id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+      send_date     DATE         NOT NULL COMMENT '发送日期',
+      slot          VARCHAR(8)   NOT NULL COMMENT '09:00/12:00/15:00/17:00/manual',
+      siteref       VARCHAR(16)  NOT NULL COMMENT '站点',
+      api_name      VARCHAR(64)  NOT NULL COMMENT '接口名',
+      record_count  INT          NOT NULL DEFAULT 0 COMMENT '本次邮件包含的记录数',
+      emails        TEXT         COMMENT '收件人',
+      result        VARCHAR(16)  NOT NULL DEFAULT 'ok' COMMENT 'ok/fail',
+      errormessage  VARCHAR(500) DEFAULT '' COMMENT '失败原因',
+      created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_slot (send_date, slot, siteref, api_name),
+      KEY idx_time (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='CSI失败邮件发送日志(唯一键即幂等锁)'
+    """,
 ]
 
 
@@ -230,6 +269,15 @@ def init_database():
 
     cursor.close()
     conn.close()
+
+    # CSI 失败邮件：灌默认兜底规则（310/410 各一条，INSERT IGNORE，幂等）
+    try:
+        from app.services.csi_alert_service import ensure_schema
+        info = ensure_schema()
+        print(f"  [OK] CSI失败邮件规则已初始化 (新增 {info['added']} 条，共 {info['rules_total']} 条)")
+    except Exception as e:
+        print(f'  [WARN] CSI失败邮件规则初始化失败: {e}')
+
     print('数据库初始化完成!')
 
 
