@@ -454,9 +454,15 @@ class CSIClient:
             return None
 
     def _lot_loc_from_balances(self, item: str, lot: str) -> str | None:
-        """回退查询：ue_NAI_SLLotLocs 中该 Lot 有余额的库位（取数量最大者）"""
+        """查询 ue_NAI_SLLotLocs 中该 Lot 有余额的库位（取数量最大者）
+
+        排除 Non-Nettable / MRB 库位（MrbFlag = 1，如 FG-RMA、MRB、FLOOR-X*、RM-X*）：
+        这类库位的库存不能发料，不能作为卷标带出的库位。
+        MrbFlag 可能为 NULL，故用 (MrbFlag IS NULL Or MrbFlag <> 1)。
+        """
         try:
-            filter_str = f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0"
+            filter_str = (f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0 "
+                          f"And (MrbFlag IS NULL Or MrbFlag <> 1)")
             records = self._get_ido("ue_NAI_SLLotLocs", filter_str=filter_str)
             best_qty, best_loc = None, None
             for r in records:
@@ -471,14 +477,49 @@ class CSIClient:
             logger.error(f"[CSI] _lot_loc_from_balances error: {e}")
             return None
 
+    def _loc_mrb_flag(self, item: str, lot: str, loc: str) -> bool | None:
+        """查 ue_NAI_SLLotLocs 中 Item/Lot/Loc 该行的 MrbFlag（Non-Nettable 标记）
+
+        返回 True=MRB 库位、False=正常库位、None=查不到该行（无法确认，调用方不应采用）。
+        MrbFlag 返回值为字符串 '0'/'1'。
+        """
+        try:
+            filter_str = f"Item = N'{item}' And Lot = N'{lot}' And Loc = N'{loc}'"
+            records = self._get_ido("ue_NAI_SLLotLocs",
+                                    properties=["Loc", "MrbFlag"], filter_str=filter_str)
+            if not records:
+                return None
+            return any(str(r.get("MrbFlag") or "").strip() == "1" for r in records)
+        except Exception as e:
+            logger.error(f"[CSI] _loc_mrb_flag error: {e}")
+            return None
+
+    def _lot_has_mrb_stock(self, item: str, lot: str) -> bool:
+        """该 Lot 是否只在 Non-Nettable/MRB 库位（MrbFlag = 1）有余额"""
+        try:
+            filter_str = (f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0 "
+                          f"And MrbFlag = 1")
+            records = self._get_ido("ue_NAI_SLLotLocs",
+                                    properties=["Loc", "MrbFlag"], filter_str=filter_str)
+            return bool(records)
+        except Exception as e:
+            logger.error(f"[CSI] _lot_has_mrb_stock error: {e}")
+            return False
+
     def get_lot_info(self, item: str, lot: str) -> dict | None:
         """
         查询 SLLots（按 Item 过滤验证 Lot 号），返回 DerQtyOnHand（衍生可用数量）。
         用于卷标录入时验证 Lot 与长度：长度（mm）不得超过 DerQtyOnHand（×换算系数 → mm）。
         注意：SLLots 与 ue_GDL_SLItems 一样，带 properties 参数查询返回 0 条，
         因此这里**不带 properties 全字段查询**，从返回记录中取 DerQtyOnHand/QtyOnHand 等字段。
-        loc：SLLots.Loc 为空时回退 ue_NAI_SLLotLocs 取有余额库位（验证时即可带出库位）。
-        返回: {item, lot, der_qty_on_hand, qty_on_hand, lot_status, whse, loc} 或 None（Lot 不存在/查询失败）
+        loc 取值顺序（排除 Non-Nettable / MRB 库位）：
+          1) ue_NAI_SLLotLocs 有余额且 MrbFlag <> 1 的库位（取数量最大者）
+          2) SLLots.Loc —— 仅当该库位在 ue_NAI_SLLotLocs 中存在且 MrbFlag <> 1 时才采用
+          3) 空字符串（SLLots.Loc 为 MRB 库位或查不到该行时不采用）
+        数量字段（der_qty_on_hand / qty_on_hand）与库位过滤无关，保持原逻辑。
+        返回: {item, lot, der_qty_on_hand, qty_on_hand, lot_status, whse, loc,
+               loc_source('lotlocs'|'slLots'|''), loc_excluded_mrb(bool)}
+               或 None（Lot 不存在/查询失败）
         """
         try:
             filter_str = f"Item = N'{item}' And Lot = N'{lot}'"
@@ -486,9 +527,20 @@ class CSIClient:
             if not records:
                 return None
             r = records[0]
-            loc = str(r.get('Loc', '') or '').strip()
+            loc = self._lot_loc_from_balances(item, lot) or ''
+            loc_source = 'lotlocs' if loc else ''
+            loc_excluded_mrb = False
             if not loc:
-                loc = self._lot_loc_from_balances(item, lot) or ''
+                sl_loc = str(r.get('Loc', '') or '').strip()
+                if sl_loc:
+                    mrb = self._loc_mrb_flag(item, lot, sl_loc)
+                    if mrb is False:
+                        loc, loc_source = sl_loc, 'slLots'
+                    elif mrb:
+                        loc_excluded_mrb = True
+            if not loc and not loc_excluded_mrb:
+                # SLLots.Loc 也为空：该 Lot 若只在 MRB 库位有货，同样视为「因 MRB 被排除」
+                loc_excluded_mrb = self._lot_has_mrb_stock(item, lot)
             return {
                 'item': r.get('Item', item),
                 'lot': r.get('Lot', lot),
@@ -497,6 +549,8 @@ class CSIClient:
                 'lot_status': str(r.get('LotStatus', '') or ''),
                 'whse': str(r.get('Whse', '') or ''),
                 'loc': loc,
+                'loc_source': loc_source,
+                'loc_excluded_mrb': loc_excluded_mrb,
             }
         except Exception as e:
             logger.error(f"[CSI] get_lot_info error: {e}")
@@ -505,8 +559,8 @@ class CSIClient:
     def get_lot_location(self, item: str, lot: str) -> str | None:
         """
         查询 Lot 当前所在库位（Loc），供 CSI 库位转移同步器补 from_location。
-        优先取 SLLots.Loc；未返回时回退 ue_NAI_SLLotLocs（按 Lot 查有余额的库位，取数量最大者）。
-        返回库位字符串或 None（查不到/查询失败）。
+        优先取 ue_NAI_SLLotLocs 有余额且非 MRB 的库位；无则回退 SLLots.Loc（同样校验非 MRB）。
+        库位全部为 Non-Nettable/MRB 时返回 None（不能返回 MRB 库位）。
         """
         info = self.get_lot_info(item, lot)
         if info and info.get('loc'):
@@ -516,11 +570,12 @@ class CSIClient:
     def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:
         """
         查询物料批号库存（ue_NAI_SLLotLocs），按 FIFO 排序
-        排除 floor/floor-core 库位
+        排除 floor/floor-core 库位，以及 Non-Nettable/MRB 库位（MrbFlag = 1）
         返回: [{lot, loc, qty_on_hand, create_date}, ...]
         """
         try:
-            filter_str = f"Item = N'{item}' AND QtyOnHand > 0"
+            filter_str = (f"Item = N'{item}' AND QtyOnHand > 0 "
+                          f"AND (MrbFlag IS NULL OR MrbFlag <> 1)")
             props = ["Item", "Loc", "Lot", "QtyOnHand", "WBLotCreateDate", "Whse"]
             records = self._get_ido("ue_NAI_SLLotLocs", properties=props, filter_str=filter_str)
             if not records:

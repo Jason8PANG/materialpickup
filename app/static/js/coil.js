@@ -358,7 +358,12 @@ function validateLotForRow(idx) {
         // 缓存 Lot 所在库位（后端 validate-lot 返回 loc，可能为 null），供保存时回传
         coilState.lotLocs[partNumber + '|' + lotNo] = (resp && resp.loc) || '';
         setLotLocHint(idx, coilState.lotLocs[partNumber + '|' + lotNo]);
-        showToast('success', resp.message || 'Lot 验证通过');
+        if (!resp.loc && resp.loc_excluded_mrb) {
+            // 该批号只在 Non-Nettable/MRB 库位有货：库位留空（不带出 MRB 库位），预警提示
+            showToast('warning', '该批号仅在不合格(Non-Nettable/MRB)库位有货，不能发料，请确认后再录入');
+        } else {
+            showToast('success', resp.message || 'Lot 验证通过');
+        }
     }, function (err) {
         finish();
         // 失败：Lot 不存在 或 长度超 DerQtyOnHand

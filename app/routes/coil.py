@@ -328,6 +328,9 @@ def validate_lot():
         'lot_status': lot_info['lot_status'],
         'whse': lot_info['whse'],
         'loc': lot_info.get('loc'),
+        # 库位来源与「仅在不合格(Non-Nettable/MRB)库位有货」标记，供前端提示
+        'loc_source': lot_info.get('loc_source', ''),
+        'loc_excluded_mrb': bool(lot_info.get('loc_excluded_mrb')),
         'der_qty_on_hand': der_qty,
         'unit': unit,
     }
