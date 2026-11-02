@@ -223,6 +223,9 @@ function processCSVTextMinpack() {
 
     showToast('info', '成功导入 ' + successCount + ' 行' + (errorCount > 0 ? '，' + errorCount + ' 行有错误' : '，已触发验证'));
 
+    // 同单内重复物料合并数量（用户立即可见行数减少）
+    mergeDuplicateRows(false);
+
     // 关闭弹框
     var modal = bootstrap.Modal.getInstance(document.getElementById('csvModalMinpack'));
     if (modal) modal.hide();
@@ -236,6 +239,54 @@ function removeRow(idx) {
 function updateRowNumbers() {
     const tbody = document.getElementById('itemsBody');
     tbody.querySelectorAll('.item-num').forEach(function (el, i) { el.textContent = i + 1; });
+}
+
+// 同一申请单内物料唯一：合并重复行（part_number 去空格、大小写不敏感），数量累加到首次出现的行
+function mergeDuplicateRows(silent) {
+    var tbody = document.getElementById('itemsBody');
+    if (!tbody) return;
+    var firstMap = {};      // key(upper) -> {idx, cnt}
+    var mergedInfo = [];    // ['A000363 ×3 → 60', ...]
+    var rows = Array.prototype.slice.call(tbody.children);
+
+    for (var i = 0; i < rows.length; i++) {
+        var tr = rows[i];
+        if (!tr.id) continue;
+        var idx = tr.id.replace('item-row-', '');
+        var pnEl = document.getElementById('part_number_' + idx);
+        var qtyEl = document.getElementById('quantity_' + idx);
+        if (!pnEl || !qtyEl) continue;
+        var pn = (pnEl.value || '').trim();
+        if (!pn) continue;   // 空物料行跳过
+        var key = pn.toUpperCase();
+        var qty = parseFloat(qtyEl.value) || 0;
+
+        if (Object.prototype.hasOwnProperty.call(firstMap, key)) {
+            var first = firstMap[key];
+            var firstQtyEl = document.getElementById('quantity_' + first.idx);
+            var baseQty = parseFloat(firstQtyEl.value);
+            if (isNaN(baseQty)) baseQty = 0;
+            var newQty = parseFloat((baseQty + qty).toFixed(4));
+            firstQtyEl.value = String(newQty);
+            first.cnt++;
+            mergedInfo.push(pn + ' ×' + first.cnt + ' → ' + newQty);
+
+            // 清理被删行的挂起库存查询与导入错误标记，避免计时器回调访问已删除节点
+            clearTimeout(stockLoadTimers[idx]);
+            delete _importErrors[idx];
+            tr.remove();
+            calcLineTotal(first.idx);
+        } else {
+            firstMap[key] = { idx: idx, cnt: 1 };
+        }
+    }
+
+    if (mergedInfo.length === 0) return;
+    updateRowNumbers();
+    calcTotal();
+    if (!silent) {
+        showToast('info', '同单内物料重复，已合并数量：' + mergedInfo.join('；'));
+    }
 }
 
 // 自动根据 Part Number 获取库存信息
@@ -342,6 +393,8 @@ function submitMinpackRequest() {
     }
 
     const tbody = document.getElementById('itemsBody');
+    // 提交前静默兜底：同单内重复物料合并数量，保证明细物料唯一
+    mergeDuplicateRows(true);
     const items = [];
     for (const tr of tbody.children) {
         const idx = tr.id.replace('item-row-', '');

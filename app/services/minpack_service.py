@@ -17,6 +17,8 @@ def create_minpack_request_core(cursor, siteref, requester, items, remark='',
                                 is_urgent=0, now=None):
     """创建一张最小包装申请单，返回 request_id。
 
+    同单内同物料（part_number 大小写不敏感）自动合并数量，明细保证物料唯一。
+
     参数：
       cursor    : 已打开的数据库游标（由调用方管理连接与事务）
       siteref   : 站点号（'310'/'410'）
@@ -40,6 +42,31 @@ def create_minpack_request_core(cursor, siteref, requester, items, remark='',
         (siteref, requester, now, remark, is_urgent)
     )
     request_id = cursor.lastrowid
+
+    # 同一申请单内物料唯一：按 part_number 合并数量（大小写不敏感、去首尾空格）
+    merged, order = {}, []
+    for item in items:
+        pn = str(item.get('part_number') or '').strip()
+        if not pn:
+            continue
+        key = pn.upper()
+        qty = float(item.get('quantity') or 0)
+        if key in merged:
+            merged[key]['quantity'] = round(merged[key]['quantity'] + qty, 4)
+            # stock_qty 取两者最大值（库存快照，不能相加）；price/stock_loc 保留首次出现的值
+            prev_s = merged[key].get('stock_qty')
+            cur_s = item.get('stock_qty')
+            try:
+                if cur_s is not None and (prev_s is None or float(cur_s) > float(prev_s)):
+                    merged[key]['stock_qty'] = cur_s
+            except (TypeError, ValueError):
+                pass
+        else:
+            merged[key] = dict(item, part_number=pn, quantity=qty)
+            order.append(key)
+    items = [merged[k] for k in order]
+    if not items:
+        raise ValueError('没有有效的物料明细')
 
     # 明细（job_order 固定 NULL）
     item_data = []
