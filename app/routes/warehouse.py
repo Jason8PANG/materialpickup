@@ -60,8 +60,20 @@ def validate_item_lots(cursor, request_id):
     规则（A/B 物料按卷标粒度维护，不要求批次表；short_reason 非空的缺料行豁免）：
       1. 每行至少 1 条 qty > 0 的 kr_request_item_lot 记录，否则视为未维护批次；
       2. 每行批次数量合计不得超过明细申请数量（浮点容差 0.0001）。
+
+    最小包装申请（request_type='minpack'）例外：其申请数量是「包装个数」，
+    与批次登记的实物件数不是同一单位（例：申请 14 包，批次登记 100 FT），
+    允许批次累计超过申请数量，仅保留规则 1（未维护批次仍然拦截）。
+
     返回错误提示文案；校验通过返回 None。
     """
+    cursor.execute(
+        "SELECT request_type FROM kr_material_request WHERE id = %s",
+        (request_id,)
+    )
+    req_row = cursor.fetchone() or {}
+    is_minpack = str(req_row.get('request_type') or '').strip().lower() == 'minpack'
+
     cursor.execute(
         "SELECT id, part_number, quantity, short_reason FROM kr_request_item "
         "WHERE request_id = %s ORDER BY id",
@@ -94,7 +106,7 @@ def validate_item_lots(cursor, request_id):
                            else f"{it['part_number']}(row{it['id']})")
             continue
         item_qty = float(it.get('quantity') or 0)
-        if total > item_qty + LOT_QTY_TOLERANCE:
+        if not is_minpack and total > item_qty + LOT_QTY_TOLERANCE:
             over.append((it['part_number'], it['id'], total, item_qty))
 
     if not missing and not over:
