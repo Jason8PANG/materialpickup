@@ -54,7 +54,7 @@ def _fmt_qty(value):
     return s or '0'
 
 
-def validate_item_lots(cursor, request_id):
+def validate_item_lots(cursor, request_id, request_type=''):
     """完成备料前校验非 A/B 明细的批次维护。
 
     规则（A/B 物料按卷标粒度维护，不要求批次表；short_reason 非空的缺料行豁免）：
@@ -67,12 +67,7 @@ def validate_item_lots(cursor, request_id):
 
     返回错误提示文案；校验通过返回 None。
     """
-    cursor.execute(
-        "SELECT request_type FROM kr_material_request WHERE id = %s",
-        (request_id,)
-    )
-    req_row = cursor.fetchone() or {}
-    is_minpack = str(req_row.get('request_type') or '').strip().lower() == 'minpack'
+    is_minpack = str(request_type or '').strip().lower() == 'minpack'
 
     cursor.execute(
         "SELECT id, part_number, quantity, short_reason FROM kr_request_item "
@@ -236,7 +231,7 @@ def complete_prep(request_id):
 
         # 批次维护校验：非 A/B 物料必须维护批次，且批次累计不得超过申请数量。
         # A/B 物料走卷标粒度（卷标录入不写批次表），不要求批次。
-        lot_error = validate_item_lots(cursor, request_id)
+        lot_error = validate_item_lots(cursor, request_id, req.get('request_type') or '')
         if lot_error:
             cursor.close()
             return jsonify({'success': False, 'message': lot_error}), 400
