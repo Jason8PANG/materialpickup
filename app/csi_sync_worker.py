@@ -780,6 +780,12 @@ _API_LABELS = {
 
 def _send_failure_alert(row, retry, reason):
     """发人工处理邮件；发送失败只记日志，不影响主流程"""
+    # 非生产环境不发真实告警邮件：本地调试连的是共用生产库，误发会打扰真实收件人。
+    # 只记日志便于排查（含收件人与标题），不调用 send_email。
+    if not getattr(Config, 'CSI_ALERT_ENABLED', True):
+        logger.warning('CSI 失败告警邮件已抑制（非生产环境或开关关闭）：id=%s %s 单号=%s %s',
+                       row.get('id'), row.get('api_name'), row.get('documentnumber'), reason)
+        return
     api = _row_api(row)
     api_label = _API_LABELS.get(api, '交易')
     request_id = row.get('request_id')

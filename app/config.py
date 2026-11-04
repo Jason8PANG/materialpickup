@@ -87,7 +87,18 @@ class Config:
 
     # CSI 失败记录定时邮件（每天 09:00/12:00/15:00/17:00，收件人按「站点+接口」配置在
     # kr_csi_alert_rule 表，由 /admin/csi-alert 维护）
-    CSI_ALERT_ENABLED = os.environ.get('CSI_ALERT_ENABLED', 'true').lower() == 'true'
+    # 环境标识：production=生产（不设即生产，保持既有行为不变）/ local|dev|test=非生产
+    APP_ENV = (os.environ.get('APP_ENV') or 'production').strip().lower()
+    IS_PRODUCTION = APP_ENV == 'production'
+
+    # CSI 失败告警邮件开关：显式开关 AND 生产环境。
+    # 非生产环境（APP_ENV=local）即使 .env 写了 true 也强制关闭 ——
+    # 本地连的是共用生产库，误发会向真实收件人发信，并抢占生产环境的
+    # kr_csi_alert_log 幂等锁（导致生产该发的批次被跳过）。
+    CSI_ALERT_ENABLED = (
+        os.environ.get('CSI_ALERT_ENABLED', 'true').lower() == 'true'
+        and IS_PRODUCTION
+    )
     CSI_ALERT_WINDOW_MINUTES = int(os.environ.get('CSI_ALERT_WINDOW_MINUTES', '5'))  # 命中窗口（分钟）
     CSI_ALERT_MAX_ROWS = int(os.environ.get('CSI_ALERT_MAX_ROWS', '100'))           # 单封邮件最多行数
     CSI_ALERT_CHECK_SECONDS = int(os.environ.get('CSI_ALERT_CHECK_SECONDS', '30'))  # 主循环检查间隔

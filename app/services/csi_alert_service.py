@@ -501,6 +501,15 @@ def send_group(slot, siteref, api_name, rows, send_date=None, force=False, now=N
     send_date = send_date or date.today()
     now = now or datetime.now()
 
+    # 非生产环境不发汇总告警：本地调试连的是共用生产库，误发会打扰真实收件人，
+    # 且写 kr_csi_alert_log 会抢占生产批次（唯一键做幂等锁）导致生产该发的不发。
+    # 因此守卫必须放在 claim_log（写 log）之前，抑制时完全不落库。
+    if not getattr(Config, 'CSI_ALERT_ENABLED', True):
+        logger.warning('CSI 汇总告警邮件已抑制（非生产环境或开关关闭）：siteref=%s api=%s 条数=%s',
+                       siteref, api_name, len(rows) if rows else 0)
+        return {'siteref': siteref, 'api_name': api_name, 'status': 'suppressed',
+                'count': len(rows), 'emails': ''}
+
     rule = resolve_rule(siteref, api_name)
     if rule is not None and not rule.get('enabled'):
         logger.info('CSI 告警：规则已停用，跳过 %s/%s', siteref, api_name)

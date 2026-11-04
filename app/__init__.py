@@ -35,13 +35,24 @@ def _start_csi_alert_thread():
     测试进程（pytest）不起线程：避免后台线程用被 mock 的 pymysql 干扰用例。
     """
     global _CSI_ALERT_THREAD_STARTED
+    import logging
+    # 未配置日志时兜底（否则 INFO 会被 lastResort 丢弃，看不到「是否启动」这条关键日志）
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO,
+                            format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
     if _CSI_ALERT_THREAD_STARTED or not Config.CSI_ALERT_ENABLED:
+        if not _CSI_ALERT_THREAD_STARTED:
+            logging.getLogger(__name__).info(
+                'CSI 失败邮件调度器未启动（CSI_ALERT_ENABLED=false, APP_ENV=%s）', Config.APP_ENV)
         return
     if 'pytest' in sys.modules:
         return
     _CSI_ALERT_THREAD_STARTED = True
     try:
         import threading
+        # 用 WARNING 级别：让运维在日志里一眼看到「这台机器会发真实告警邮件」
+        logging.getLogger(__name__).warning(
+            'CSI 失败邮件调度器已启动（APP_ENV=%s），将向真实收件人发送告警邮件', Config.APP_ENV)
         from app.csi_alert_scheduler import main as csi_alert_main
         threading.Thread(target=csi_alert_main, name='csi-alert', daemon=True).start()
     except Exception as e:  # 邮件调度器起不来不影响 Web 服务
