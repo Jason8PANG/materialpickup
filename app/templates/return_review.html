@@ -37,6 +37,16 @@
             <button class="btn btn-success btn-lg w-100 mt-3" id="confirmBtn" type="button">
                 <i class="fas fa-check-circle me-1"></i> <span data-i18n="return_review.confirm_btn">确认退回</span>
             </button>
+            <button class="btn btn-outline-warning btn-lg w-100 mt-2" id="removeFromReturnBtn" type="button">
+                <i class="fas fa-recycle me-1"></i> <span data-i18n="return_review.remove_btn">车间继续使用（移出退料清单）</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- 已移出退料清单（车间继续使用） -->
+    <div class="card mb-3 d-none" id="removedArea">
+        <div class="card-body">
+            <div class="alert alert-info mb-0" data-i18n="return_review.removed_matched">该卷标已由车间标记继续使用，不在退料清单中</div>
         </div>
     </div>
 
@@ -75,6 +85,7 @@
     const matchedArea = document.getElementById('matchedArea');
     const statusErrorArea = document.getElementById('statusErrorArea');
     const unmatchedArea = document.getElementById('unmatchedArea');
+    const removedArea = document.getElementById('removedArea');
 
     let currentCoilId = '';
     let currentReturnId = null;
@@ -83,6 +94,7 @@
         matchedArea.classList.add('d-none');
         statusErrorArea.classList.add('d-none');
         unmatchedArea.classList.add('d-none');
+        removedArea.classList.add('d-none');
     }
 
     function scan() {
@@ -111,6 +123,12 @@
         hideAll();
         scanFeedback.innerHTML = '';
         currentReturnId = d.return_id;
+
+        if (d.review_status === 'removed') {
+            // 已被车间标记「继续使用」并移出退料清单：不再退回仓库
+            removedArea.classList.remove('d-none');
+            return;
+        }
 
         if (d.matched && d.status === 'in_shop') {
             // 匹配且可退回
@@ -194,6 +212,35 @@
         });
     }
 
+    function removeFromReturn() {
+        if (!currentCoilId) {
+            showToast('error', __('return_review.not_matched'));
+            return;
+        }
+        if (!confirm(__('return_review.remove_confirm'))) return;
+        const btn = document.getElementById('removeFromReturnBtn');
+        btn.disabled = true;
+        fetch('/api/returns/review/' + encodeURIComponent(currentCoilId) + '/remove', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Lang': getLang()},
+            body: JSON.stringify({return_id: currentReturnId})
+        })
+        .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+        .then(function (res) {
+            btn.disabled = false;
+            if (res.ok && res.j.success) {
+                showToast('success', res.j.message || __('return_review.remove_success'));
+                resetForNext();
+            } else {
+                showToast('error', res.j.message || '操作失败');
+            }
+        })
+        .catch(function () {
+            btn.disabled = false;
+            showToast('error', '网络错误，请重试');
+        });
+    }
+
     function resetForNext() {
         hideAll();
         coilInput.value = '';
@@ -206,6 +253,7 @@
     document.getElementById('scanBtn').addEventListener('click', scan);
     document.getElementById('confirmBtn').addEventListener('click', confirmReturn);
     document.getElementById('rejectBtn').addEventListener('click', rejectCoil);
+    document.getElementById('removeFromReturnBtn').addEventListener('click', removeFromReturn);
     coilInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); scan(); }
     });

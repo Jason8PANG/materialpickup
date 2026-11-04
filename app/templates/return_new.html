@@ -86,7 +86,12 @@
         const coilId = coilInput.value.trim();
         if (!coilId) { coilInput.focus(); return; }
         if (coils.some(function (c) { return c.coil_id === coilId; })) {
-            coilFeedback.innerHTML = '<span class="text-warning">' + __('return.in_list') + ': ' + escapeHtml(coilId) + '</span>';
+            // 已在清单中 → 再次扫码视为「移出」（车间继续使用，不退仓库）
+            const idx = coils.findIndex(function (c) { return c.coil_id === coilId; });
+            coils.splice(idx, 1);
+            render();
+            coilFeedback.innerHTML = '<span class="text-warning"><i class="fas fa-recycle"></i> ' +
+                __('return.removed_ok') + ': ' + escapeHtml(coilId) + '</span>';
             coilInput.value = '';
             coilInput.focus();
             return;

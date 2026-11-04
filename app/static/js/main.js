@@ -219,8 +219,11 @@ function renderKanban(data) {
             let returnCoilHtml = '';
             if (card.return_coils && card.return_coils.length) {
                 returnCoilHtml = '<div class="card-return-coils">' + card.return_coils.map(function (it) {
+                    // 已被车间标记「继续使用」的卷标不再退回仓库，标注避免误操作
+                    const removedMark = it.review_status === 'removed'
+                        ? ' <span class="badge bg-warning">' + __('returndetail.review_removed') + '</span>' : '';
                     return '<div class="small">' + escapeHtml(it.coil_id) + ' | ' + escapeHtml(it.part_number || '-') +
-                        ' | 余 ' + it.remain_length + escapeHtml(it.unit || '') + '</div>';
+                        ' | 余 ' + it.remain_length + escapeHtml(it.unit || '') + removedMark + '</div>';
                 }).join('') + '</div>';
             }
 
@@ -497,6 +500,7 @@ function renderActions(req) {
         (req.return_items || []).every(function (it) {
             if (it.review_status === 'confirmed') return true;
             if (it.review_status === 'rejected') return !!(it.review_note && String(it.review_note).trim());
+            if (it.review_status === 'removed') return true;   // 车间继续使用，视为已处理
             return false;
         })) {
         actions.push({label: __('returndetail.sign_confirm'), class: 'btn-primary', action: 'sign_return'});

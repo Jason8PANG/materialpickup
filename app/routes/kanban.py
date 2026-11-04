@@ -66,7 +66,7 @@ def get_kanban_cards():
         if return_ids:
             ph = ','.join(['%s'] * len(return_ids))
             cursor.execute(
-                f"SELECT request_id, coil_id, part_number, unit, remain_length "
+                f"SELECT request_id, coil_id, part_number, unit, remain_length, review_status "
                 f"FROM kr_return_item WHERE request_id IN ({ph}) ORDER BY id",
                 return_ids
             )

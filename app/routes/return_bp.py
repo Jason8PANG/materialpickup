@@ -33,6 +33,97 @@ RETURN_STATUS_LABELS = {
     'rejected': '已驳回',
 }
 
+# 退料明细复核状态 'removed'：车间继续使用该卷标，已移出退料清单（不退仓库）。
+# 用状态标记而非物理删除 kr_return_item 行：删除会改变单内行号，
+# 导致 enqueue_return_qty_move 计算出的 CSI 单号/traceid 漂移（见 services/csi_interface.py）。
+RETURN_ITEM_REMOVED = 'removed'
+REMOVED_REVIEW_NOTE = '车间继续使用'
+
+
+def _coil_counting_locked(cur, coil_id):
+    """盘点锁定检查：活跃盘点单（counting）中的卷标不允许退料/移出退料清单，
+    避免破坏盘点一致性。"""
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM kr_inventory_count_item i "
+        "JOIN kr_inventory_count c ON c.id = i.count_id "
+        "WHERE i.coil_id = %s AND c.status = 'counting'",
+        (coil_id,)
+    )
+    return int((cur.fetchone() or {}).get('n') or 0) > 0
+
+
+def _do_remove_return_item(cur, user, return_id, req_status, coil_id, now):
+    """核心移除逻辑：把退料清单中的某个卷标标记为「车间继续使用」（review_status='removed'）。
+
+    校验链：
+      1. 卷标必须在该退料单的 kr_return_item 内
+      2. review_status 必须是 NULL（已复核 confirmed/rejected 的不允许再移除）；
+         已是 'removed' → 幂等返回成功（先判幂等，再判单据状态，
+         因为移除最后一个未复核卷标后主表会闭环为 confirmed，重复移除仍应成功）
+      3. 退料单状态必须是 pending_return（confirmed 时卷标已退回仓库，移除无意义）
+      4. 卷标状态必须是 in_shop
+      5. 卷标不在盘点锁定中
+
+    副作用：只标记 kr_return_item；**不改** kr_wire_coil.status（保持 in_shop = 车间继续使用），
+    也**不改** coil_length（剩余长度不变）。
+
+    返回 (ok, message, http_status)。
+    """
+    cur.execute(
+        "SELECT id, review_status FROM kr_return_item WHERE request_id = %s AND coil_id = %s",
+        (return_id, coil_id)
+    )
+    item = cur.fetchone()
+    if not item:
+        return False, '该卷标不在退料清单中', 400
+    if item['review_status'] == RETURN_ITEM_REMOVED:
+        # 幂等：已移除直接返回成功，不报错
+        return True, f'卷标 {coil_id} 已移出退料清单（车间继续使用）', 200
+    if item['review_status'] is not None:
+        return False, '该卷标已复核，无法移出退料清单', 400
+    if req_status != 'pending_return':
+        return False, '当前状态不允许移出退料清单', 400
+
+    # 卷标必须在车间
+    cur.execute(
+        "SELECT coil_id, status FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
+        (coil_id,)
+    )
+    c = cur.fetchone()
+    if not c:
+        return False, '卷标不存在', 404
+    if c['status'] != 'in_shop':
+        return False, f'卷标状态异常（{COIL_STATUS_LABEL(c["status"])}），无法移出退料清单', 400
+    # 盘点锁定检查
+    if _coil_counting_locked(cur, coil_id):
+        return False, f'卷标 {coil_id} 正在盘点中（已锁定），不允许移出退料清单', 400
+
+    # 标记移除：卷标保持 in_shop（车间继续使用），不回写剩余长度
+    cur.execute(
+        "UPDATE kr_return_item SET review_status = %s, review_note = %s, "
+        "reviewed_by = %s, reviewed_at = %s WHERE request_id = %s AND coil_id = %s",
+        (RETURN_ITEM_REMOVED, REMOVED_REVIEW_NOTE, user['username'], now, return_id, coil_id)
+    )
+    cur.execute(
+        "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
+        "VALUES (%s, %s, 'RETURN_ITEM_REMOVE', %s, %s, %s)",
+        (return_id, user['username'],
+         f"移出退料清单（车间继续使用）: 单 {return_id} 卷标 {coil_id}",
+         request.remote_addr, now)
+    )
+    # 闭环：移除后若本单已无未复核明细（removed 不是 NULL，不计入）→ 主表确认。
+    # 这样「移除」不会把退料单卡在 pending_return，申请人仍可签字完成整单。
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM kr_return_item WHERE request_id = %s AND review_status IS NULL",
+        (return_id,)
+    )
+    if int((cur.fetchone() or {}).get('n') or 0) == 0:
+        cur.execute(
+            "UPDATE kr_material_request SET status = 'confirmed', confirmed_by = %s, confirm_time = %s WHERE id = %s",
+            (user['username'], now, return_id)
+        )
+    return True, f'卷标 {coil_id} 已移出退料清单（车间继续使用）', 200
+
 
 def _coil_remain_length(cur, coil_id: str):
     """计算卷标剩余长度（与 coil_length 同单位，即系统单位如 M/FT）：
@@ -188,9 +279,12 @@ def confirm_return(return_id):
             cur.close()
             return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
 
-        # 明细
+        # 明细：排除 review_status='removed'（车间继续使用，不退仓库）
+        # 说明：removed 行必须跳过，否则整单确认会把「车间继续使用」的卷标错误退回仓库。
+        # 用 COALESCE 兜住 NULL（未复核）行，保证 NULL 行仍参与退回。
         cur.execute(
-            "SELECT coil_id, remain_length FROM kr_return_item WHERE request_id = %s",
+            "SELECT coil_id, remain_length, review_status FROM kr_return_item "
+            "WHERE request_id = %s AND (review_status IS NULL OR review_status <> 'removed')",
             (return_id,)
         )
         items = cur.fetchall()
@@ -205,6 +299,13 @@ def confirm_return(return_id):
                 (it['remain_length'], it['coil_id'])
             )
             confirmed += cur.rowcount
+            # 同步明细复核状态：整单确认的卷标标记为 confirmed（removed 行不在此处）
+            if it['review_status'] is None:
+                cur.execute(
+                    "UPDATE kr_return_item SET review_status = 'confirmed', "
+                    "reviewed_by = %s, reviewed_at = %s WHERE request_id = %s AND coil_id = %s",
+                    (user['username'], now, return_id, it['coil_id'])
+                )
 
         cur.execute(
             "UPDATE kr_material_request SET status = 'confirmed', confirmed_by = %s, confirm_time = %s WHERE id = %s",
@@ -219,6 +320,54 @@ def confirm_return(return_id):
         cur.close()
 
     return jsonify({'success': True, 'message': f'退料确认成功，{confirmed} 卷已转回在库'})
+
+
+# ================= 2.1 移出退料清单（车间继续使用） =================
+
+@return_bp.route('/api/returns/<int:return_id>/items/<coil_id>/remove', methods=['POST'])
+def remove_return_item(return_id, coil_id):
+    """退料单详情页：把某个卷标移出退料清单（车间继续使用，不退仓库）。
+
+    允许 requester / warehouse / admin；站点隔离：非 admin 只能操作本单据站点。
+    幂等：已是 removed 的卷标重复移除直接返回成功。
+    """
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    if user['role'] not in ('requester', 'warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    coil_id = str(coil_id).strip()
+    now = datetime.now()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT * FROM kr_material_request WHERE id = %s AND is_deleted = 0",
+            (return_id,)
+        )
+        req = cur.fetchone()
+        if not req:
+            cur.close()
+            return jsonify({'success': False, 'message': '退料单不存在'}), 404
+        if req['request_type'] != 'return':
+            cur.close()
+            return jsonify({'success': False, 'message': '该单据不是退料单'}), 400
+        # 站点隔离：admin 跨站，其余必须与单据站点一致
+        site_filter, site_params = get_site_filter(user)
+        if site_filter and site_params and req['siteref'] != site_params[0]:
+            cur.close()
+            return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
+
+        ok, message, code = _do_remove_return_item(
+            cur, user, return_id, req['status'], coil_id, now
+        )
+        if not ok:
+            cur.close()
+            return jsonify({'success': False, 'message': message}), code
+        db.commit()
+        cur.close()
+
+    return jsonify({'success': True, 'message': message})
 
 
 # ================= 3. 仓库驳回退料 =================
@@ -363,6 +512,7 @@ def review_coil_query(coil_id):
         'remain_length': 0.0,
         'matched': False,
         'return_id': None,
+        'review_status': None,
         'available_locations': [],
     }
 
@@ -393,7 +543,7 @@ def review_coil_query(coil_id):
 
         # 匹配 pending_return 退料单（多个取最新）
         cur.execute(
-            "SELECT ri.request_id FROM kr_return_item ri "
+            "SELECT ri.request_id, ri.review_status FROM kr_return_item ri "
             "JOIN kr_material_request r ON r.id = ri.request_id "
             "WHERE ri.coil_id = %s AND r.request_type = 'return' AND r.status = 'pending_return' "
             "ORDER BY r.id DESC LIMIT 1",
@@ -403,6 +553,21 @@ def review_coil_query(coil_id):
         if match:
             result['matched'] = True
             result['return_id'] = match['request_id']
+            result['review_status'] = match['review_status']
+        else:
+            # 已被标记为「车间继续使用」(removed) 的卷标：即使所在单已闭环为 confirmed，
+            # 也要让前端知道它不在退料清单里（不可再复核退回）。
+            cur.execute(
+                "SELECT ri.request_id FROM kr_return_item ri "
+                "JOIN kr_material_request r ON r.id = ri.request_id "
+                "WHERE ri.coil_id = %s AND r.request_type = 'return' AND ri.review_status = %s "
+                "ORDER BY r.id DESC LIMIT 1",
+                (coil_id, RETURN_ITEM_REMOVED)
+            )
+            done = cur.fetchone()
+            if done:
+                result['review_status'] = RETURN_ITEM_REMOVED
+                result['return_id'] = done['request_id']
         coil_siteref = c['siteref']
         cur.close()
 
@@ -487,12 +652,17 @@ def review_coil_confirm(coil_id):
             return jsonify({'success': False, 'message': f'卷标 {coil_id} 正在盘点中（已锁定），不允许退料'}), 400
         # 卷标属于该退料单
         cur.execute(
-            "SELECT id FROM kr_return_item WHERE request_id = %s AND coil_id = %s",
+            "SELECT id, review_status FROM kr_return_item WHERE request_id = %s AND coil_id = %s",
             (return_id, coil_id)
         )
-        if not cur.fetchone():
+        item = cur.fetchone()
+        if not item:
             cur.close()
             return jsonify({'success': False, 'message': '该卷标不在退料清单中'}), 400
+        # 已被移出退料清单（车间继续使用）的卷标不允许复核退回
+        if item['review_status'] == RETURN_ITEM_REMOVED:
+            cur.close()
+            return jsonify({'success': False, 'message': '该卷标已被移出退料清单（车间继续使用），无法复核'}), 400
 
         remain = _coil_remain_length(cur, coil_id)
         now = datetime.now()
@@ -572,9 +742,22 @@ def review_coil_reject(coil_id):
 
         now = datetime.now()
         return_id = None
+        # 该卷标最近一条退料明细若已是 removed（车间继续使用）→ 不允许再登记复核。
+        # 取 id 最大的一条：若卷标被移除后又被重新提交到新的退料单，新行 id 更大且未复核，不受影响。
+        cur.execute(
+            "SELECT ri.request_id, ri.review_status FROM kr_return_item ri "
+            "JOIN kr_material_request r ON r.id = ri.request_id "
+            "WHERE ri.coil_id = %s AND r.request_type = 'return' "
+            "ORDER BY ri.id DESC LIMIT 1",
+            (coil_id,)
+        )
+        latest = cur.fetchone()
+        if latest and latest['review_status'] == RETURN_ITEM_REMOVED:
+            cur.close()
+            return jsonify({'success': False, 'message': '该卷标已被移出退料清单（车间继续使用），无法复核'}), 400
         # 匹配 pending_return 单（若有则写明细复核状态 + 闭环检查）
         cur.execute(
-            "SELECT ri.request_id FROM kr_return_item ri "
+            "SELECT ri.request_id, ri.review_status FROM kr_return_item ri "
             "JOIN kr_material_request r ON r.id = ri.request_id "
             "WHERE ri.coil_id = %s AND r.request_type = 'return' AND r.status = 'pending_return' "
             "ORDER BY r.id DESC LIMIT 1",
@@ -582,6 +765,10 @@ def review_coil_reject(coil_id):
         )
         m = cur.fetchone()
         if m:
+            # 该 pending_return 单内的明细若已被移出清单 → 不允许再登记不予退料
+            if m['review_status'] == RETURN_ITEM_REMOVED:
+                cur.close()
+                return jsonify({'success': False, 'message': '该卷标已被移出退料清单（车间继续使用），无法复核'}), 400
             return_id = m['request_id']
             site_filter, site_params = get_site_filter(user)
             if site_filter and c['siteref'] != site_params[0]:
@@ -613,6 +800,75 @@ def review_coil_reject(coil_id):
         cur.close()
 
     return jsonify({'success': True, 'message': '已记录不予退料，卷标状态保持不变'})
+
+
+@return_bp.route('/api/returns/review/<coil_id>/remove', methods=['POST'])
+def review_coil_remove(coil_id):
+    """仓库复核页：扫描卷标ID后把该卷标移出退料清单（车间继续使用，不退仓库）。
+
+    退料单从「卷标是否命中 pending_return 退料单」逻辑取（同 review_coil_query）。
+    权限：warehouse / admin（与同页 confirm/reject 一致）。
+    幂等：已是 removed 的卷标重复移除直接返回成功。
+    """
+    user = session.get('user')
+    if not user:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    if user['role'] not in ('warehouse', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+
+    coil_id = str(coil_id).strip()
+    now = datetime.now()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        # 匹配 pending_return 退料单（多个取最新）
+        cur.execute(
+            "SELECT ri.request_id, ri.review_status FROM kr_return_item ri "
+            "JOIN kr_material_request r ON r.id = ri.request_id "
+            "WHERE ri.coil_id = %s AND r.request_type = 'return' AND r.status = 'pending_return' "
+            "ORDER BY r.id DESC LIMIT 1",
+            (coil_id,)
+        )
+        match = cur.fetchone()
+        if not match:
+            # 幂等兜底：卷标已在某退料单中被标记为 removed（该单可能已闭环为 confirmed）→ 视为成功
+            cur.execute(
+                "SELECT ri.request_id, ri.review_status FROM kr_return_item ri "
+                "JOIN kr_material_request r ON r.id = ri.request_id "
+                "WHERE ri.coil_id = %s AND r.request_type = 'return' AND ri.review_status = %s "
+                "ORDER BY r.id DESC LIMIT 1",
+                (coil_id, RETURN_ITEM_REMOVED)
+            )
+            done = cur.fetchone()
+            if done:
+                cur.close()
+                return jsonify({'success': True,
+                                'message': f'卷标 {coil_id} 已移出退料清单（车间继续使用）'})
+            cur.close()
+            return jsonify({'success': False, 'message': '未匹配到待退料单，或卷标不存在'}), 400
+
+        cur.execute(
+            "SELECT * FROM kr_material_request WHERE id = %s AND is_deleted = 0",
+            (match['request_id'],)
+        )
+        req = cur.fetchone()
+        if not req:
+            cur.close()
+            return jsonify({'success': False, 'message': '退料单不存在'}), 404
+        site_filter, site_params = get_site_filter(user)
+        if site_filter and site_params and req['siteref'] != site_params[0]:
+            cur.close()
+            return jsonify({'success': False, 'message': '无权操作其他站点的单据'}), 403
+
+        ok, message, code = _do_remove_return_item(
+            cur, user, req['id'], req['status'], coil_id, now
+        )
+        if not ok:
+            cur.close()
+            return jsonify({'success': False, 'message': message}), code
+        db.commit()
+        cur.close()
+
+    return jsonify({'success': True, 'message': message})
 
 
 # ================= 6. 退料明细维护原因 + 申请人签字确认（详情页） =================

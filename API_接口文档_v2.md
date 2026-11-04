@@ -513,7 +513,35 @@
 `POST /api/returns/<int:return_id>/sign`
 - 权限：`requester`、`admin`。请求体：`signature_data`（可空）。
 - 前置：单据 `request_type='return'` 且 `status='confirmed'`、站点匹配；**不允许存在**未复核行（`review_status IS NULL`）；`rejected` 行必须已填 `review_note`，否则 400。
+- 注：`review_status='removed'`（车间继续使用，见 7.11）不是 NULL，**不阻塞签字**，移除卷标不影响整单完成。
 - 效果：主表 `status→completed`、写 `signer/sign_time/signature_data`；`RETURN_SIGN` 日志。
+
+### 7.11 移出退料清单（车间继续使用）
+车间继续使用某卷标 → 扫描卷标ID后将其从退料清单中移除，**该卷标不退回仓库**（保持 `in_shop`），且不影响整单完成。
+
+**实现方式**：`kr_return_item.review_status='removed'` 状态标记，**不物理删除**明细行（删除会改变单内行号，导致 CSI 移库单号/traceid 漂移，见 `services/csi_interface.py`）。
+
+**A. 退料单详情页移除**
+`POST /api/returns/<int:return_id>/items/<coil_id>/remove`
+- 权限：`requester`、`warehouse`、`admin`。站点隔离：非 admin 只能操作本单据站点（否则 403）。
+- 校验链：退料单存在且 `request_type='return'`；卷标在该单 `kr_return_item` 内（否则 400）；`review_status IS NULL`（已 `confirmed`/`rejected` 的不允许再移除，400）；单据 `status='pending_return'`；卷标 `status='in_shop'`；**盘点锁定**（counting 中 → 400）。
+- 幂等：已是 `removed` 的卷标重复移除直接返回成功（200）。
+- 副作用：`review_status='removed'`、`review_note='车间继续使用'`、`reviewed_by/reviewed_at`；**不改** `kr_wire_coil.status`（保持 `in_shop`）、**不改** `coil_length`。
+- 闭环：移除后若本单已无 `review_status IS NULL` 的明细 → 主表 `status→confirmed`（`removed` 不是 NULL，不阻塞整单完成）。
+- 日志：`RETURN_ITEM_REMOVE`。响应 `{"success":true,"message":"卷标 X 已移出退料清单（车间继续使用）"}`。
+
+**B. 仓库复核页移除**
+`POST /api/returns/review/<coil_id>/remove`
+- 权限：`warehouse`、`admin`（与同页 confirm/reject 一致）。
+- 退料单取自「卷标是否命中 `pending_return` 退料单」逻辑（同 7.6，多单取最新）；校验链与副作用同 A。
+- 幂等兜底：卷标已 `removed` 且所在单已闭环为 `confirmed` 时，重复调用仍返回成功。
+
+**C. 复核接口拦截已移除卷标**
+- `POST /api/returns/review/<coil_id>/confirm` 与 `/reject`：卷标明细 `review_status='removed'` → 400「该卷标已被移出退料清单（车间继续使用），无法复核」。
+- `GET /api/returns/review/coil/<coil_id>`：响应新增 `review_status` 字段（可为 `'removed'`），前端据此显示「该卷标已由车间标记继续使用，不在退料清单中」，不再显示确认退回按钮。
+
+**D. 整单确认跳过 removed**
+- `POST /api/returns/<int:return_id>/confirm`（7.2）：明细查询排除 `review_status='removed'` 的行 —— 被移除的卷标**保持 `in_shop` 不退仓库**，其余卷标照常退回在库并标记 `review_status='confirmed'`。
 
 ---
 

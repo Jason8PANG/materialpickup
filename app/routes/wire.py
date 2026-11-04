@@ -219,7 +219,8 @@ def api_coils():
 # ------------------------------------------------------------------ #
 #  卷标生命周期详情（发出 / 消耗 / 退料 / 盘点）
 # ------------------------------------------------------------------ #
-RETURN_REVIEW_LABELS = {None: '待审核', 'confirmed': '已审核', 'rejected': '已驳回'}
+RETURN_REVIEW_LABELS = {None: '待审核', 'confirmed': '已审核', 'rejected': '已驳回',
+                        'removed': '车间继续使用'}
 
 
 def _r4(value):
@@ -390,12 +391,19 @@ def api_coil_history(coil_id):
             review_txt = RETURN_REVIEW_LABELS.get(review, review or '待审核')
             qty = r.get('remain_length')
             unit = r.get('unit') or ''
+            if review == 'removed':
+                # 车间继续使用：已移出退料清单，未退仓库
+                title = '车间继续使用'
+                detail = f"退料单 {rno} 中标记为车间继续使用，未退料"
+            else:
+                title = '退回'
+                detail = f"退回{rno}，剩余 {_fmt_qty(qty)} {unit}（{review_txt}）"
             timeline.append({
                 'time': _iso(r.get('created_at')),
                 'type': 'return',
                 'ref': rno,
-                'title': '退回',
-                'detail': f"退回{rno}，剩余 {_fmt_qty(qty)} {unit}（{review_txt}）",
+                'title': title,
+                'detail': detail,
                 'qty': _r4(qty),
                 'unit': r.get('unit'),
             })
