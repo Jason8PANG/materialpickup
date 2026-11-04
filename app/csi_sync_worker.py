@@ -46,6 +46,10 @@ import requests
 
 from app.config import Config
 from app.models import get_db
+from app.services.csi_floor_align import (
+    CSI_FLOOR_ALIGN_TOLERANCE,
+    align_floor_stock_quantity,
+)
 from app.services.csi_service import BF_MSG_CLEARED, CSIClient
 from app.services.email_service import send_email
 from app.services.operation_log import log_operation
@@ -76,6 +80,13 @@ MAX_LOCATION_LOOKUPS = 20
 def _cfg_int(name, default):
     try:
         return int(getattr(Config, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _cfg_float(name, default):
+    try:
+        return float(getattr(Config, name, default))
     except (TypeError, ValueError):
         return default
 
@@ -596,6 +607,132 @@ def _ensure_job_backflush_cleared(row, cache=None):
 
 
 # ====================================================================== #
+#  提交前按 lot 对齐 Floor-Core 余量（差异 ≤ 阈值时改写本笔消耗量）
+# ====================================================================== #
+# 同 item+lot 尚未成功扣减到 CSI 的其它行：SUCCESS 已经扣过 CSI 余额，绝不能计入
+_PENDING_ISSUE_SQL = (
+    "SELECT COALESCE(SUM(quantity), 0) AS pending FROM kr_csi_interface "
+    "WHERE api_name = 'sl-job-issue' AND item = %s AND lot = %s "
+    "  AND status IN ('PENDING','QUEUED','SUBMITTING') AND id <> %s"
+)
+
+
+def _pending_issue_qty(repo, row_id, item, lot):
+    """同 item+lot 其它待扣行的数量之和（排除本行、排除已成功行）"""
+    cur = repo._cursor()
+    try:
+        cur.execute(_PENDING_ISSUE_SQL, (item, lot, row_id))
+        rec = cur.fetchone()
+    finally:
+        cur.close()
+    try:
+        return float((rec or {}).get('pending') or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def _align_floor_stock(repo, row, api, stats, floor_cache=None):
+    """消耗类工单发料提交前，按 CSI Floor-Core 该 lot 的实时余量对齐本笔数量。
+
+    只有「车间消耗」形态的 job-issue（from_location 为空、to_location 是 Floor 库位）
+    才处理：完成备料的 qty-move 是「仓库 → Floor-Core 入库」，另有库存来源，绝不能改。
+    差异 ≤ 阈值时把本笔 quantity 改成实际可用余量（避免 CSI 因货位存货不足拒收）；
+    差异超阈值或查不到库存时原样返回，照常提交（被拒后转人工）。
+
+    任何异常都只记日志并原样返回——对齐是「锦上添花」，绝不能阻断同步。
+    同一轮内同 (site, item, lot) 只查一次 CSI（floor_cache 由调用方跨行共享）。
+    """
+    try:
+        if not bool(getattr(Config, 'CSI_FLOOR_STOCK_ALIGN', False)):
+            return row
+        if api != API_JOB_ISSUE:
+            return row
+        # 消耗类 job-issue 无源库位；有 from_location 的是入库/移库语义，不动
+        if (row.get('from_location') or '').strip():
+            return row
+        if 'floor' not in str(row.get('to_location') or '').lower():
+            return row
+
+        item = (row.get('item') or '').strip()
+        lot = (row.get('lot') or '').strip()
+        if not item or not lot:
+            return row
+        row_qty = row.get('quantity')
+        try:
+            float(row_qty)
+        except (TypeError, ValueError):
+            return row
+
+        siteref = str(row.get('siteRef') or '').strip()
+        if not siteref:
+            return row
+
+        if floor_cache is None:
+            floor_cache = {}
+        cache_key = (siteref, item, lot)
+        if cache_key in floor_cache:
+            info = floor_cache[cache_key]
+        else:
+            info = CSIClient(siteref).get_lot_floor_core_qty(item, lot)
+            floor_cache[cache_key] = info
+        if not info:
+            # CSI 查不到 / 超时 / 异常：不阻断，照常提交
+            return row
+
+        pending = _pending_issue_qty(repo, row.get('id'), item, lot)
+        new_qty, reason = align_floor_stock_quantity(
+            row_qty=row_qty,
+            floor_qty=info.get('qty'),
+            pending_qty=pending,
+            um=row.get('um') or row.get('unitcode1'),
+            floor_um=info.get('um'),
+            tolerance=_cfg_float('CSI_FLOOR_ALIGN_TOLERANCE', CSI_FLOOR_ALIGN_TOLERANCE),
+        )
+        if new_qty is None:
+            return row
+
+        row_id = row.get('id')
+        cur = repo._cursor()
+        try:
+            cur.execute(
+                "UPDATE kr_csi_interface SET quantity = %s, updatedate = NOW() WHERE id = %s",
+                (new_qty, row_id),
+            )
+            repo.conn.commit()
+        except Exception:
+            repo.conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+        # 后续 _build_payload 取 row['quantity']，必须同步改内存值
+        row['quantity'] = new_qty
+        stats['floor_aligned'] = stats.get('floor_aligned', 0) + 1
+        logger.info('CSI 同步：按 Floor-Core 余量对齐消耗量 id=%s lot=%s item=%s %s -> %s（%s）',
+                    row_id, lot, item, reason.get('row_qty'), new_qty, reason.get('reason'))
+        log_operation(
+            'sync_worker', 'sync_worker/floor_align',
+            siteref=siteref,
+            target_type='csi_interface', target_id=row_id,
+            target_key=str(row.get('documentnumber') or ''),
+            operator='SYSTEM', result='ok',
+            detail={
+                'api_name': api, 'traceid': row.get('traceid') or '',
+                'lot': lot, 'item': item,
+                'old_qty': reason.get('row_qty'), 'new_qty': new_qty,
+                'floor_qty': reason.get('floor_qty'), 'pending_qty': reason.get('pending_qty'),
+                'available': reason.get('available'), 'diff': reason.get('diff'),
+                'um': reason.get('um'), 'reason': reason.get('reason'),
+            },
+        )
+        return row
+    except Exception as e:                      # 对齐失败不得中断同步
+        logger.warning('CSI 同步：Floor-Core 余量对齐异常（已跳过）id=%s item=%s lot=%s: %s',
+                       row.get('id'), row.get('item'), row.get('lot'), e)
+        return row
+
+
+# ====================================================================== #
 #  失败处理 / 告警邮件
 # ====================================================================== #
 def _fail(repo, row, reason, stats):
@@ -735,7 +872,7 @@ def _send_failure_alert(row, retry, reason):
 # ====================================================================== #
 #  单行处理
 # ====================================================================== #
-def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
+def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None, floor_cache=None):
     row_id = row.get('id')
     api = _row_api(row)
 
@@ -817,6 +954,9 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None):
             _fail(repo, row, f'取消 Backflush 失败：{msg}', stats)
             return
 
+    # 3.5 CSI Floor-Core 余量对齐（差异 ≤ 阈值时把本笔消耗量改成实际余量，避免被 CSI 拒收）
+    row = _align_floor_stock(repo, row, api, stats, floor_cache)
+
     # 4. 提交并轮询
     result = _submit_and_poll(_build_payload(row), api_name=api, sleep_func=sleep_func)
     kind = result['kind']
@@ -876,11 +1016,14 @@ def run_once(repo=None, sleep_func=None):
     """
     sleep_func = sleep_func or time.sleep
     stats = {'scanned': 0, 'claimed': 0, 'success': 0, 'queued': 0,
-             'retried': 0, 'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0}
+             'retried': 0, 'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0,
+             'floor_aligned': 0}
     # 同一轮内同 (item, lot) 只查一次 CSI 库位
     loc_cache = {}
     # 同一轮内同 (job, suffix, item) 只处理一次 Backflush 检查/清除
     bf_cache = {}
+    # 同一轮内同 (site, item, lot) 只查一次 Floor-Core 余量（同一 lot 多笔消耗只查一次 CSI）
+    floor_cache = {}
 
     conn = None
     own = repo is None
@@ -893,7 +1036,8 @@ def run_once(repo=None, sleep_func=None):
         stats['scanned'] = len(rows)
         for row in rows:
             try:
-                _process_row(repo, row, stats, sleep_func, loc_cache=loc_cache, bf_cache=bf_cache)
+                _process_row(repo, row, stats, sleep_func, loc_cache=loc_cache,
+                             bf_cache=bf_cache, floor_cache=floor_cache)
             except Exception as e:
                 # 单行异常不得中断整轮
                 stats['errors'] += 1

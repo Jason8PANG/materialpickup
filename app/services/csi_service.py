@@ -567,6 +567,47 @@ class CSIClient:
             return info['loc']
         return self._lot_loc_from_balances(item, lot)
 
+    def get_lot_floor_core_qty(self, item: str, lot: str) -> dict | None:
+        """查某物料某批号在 Floor-Core（车间线边库位）的剩余库存。
+
+        返回 {'qty': float, 'um': str|None, 'whse': str|None}；查不到返回 None。
+        数据源：IDO 表 ue_NAI_SLLotLocs，
+        filter: Item = N'..' And Lot = N'..' And Loc = N'Floor-Core'
+        （Loc 大小写不敏感，实测可命中 CSI 侧的字面值 'FLoor-Core'）。
+        异常一律 catch 返回 None（不让 CSI 查询失败阻断同步）。
+        """
+        try:
+            item = (item or '').strip()
+            lot = (lot or '').strip()
+            if not item or not lot:
+                return None
+            filter_str = (
+                f"Item = N'{item}' And Lot = N'{lot}' And Loc = N'Floor-Core' "
+                f"And (MrbFlag IS NULL Or MrbFlag <> 1)"
+            )
+            props = ["Item", "Lot", "Loc", "QtyOnHand", "ItemUM", "Whse"]
+            records = self._get_ido("ue_NAI_SLLotLocs", properties=props, filter_str=filter_str)
+            for r in records:
+                # CSI 里 Floor-Core 的字面值大小写与 Config.CSI_TO_LOCATION 不一致
+                # （实测 'FLoor-Core'），故用子串判断归一化，不做精确字符串比较
+                loc = str(r.get("Loc") or "").strip()
+                if "floor" not in loc.lower():
+                    continue
+                qty_raw = r.get("QtyOnHand")
+                try:
+                    qty = float(qty_raw)
+                except (TypeError, ValueError):
+                    continue
+                return {
+                    "qty": qty,
+                    "um": str(r.get("ItemUM") or "").strip() or None,
+                    "whse": str(r.get("Whse") or "").strip() or None,
+                }
+            return None
+        except Exception as e:
+            logger.error(f"[CSI] get_lot_floor_core_qty error item={item} lot={lot}: {e}")
+            return None
+
     def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:
         """
         查询物料批号库存（ue_NAI_SLLotLocs），按 FIFO 排序

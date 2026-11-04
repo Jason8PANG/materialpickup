@@ -101,6 +101,12 @@ class Config:
     CSI_SYNC_HTTP_TIMEOUT = int(os.environ.get('CSI_SYNC_HTTP_TIMEOUT', '20'))    # 单次 HTTP 超时
     CSI_SYNC_MAX_TRANSIENT = int(os.environ.get('CSI_SYNC_MAX_TRANSIENT', '3'))   # 网络类错误同 traceId 最多重试次数
 
+    # CSI 同步前按 lot 对齐 Floor-Core 剩余库存：
+    # 消耗类发料提交前查 CSI 该 item+lot 在 Floor-Core 的实时余量，
+    # 与本笔消耗量差异 ≤ 阈值时把本笔数量改成实际剩余量；超过阈值照常提交（失败转人工）。
+    CSI_FLOOR_STOCK_ALIGN = os.environ.get('CSI_FLOOR_STOCK_ALIGN', 'true').lower() == 'true'
+    CSI_FLOOR_ALIGN_TOLERANCE = float(os.environ.get('CSI_FLOOR_ALIGN_TOLERANCE', '0.1'))  # 阈值（原始单位，通常 FT）
+
     # 站点配置
     SITE_CONFIG = {
         '310': '苏州工厂 (Suzhou Plant 1)',
