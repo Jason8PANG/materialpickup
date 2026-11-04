@@ -208,7 +208,7 @@ class TestUnitConversion:
 
     @pytest.mark.parametrize('unit,expected', [
         ('M', (0.2505, 'M')),      # 250.50 ÷ 1000
-        ('FT', (0.8219, 'FT')),    # 250.50 ÷ 304.8 = 0.82185... → round 4 = 0.8219
+        ('FT', (0.822, 'FT')),    # 250.50 ÷ 304.8 = 0.82185... → ceil 向上进位 3 位 = 0.822（CSI 数量只支持 3 位小数）
         ('CM', (25.05, 'CM')),     # 250.50 ÷ 10
         ('IN', (9.8622, 'IN')),    # 250.50 ÷ 25.4 = 9.86220... → round 4
     ])
@@ -218,7 +218,7 @@ class TestUnitConversion:
     def test_case_insensitive(self):
         # 系数查表大小写不敏感；返回的 converted_unit 保持原样
         assert _convert_length(250.50, 'm') == (0.2505, 'm')
-        assert _convert_length(250.50, 'ft') == (0.8219, 'ft')
+        assert _convert_length(250.50, 'ft') == (0.822, 'ft')
 
     def test_unknown_unit_null(self):
         assert _convert_length(250.50, 'EA') == (None, None)

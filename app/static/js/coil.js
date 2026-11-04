@@ -44,10 +44,13 @@ const OUTBOUND_EXTRA_FIELDS = [
 
 function convertPreview(length, unit) {
     // 前端实时预览：converted = out_length(mm) ÷ 系数；系数表外 / 空单位返回 '-'
+    // 舍入与服务端 app/services/unit_convert.py 保持一致：ceil 向上进位保留 3 位小数
+    // （CSI 侧数量只支持 3 位小数，超出即被拒收）；先 round 9 位避免二进制浮点误差
     if (!(length > 0)) return '';
     const factor = UNIT_CONVERT_FACTOR[(unit || '').toUpperCase()];
     if (!factor) return '-';
-    return (length / factor).toFixed(4);
+    const raw = Math.round((length / factor) * 1e9) / 1e9;
+    return (Math.ceil(raw * 1000) / 1000).toFixed(3);
 }
 
 function coilTotalMm(coil) {

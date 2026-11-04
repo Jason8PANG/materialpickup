@@ -19,6 +19,7 @@ from flask import Blueprint, request, jsonify, session, render_template
 from app.config import Config
 from app.models import get_db_connection, get_site_filter
 from app.services.csi_interface import enqueue_return_qty_move
+from app.services.unit_convert import convert_from_mm
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def _coil_remain_length(cur, coil_id: str):
     used = float(cur.fetchone()['used'] or 0)
     unit = (row.get('unit') or '').strip().upper()
     factor = Config.UNIT_CONVERT_FACTOR.get(unit) if unit else None
-    used_orig = used / factor if factor else used  # mm → 原始单位；单位未知按原值（兼容旧数据）
+    used_orig = convert_from_mm(used, unit) if factor else used  # mm → 原始单位；单位未知按原值（兼容旧数据）
     return round(float(row['coil_length']) - used_orig, 4)
 
 

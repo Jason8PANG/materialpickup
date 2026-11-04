@@ -30,6 +30,7 @@ from app.models import get_db_connection
 from app.routes.wire import (_calc_item_metrics, _execute_count_adjust,
                              _gen_gain_count_no)
 from app.services.operation_log import log_operation
+from app.services.unit_convert import convert_from_mm
 
 external_bp = Blueprint('external', __name__)
 
@@ -191,7 +192,7 @@ def ext_coil_lookup(coil_id):
             'request_id': coil.get('request_id'),
             'used_mm': used,
             'remain_mm': remain_mm,
-            'remain_orig': round(remain_mm / factor, 4) if remain_mm is not None and factor else None,
+            'remain_orig': convert_from_mm(remain_mm, coil.get('unit')) if remain_mm is not None else None,
         }
     })
 
@@ -277,7 +278,7 @@ def ext_create_consumption():
                 }), 400
 
         # 换算值一次算好：out_length 已含报废长度，报废型消耗同样有值
-        converted_length = factor and round(out_length / factor, 4) or None
+        converted_length = convert_from_mm(out_length, coil.get('unit')) if factor else None
         converted_unit = factor and coil.get('unit') or None
         operator = (b.get('operator') or '').strip() or 'unknown'
 
@@ -399,7 +400,7 @@ def ext_create_scrap():
                              f'累计 {used + scrap_len:g}mm 已超过剩余长度 {total_mm - used:g}mm',
                 }), 400
 
-        converted_length = factor and round(scrap_len / factor, 4) or None
+        converted_length = convert_from_mm(scrap_len, coil.get('unit')) if factor else None
         converted_unit = factor and coil.get('unit') or None
         operator = (b.get('operator') or '').strip() or 'unknown'
 
@@ -731,7 +732,7 @@ def ext_coils_list():
         if d.get('coil_length') is not None and factor:
             remain_mm = round(d['coil_length'] * factor - d.get('total_used_mm', 0), 4)
             d['remain_mm'] = remain_mm
-            d['remain_orig'] = round(remain_mm / factor, 4)
+            d['remain_orig'] = convert_from_mm(remain_mm, d.get('unit'))
         else:
             d['remain_mm'] = None
             d['remain_orig'] = None
@@ -1322,7 +1323,7 @@ def ext_count_gain():
             m = _calc_item_metrics(coil, used_mm)
             remain_mm = m['remain_mm']
             actual_mm = round(remain_mm + gain_mm, 4)
-            diff_converted = round(gain_mm / factor, 4)
+            diff_converted = convert_from_mm(gain_mm, coil.get('unit'))
 
             cur.execute(
                 "INSERT INTO kr_inventory_count_item "

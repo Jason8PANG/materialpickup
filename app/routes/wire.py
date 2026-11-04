@@ -23,6 +23,7 @@ from app.config import Config
 from app.models import get_db_connection, get_site_filter
 from app.services.csi_service import CSIClient
 from app.services.operation_log import log_from_request
+from app.services.unit_convert import convert_from_mm
 from app.utils import WhereBuilder, is_en
 
 wire_bp = Blueprint('wire', __name__)
@@ -200,7 +201,7 @@ def api_coils():
         if d.get('coil_length') is not None and factor:
             remain_mm = round(d['coil_length'] * factor - (d.get('used_mm') or 0), 4)
             d['remain_mm'] = remain_mm
-            d['remain_orig'] = round(remain_mm / factor, 4)
+            d['remain_orig'] = convert_from_mm(remain_mm, d.get('unit'))
         else:
             d['remain_mm'] = None
             d['remain_orig'] = None
@@ -1402,7 +1403,7 @@ def api_count_measure(count_id, item_id):
         factor = _factor(it.get('unit'))
         remain_mm = it.get('remain_mm')
         diff_mm = round(actual_mm - (float(remain_mm) if remain_mm is not None else 0), 4)
-        diff_converted = round(diff_mm / factor, 4) if factor else None
+        diff_converted = convert_from_mm(diff_mm, it.get('unit')) if factor else None
         cur.execute(
             "UPDATE kr_inventory_count_item SET actual_mm = %s, diff_mm = %s, diff_converted = %s, "
             "measured_by = %s, measured_at = %s WHERE id = %s",

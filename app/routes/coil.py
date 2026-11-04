@@ -31,6 +31,7 @@ from app.config import Config
 from app.models import get_db_connection, get_site_filter
 from app.services.csi_service import CSIClient
 from app.services import label_print_service
+from app.services.unit_convert import convert_from_mm
 
 coil_bp = Blueprint('coil', __name__)
 
@@ -62,12 +63,12 @@ CONSUMPTION_EXTRA_FIELDS = {
 def _convert_length(out_length: float, unit):
     """单位换算（服务端计算并覆盖，不信任前端传值，文档 R11 / 2.3.1）：
     converted_length = out_length(mm) ÷ 系数；系数按 CSI 单位查 Config.UNIT_CONVERT_FACTOR。
-    单位为空或未收录时返回 (None, None)。"""
+    舍入规则：ceil 向上进位保留 3 位小数（CSI 侧数量只支持 3 位，超出即被拒收），
+    见 app/services/unit_convert.py。单位为空或未收录时返回 (None, None)。"""
     unit = (unit or '').strip()
-    factor = Config.UNIT_CONVERT_FACTOR.get(unit.upper()) if unit else None
-    if not factor:
+    if not unit or unit.upper() not in Config.UNIT_CONVERT_FACTOR:
         return None, None
-    return round(out_length / factor, 4), unit
+    return convert_from_mm(out_length, unit), unit
 
 
 def _parse_extra_fields(it: dict, row_no: int):
@@ -899,7 +900,7 @@ def update_coil(coil_id):
                         cursor.close()
                         return jsonify({
                             'success': False,
-                            'message': f"卷标 {coil['coil_id']} 新长度 {length_new:g}{unit} 小于已消耗长度 {used / factor:g}{unit}，无法修改"
+                            'message': f"卷标 {coil['coil_id']} 新长度 {length_new:g}{unit} 小于已消耗长度 {convert_from_mm(used, unit):g}{unit}，无法修改"
                         }), 400
 
             # 库位：请求显式传值优先；未传时 Lot 变化 / 原库位为空且 Lot 非空 → 补查 CSI
@@ -1100,7 +1101,7 @@ def request_in_stock_coils(request_id):
                     remain = coil_length
                 else:
                     # 未退回的在库卷标：coil_length 为原始长度，used(mm) 须换算原始单位后相减
-                    used_orig = used / factor if factor else used
+                    used_orig = convert_from_mm(used, unit) if factor else used
                     remain = round(coil_length - used_orig, 4)
                 if remain <= 0:
                     continue
