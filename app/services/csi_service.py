@@ -459,6 +459,11 @@ class CSIClient:
         排除 Non-Nettable / MRB 库位（MrbFlag = 1，如 FG-RMA、MRB、FLOOR-X*、RM-X*）：
         这类库位的库存不能发料，不能作为卷标带出的库位。
         MrbFlag 可能为 NULL，故用 (MrbFlag IS NULL Or MrbFlag <> 1)。
+
+        同时排除车间线边（Floor-Core / FLoor-Xxxx 等）库位：这类库位的货已经
+        从仓库领到车间，不能作为「发料来源库位」带出（卷标录入库位不得为 floor）。
+        CSI 侧字面值是 'FLoor-Core'（大小写混排），故用 'floor' 子串判断，
+        不能做精确比较。全部有货库位都是 floor 时返回 None。
         """
         try:
             filter_str = (f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0 "
@@ -469,6 +474,8 @@ class CSIClient:
                 qty = float(r.get("QtyOnHand", 0) or 0)
                 loc = str(r.get("Loc", "") or "").strip()
                 if qty <= 0 or not loc:
+                    continue
+                if 'floor' in loc.lower():
                     continue
                 if best_qty is None or qty > best_qty:
                     best_qty, best_loc = qty, loc
@@ -512,10 +519,10 @@ class CSIClient:
         用于卷标录入时验证 Lot 与长度：长度（mm）不得超过 DerQtyOnHand（×换算系数 → mm）。
         注意：SLLots 与 ue_GDL_SLItems 一样，带 properties 参数查询返回 0 条，
         因此这里**不带 properties 全字段查询**，从返回记录中取 DerQtyOnHand/QtyOnHand 等字段。
-        loc 取值顺序（排除 Non-Nettable / MRB 库位）：
-          1) ue_NAI_SLLotLocs 有余额且 MrbFlag <> 1 的库位（取数量最大者）
-          2) SLLots.Loc —— 仅当该库位在 ue_NAI_SLLotLocs 中存在且 MrbFlag <> 1 时才采用
-          3) 空字符串（SLLots.Loc 为 MRB 库位或查不到该行时不采用）
+        loc 取值顺序（排除 Non-Nettable / MRB 库位、排除车间线边 Floor 库位）：
+          1) ue_NAI_SLLotLocs 有余额且 MrbFlag <> 1 且非 floor 的库位（取数量最大者）
+          2) SLLots.Loc —— 仅当该库位在 ue_NAI_SLLotLocs 中存在、MrbFlag <> 1 且非 floor 时才采用
+          3) 空字符串（SLLots.Loc 为 MRB / floor 库位或查不到该行时不采用）
         数量字段（der_qty_on_hand / qty_on_hand）与库位过滤无关，保持原逻辑。
         返回: {item, lot, der_qty_on_hand, qty_on_hand, lot_status, whse, loc,
                loc_source('lotlocs'|'slLots'|''), loc_excluded_mrb(bool)}
@@ -532,6 +539,9 @@ class CSIClient:
             loc_excluded_mrb = False
             if not loc:
                 sl_loc = str(r.get('Loc', '') or '').strip()
+                # SLLots.Loc 也可能是车间线边（floor），同样不能作为发料库位带出
+                if sl_loc and 'floor' in sl_loc.lower():
+                    sl_loc = ''
                 if sl_loc:
                     mrb = self._loc_mrb_flag(item, lot, sl_loc)
                     if mrb is False:

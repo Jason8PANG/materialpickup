@@ -140,8 +140,15 @@
 
             const locBox = document.getElementById('locationBox');
             const locs = d.available_locations || [];
+            const hints = d.location_hints || {};
             if (locs.length > 0) {
-                let opts = locs.map(function (l) { return '<option value="' + escapeHtml(l) + '">' + escapeHtml(l) + '</option>'; }).join('');
+                // 第一项默认选中：lot 历史退入库位已由后端排在最前，即「上次退此处」
+                let opts = locs.map(function (l) {
+                    const label = hints[l] === 'last_return'
+                        ? l + ' (' + __('return_review.loc_last_return') + ')'
+                        : l;
+                    return '<option value="' + escapeHtml(l) + '">' + escapeHtml(label) + '</option>';
+                }).join('');
                 locBox.innerHTML = '<select class="form-select" id="locationSelect">' + opts + '</select>';
             } else {
                 locBox.innerHTML = '<input class="form-control" value="Stock" readonly>';

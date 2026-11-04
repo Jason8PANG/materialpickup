@@ -506,6 +506,7 @@ def review_coil_query(coil_id):
     result = {
         'coil_id': coil_id,
         'part_number': '',
+        'lot': '',
         'unit': '',
         'status': None,
         'status_label': '',
@@ -514,12 +515,14 @@ def review_coil_query(coil_id):
         'return_id': None,
         'review_status': None,
         'available_locations': [],
+        'lot_history_locations': [],
+        'location_hints': {},
     }
 
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "SELECT coil_id, part_number, unit, status, coil_length, siteref "
+            "SELECT coil_id, part_number, lot_no, unit, status, coil_length, siteref "
             "FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
             (coil_id,)
         )
@@ -536,6 +539,7 @@ def review_coil_query(coil_id):
             return jsonify({'success': False, 'message': '无权查看其他站点的卷标'}), 403
 
         result['part_number'] = c['part_number'] or ''
+        result['lot'] = c['lot_no'] or ''
         result['unit'] = c['unit'] or ''
         result['status'] = c['status']
         result['status_label'] = COIL_STATUS_LABEL(c['status'])
@@ -569,22 +573,57 @@ def review_coil_query(coil_id):
                 result['review_status'] = RETURN_ITEM_REMOVED
                 result['return_id'] = done['request_id']
         coil_siteref = c['siteref']
+
+        # 该 Lot 的历史退入库位：同物料同批号、从车间线边（Floor*）移出到仓库库位的
+        # 已过账记录（status=SUCCESS），按最近使用时间倒序。
+        # 注意：不按 direction 过滤——实测库里既有 F 也有 B，方向字段不能区分
+        # 「备料出库」与「退料入库」，用 from_location 是否含 floor 判断才可靠。
+        # 查询失败不影响主流程（历史库位为空，其余照常）。
+        lot_history_locations = []
+        if result['part_number'] and result['lot']:
+            try:
+                cur.execute(
+                    "SELECT to_location, MAX(createdate) AS last_at "
+                    "FROM kr_csi_interface "
+                    "WHERE item = %s AND lot = %s AND api_name = 'sl-qty-move' "
+                    "  AND status = 'SUCCESS' "
+                    "  AND from_location IS NOT NULL AND LOWER(from_location) LIKE %s "
+                    "  AND to_location IS NOT NULL AND TRIM(to_location) <> '' "
+                    "  AND LOWER(to_location) NOT LIKE %s "
+                    "GROUP BY to_location "
+                    "ORDER BY last_at DESC",
+                    (result['part_number'], result['lot'], '%floor%', '%floor%')
+                )
+                for row in cur.fetchall():
+                    loc = str(row['to_location'] or '').strip()
+                    if loc and loc not in lot_history_locations:
+                        lot_history_locations.append(loc)
+            except Exception:
+                lot_history_locations = []
+
         cur.close()
 
-    # CSI 库位（仅匹配到时才有意义，失败/为空则前端默认 Stock）
+    # 库位下拉：lot 历史退入库位（「上次退此处」）在前，同物料现有非 floor 库位在后。
+    # 仅匹配到待退料单时才有意义；失败/为空则前端降级为 Stock（保持原逻辑）。
     if result['matched'] and result['part_number']:
+        available = list(lot_history_locations)
+        hints = {loc: 'last_return' for loc in lot_history_locations}
         try:
             from app.services.csi_service import CSIClient
             client = CSIClient(siteref=coil_siteref)
             rows = client.get_inventory(result['part_number'])
-            locs = []
             for r in rows:
                 loc = (r.get('Loc') or '').strip()
-                if loc and 'floor' not in loc.lower():
-                    locs.append(loc)
-            result['available_locations'] = list(dict.fromkeys(locs))
+                if not loc or 'floor' in loc.lower():
+                    continue
+                if loc not in available:
+                    available.append(loc)
+                hints.setdefault(loc, 'item_stock')
         except Exception:
-            result['available_locations'] = []
+            pass
+        result['lot_history_locations'] = lot_history_locations
+        result['available_locations'] = available
+        result['location_hints'] = hints
 
     result['success'] = True
     return jsonify(result)
