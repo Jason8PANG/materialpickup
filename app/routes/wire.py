@@ -21,6 +21,7 @@ from pymysql.err import IntegrityError
 
 from app.config import Config
 from app.models import get_db_connection, get_site_filter
+from app.services.coil_length import get_base_length, get_base_length_mm
 from app.services.csi_service import CSIClient
 from app.services.operation_log import log_from_request
 from app.services.unit_convert import convert_from_mm
@@ -194,12 +195,15 @@ def api_coils():
             d['status_label'] = '盘点中'
         if d.get('coil_length') is not None:
             d['coil_length'] = float(d['coil_length'])
+        if d.get('initial_length') is not None:
+            d['initial_length'] = float(d['initial_length'])
         if d.get('used_mm') is not None:
             d['used_mm'] = float(d['used_mm'])
-        # 剩余长度（mm）= 卷长×系数 - 使用；剩余长度（原始单位）= mm ÷ 系数
-        factor = _factor(d.get('unit'))
-        if d.get('coil_length') is not None and factor:
-            remain_mm = round(d['coil_length'] * factor - (d.get('used_mm') or 0), 4)
+        # 剩余长度（mm）= 初始长度×系数 - 使用；剩余长度（原始单位）= mm ÷ 系数
+        # 基准取 initial_length（初始长度）：coil_length 会被退料流程回写成剩余长度。
+        base_mm = get_base_length_mm(d)
+        if base_mm is not None:
+            remain_mm = round(base_mm - (d.get('used_mm') or 0), 4)
             d['remain_mm'] = remain_mm
             d['remain_orig'] = convert_from_mm(remain_mm, d.get('unit'))
         else:
@@ -1188,7 +1192,9 @@ def _gen_gain_count_no(cur):
 def _calc_item_metrics(coil, used_mm):
     """计算盘点明细指标（返回 dict）"""
     factor = _factor(coil.get('unit'))
-    original = float(coil.get('coil_length') or 0)
+    # 原始长度取初始长度(initial_length)：coil_length 会被退料流程回写成剩余长度，
+    # 用它算账面剩余会把剩余量重复扣减 → 盘点差异算错。
+    original = get_base_length(coil) or 0.0
     used = float(used_mm or 0)
     remain_mm = round(original * factor - used, 4) if factor else None
     return {

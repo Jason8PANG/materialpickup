@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS kr_wire_coil (
   coil_id         VARCHAR(16)   NOT NULL COMMENT '卷标ID：YYMMDD+3位流水号，共9位数字，如260814001，全局唯一',
   part_number     VARCHAR(128)  NOT NULL COMMENT '物料 Part Number',
   coil_length     DECIMAL(12,4) NOT NULL COMMENT '长度（数值，保留4位小数）',
+  initial_length  DECIMAL(12,4) DEFAULT NULL COMMENT '初始长度(原始单位，登记时写入，后续永不修改)',
   unit            VARCHAR(16)   DEFAULT NULL COMMENT '单位，自动取自CSI物料单位字段（只读回填，如M/FT/EA）',
   status          VARCHAR(20)   NOT NULL DEFAULT 'in_stock' COMMENT '状态：in_stock在库 / issued已出库 / scrapped报废',
   request_id      INT           NOT NULL COMMENT '来源申请单ID（逻辑关联 kr_material_request.id）',
@@ -307,6 +308,30 @@ def _ensure_wire_coil_initial_half(conn, cursor):
     print('[OK] kr_wire_coil 已补充 is_initial_half 列（期初半卷标记）')
 
 
+def _ensure_wire_coil_initial_length(conn, cursor):
+    """
+    kr_wire_coil 补齐 initial_length 列（幂等，可重复执行）：
+    初始长度（原始单位，登记时写入，后续永不修改）。
+    coil_length 一个字段历史上被两种语义共用：登记时写入初始长度，退料流程会把
+    coil_length 回写成当前剩余长度。新增 initial_length 后，消耗超限校验与剩余
+    长度计算一律以 initial_length 为基准，coil_length 只作历史数据回退。
+    """
+    cursor.execute(
+        "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'kr_wire_coil' "
+        "AND COLUMN_NAME = 'initial_length'"
+    )
+    if cursor.fetchone()['n']:
+        return
+
+    cursor.execute(
+        "ALTER TABLE kr_wire_coil ADD COLUMN initial_length DECIMAL(12,4) DEFAULT NULL "
+        "COMMENT '初始长度(原始单位，登记时写入，后续永不修改)' AFTER coil_length"
+    )
+    conn.commit()
+    print('[OK] kr_wire_coil 已补充 initial_length 列（初始长度基准）')
+
+
 def _ensure_request_item_unit(conn, cursor):
     """
     kr_request_item 补齐 unit 列（幂等，可重复执行）。
@@ -528,6 +553,9 @@ def migrate():
 
         # 旧表升级：kr_wire_coil 补齐 is_initial_half 列（期初半卷标记，「始」角标）
         _ensure_wire_coil_initial_half(conn, cursor)
+
+        # 旧表升级：kr_wire_coil 补齐 initial_length 列（初始长度基准，校验/剩余计算用）
+        _ensure_wire_coil_initial_length(conn, cursor)
 
         # 旧表升级：kr_request_item 补齐 unit 列（申请单发起时从 CSI 获取单位，后续读库）
         _ensure_request_item_unit(conn, cursor)

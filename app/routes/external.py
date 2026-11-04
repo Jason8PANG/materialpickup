@@ -29,6 +29,7 @@ from app.config import Config
 from app.models import get_db_connection
 from app.routes.wire import (_calc_item_metrics, _execute_count_adjust,
                              _gen_gain_count_no)
+from app.services.coil_length import get_base_length_mm
 from app.services.operation_log import log_operation
 from app.services.unit_convert import convert_from_mm
 
@@ -174,8 +175,9 @@ def ext_coil_lookup(coil_id):
             (coil_id,)
         )
         counting = cur.fetchone()['n'] > 0
-    factor = _factor(coil.get('unit'))
-    total_mm = float(coil['coil_length'] or 0) * factor if factor and coil.get('coil_length') is not None else None
+    # 剩余长度基准 = 初始长度(initial_length) × 系数：
+    # coil_length 会被退料流程回写成剩余长度，直接用它会把剩余量重复扣减。
+    total_mm = get_base_length_mm(coil)
     remain_mm = round(total_mm - used, 4) if total_mm is not None else None
     return jsonify({
         'success': True,
@@ -185,6 +187,7 @@ def ext_coil_lookup(coil_id):
             'lot_no': coil.get('lot_no') or '',
             'unit': coil.get('unit') or '',
             'coil_length': float(coil['coil_length']) if coil.get('coil_length') is not None else None,
+            'initial_length': float(coil['initial_length']) if coil.get('initial_length') is not None else None,
             'status': coil.get('status'),
             'status_label': '盘点中' if counting else COIL_STATUS_LABELS.get(coil.get('status'), coil.get('status') or ''),
             'counting': counting,
@@ -267,8 +270,10 @@ def ext_create_consumption():
         )
         used = float(cur.fetchone()['used'] or 0)
         factor = _factor(coil.get('unit'))
-        if factor:
-            total_mm = float(coil['coil_length'] or 0) * factor
+        # 超限校验基准 = 初始长度(initial_length) × 系数：
+        # coil_length 会被退料流程回写成剩余长度，用它会把上限压低 → 合法消耗被误判超限。
+        total_mm = get_base_length_mm(coil)
+        if total_mm is not None:
             if out_length + used > total_mm + 0.0001:
                 cur.close()
                 return jsonify({
@@ -333,7 +338,7 @@ def ext_create_consumption():
         'converted_length': converted_length,
         'converted_unit': converted_unit,
         'csi_job_issue_id': csi_job_issue_id,
-        'remaining_mm': factor and round(max(total_mm - used - out_length, 0), 4) or None,
+        'remaining_mm': round(max(total_mm - used - out_length, 0), 4) if total_mm is not None else None,
     })
 
 
@@ -390,8 +395,9 @@ def ext_create_scrap():
             (coil_id,)
         )
         used = float(cur.fetchone()['used'] or 0)
-        if factor:
-            total_mm = float(coil['coil_length'] or 0) * factor
+        # 超限校验基准 = 初始长度(initial_length) × 系数（同消耗登记）
+        total_mm = get_base_length_mm(coil)
+        if total_mm is not None:
             if scrap_len + used > total_mm + 0.0001:
                 cur.close()
                 return jsonify({
@@ -708,7 +714,7 @@ def ext_coils_list():
         )
         total = cur.fetchone()['c']
         cur.execute(
-            f"SELECT c.coil_id, c.part_number, c.status, c.coil_length, c.unit, c.siteref, "
+            f"SELECT c.coil_id, c.part_number, c.status, c.coil_length, c.initial_length, c.unit, c.siteref, "
             f"COALESCE(SUM(CASE WHEN x.consume_type = 'consumption' THEN x.out_length ELSE 0 END), 0) AS used_mm, "
             f"COALESCE(SUM(CASE WHEN x.consume_type = 'scrap' THEN x.out_length ELSE 0 END), 0) AS scrapped_mm, "
             f"COALESCE(SUM(x.out_length), 0) AS total_used_mm, "
@@ -716,7 +722,7 @@ def ext_coils_list():
             f"MAX(c.updated_at) AS updated_at "
             f"FROM kr_wire_coil c "
             f"LEFT JOIN kr_wire_coil_consumption x ON x.coil_id = c.coil_id "
-            f"{where} GROUP BY c.coil_id, c.part_number, c.status, c.coil_length, c.unit, c.siteref "
+            f"{where} GROUP BY c.coil_id, c.part_number, c.status, c.coil_length, c.initial_length, c.unit, c.siteref "
             f"ORDER BY c.created_at DESC LIMIT %s OFFSET %s",
             wb_params + [page_size, (page - 1) * page_size]
         )
@@ -724,13 +730,15 @@ def ext_coils_list():
     data = []
     for r in rows:
         d = dict(r)
-        for f in ('coil_length', 'used_mm', 'scrapped_mm', 'total_used_mm'):
+        for f in ('coil_length', 'initial_length', 'used_mm', 'scrapped_mm', 'total_used_mm'):
             if d.get(f) is not None:
                 d[f] = float(d[f])
         d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status') or '')
-        factor = _factor(d.get('unit'))
-        if d.get('coil_length') is not None and factor:
-            remain_mm = round(d['coil_length'] * factor - d.get('total_used_mm', 0), 4)
+        # 剩余长度基准 = 初始长度(initial_length) × 系数：
+        # coil_length 会被退料流程回写成剩余长度，直接用它会把剩余量重复扣减。
+        base_mm = get_base_length_mm(d)
+        if base_mm is not None:
+            remain_mm = round(base_mm - d.get('total_used_mm', 0), 4)
             d['remain_mm'] = remain_mm
             d['remain_orig'] = convert_from_mm(remain_mm, d.get('unit'))
         else:

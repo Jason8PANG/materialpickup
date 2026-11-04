@@ -31,6 +31,7 @@ from app.config import Config
 from app.models import get_db_connection, get_site_filter
 from app.services.csi_service import CSIClient
 from app.services import label_print_service
+from app.services.coil_length import get_base_length
 from app.services.unit_convert import convert_from_mm
 
 coil_bp = Blueprint('coil', __name__)
@@ -144,6 +145,8 @@ def _coil_to_dict(row):
     d.setdefault('loc', None)  # Lot 所在库位（迁移前/旧数据为 NULL）
     d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status'))
     d['coil_length'] = float(d['coil_length']) if d.get('coil_length') is not None else None
+    # initial_length 初始长度（登记时写入，后续不变）；DECIMAL → float 供 JSON 序列化
+    d['initial_length'] = float(d['initial_length']) if d.get('initial_length') is not None else None
     d['created_at'] = str(d['created_at']) if d.get('created_at') else None
     return d
 
@@ -616,11 +619,13 @@ def _insert_coil_with_retry(cursor, it, request_id, siteref, operator, now, max_
         try:
             cursor.execute(
                 """INSERT INTO kr_wire_coil
-                   (coil_id, part_number, lot_no, coil_length, unit, status, request_id, siteref, operator, item_id, is_initial_half, loc, remark, created_at)
-                   VALUES (%s, %s, %s, %s, %s, 'in_stock', %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (coil_id, part_number, lot_no, coil_length, unit, status, request_id, siteref, operator, item_id, is_initial_half, loc, remark, created_at, initial_length)
+                   VALUES (%s, %s, %s, %s, %s, 'in_stock', %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (it['coil_id'], it['part_number'], it.get('lot_no'), it['length'], it['unit'],
                  request_id, siteref, operator, it.get('item_id'), 1 if it.get('is_initial_half') else 0,
-                 it.get('loc'), it.get('remark'), now)
+                 it.get('loc'), it.get('remark'), now,
+                 # 登记时长度即初始长度：同时写入 initial_length（原始单位），后续永不修改
+                 it['length'])
             )
             return True, cursor.lastrowid, None
         except IntegrityError as e:
@@ -919,6 +924,8 @@ def update_coil(coil_id):
                         loc_update = True
 
             # 仅更新传入字段
+            # 注意：initial_length（初始长度）登记后永不修改——本接口改的是
+            # coil_length（当前长度/剩余长度口径），不回写 initial_length。
             updates, params = [], []
             if has_lot:
                 updates.append("lot_no = %s")
@@ -1072,9 +1079,9 @@ def request_in_stock_coils(request_id):
         result = {}
         if parts:
             ph = ','.join(['%s'] * len(parts))
-            # 在库卷标（含剩余长度 = coil_length - 已消耗；is_return 标记退料回来的卷标，优先推荐）
+            # 在库卷标（含剩余长度 = 初始长度 - 已消耗；is_return 标记退料回来的卷标，优先推荐）
             cursor.execute(
-                f"SELECT c.coil_id, c.part_number, c.unit, c.coil_length, "
+                f"SELECT c.coil_id, c.part_number, c.unit, c.coil_length, c.initial_length, "
                 f"COALESCE((SELECT SUM(out_length) FROM kr_wire_coil_consumption k "
                 f"WHERE k.coil_id = c.coil_id AND k.consume_type IN ('consumption','count_adjust')), 0) AS used, "
                 f"EXISTS (SELECT 1 FROM kr_return_item ri WHERE ri.coil_id = c.coil_id) AS is_return "
@@ -1100,9 +1107,15 @@ def request_in_stock_coils(request_id):
                     # 单位不一致+重复扣减 → remain 恒为负 → 卷标被 continue 过滤掉）。
                     remain = coil_length
                 else:
-                    # 未退回的在库卷标：coil_length 为原始长度，used(mm) 须换算原始单位后相减
-                    used_orig = convert_from_mm(used, unit) if factor else used
-                    remain = round(coil_length - used_orig, 4)
+                    # 未退回的在库卷标：初始长度(initial_length，优先) 为原始长度，
+                    # used(mm) 须换算原始单位后相减
+                    base = r['initial_length'] if r.get('initial_length') is not None else r['coil_length']
+                    base = float(base or 0)
+                    if factor:
+                        remain = convert_from_mm(round(base * factor - used, 4), unit)
+                    else:
+                        # 单位未收录换算系数：沿用旧口径（无法换算，按原值处理）
+                        remain = round(base - used, 4)
                 if remain <= 0:
                     continue
                 result.setdefault(r['part_number'], []).append({
@@ -1714,10 +1727,12 @@ def create_consumption(request_id):
                     warnings.append(f'卷标 {coil_id} 单位 {unit or "未知"} 未收录换算系数，转换结果已置空')
 
                 # R8：单次 + 累计 ≤ 卷长（统一换算 mm 比较，文档 7.1 R8）
-                #   卷长(mm) = coil_length × 换算系数；out_length / SUM(out_length) 原始单位为 mm
+                #   卷长(mm) = 初始长度 × 换算系数；out_length / SUM(out_length) 原始单位为 mm
+                #   基准取 initial_length（初始长度）：coil_length 会被退料流程回写成剩余长度，
+                #   直接用它会把上限压到「已用完的剩余量」上，导致合法出库被误判超发。
                 #   注意：此处 consume_type='issue' 是「出库累计防超发」专用口径（同卷多次出库累计 ≤ 卷长），
                 #   与剩余扣减口径（consumption+count_adjust）不同，请勿改动下方 SQL。
-                total_length = float(coil['coil_length'])
+                total_length = get_base_length(coil)
                 factor = Config.UNIT_CONVERT_FACTOR.get(unit.upper()) if unit else None
                 cursor.execute(
                     """SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption
@@ -1725,7 +1740,7 @@ def create_consumption(request_id):
                     (coil_id,)
                 )
                 used = float(cursor.fetchone()['used'])
-                if factor:
+                if factor and total_length is not None:
                     total_mm = total_length * factor
                     if out_length > total_mm - used + 0.0001:
                         db.rollback()

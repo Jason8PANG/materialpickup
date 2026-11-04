@@ -36,13 +36,16 @@ RETURN_STATUS_LABELS = {
 
 def _coil_remain_length(cur, coil_id: str):
     """计算卷标剩余长度（与 coil_length 同单位，即系统单位如 M/FT）：
-    coil_length - 已消耗(out_length 汇总，mm) ÷ 换算系数 → 原始单位。
+    初始长度(initial_length，优先；历史行为 coil_length) × 换算系数 - 已消耗(mm) → 原始单位。
     消耗表 out_length 固定为 mm（剪线/盘点/出库/报废登记），卷长存原始单位，
     相减前必须换算，否则单位不一致导致剩余为负、误判不可退料。
     剩余扣减口径统一为 consumption+count_adjust（剪线消耗+盘点库存调整）；
-    issue（出库登记）、scrap（报废）不计入剩余扣减。"""
+    issue（出库登记）、scrap（报废）不计入剩余扣减。
+
+    基准取 initial_length：coil_length 在退料确认时会被回写为剩余长度，
+    再用它减一次已消耗会把剩余量重复扣减。"""
     cur.execute(
-        "SELECT coil_length, unit FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
+        "SELECT coil_length, initial_length, unit FROM kr_wire_coil WHERE coil_id = %s AND is_deleted = 0",
         (coil_id,)
     )
     row = cur.fetchone()
@@ -56,8 +59,10 @@ def _coil_remain_length(cur, coil_id: str):
     used = float(cur.fetchone()['used'] or 0)
     unit = (row.get('unit') or '').strip().upper()
     factor = Config.UNIT_CONVERT_FACTOR.get(unit) if unit else None
+    base = row['initial_length'] if row.get('initial_length') is not None else row['coil_length']
+    base = float(base)
     used_orig = convert_from_mm(used, unit) if factor else used  # mm → 原始单位；单位未知按原值（兼容旧数据）
-    return round(float(row['coil_length']) - used_orig, 4)
+    return round(base - used_orig, 4)
 
 
 # ================= 1. 创建退料申请单（生产发起） =================
