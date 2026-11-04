@@ -27,6 +27,9 @@ let coilState = {
     defaultPart: ''     // 按行维护：该行默认物料
 };
 
+/* 录入行唯一标识自增序号：行被删除/重排后按 _uid 定位，避免用错行下标 */
+let coilRowSeq = 0;
+
 let outboundState = {
     requestId: null,
     coils: []           // in_stock 卷标
@@ -200,7 +203,7 @@ function addCoilRow(part_number) {
     }
     const firstPart = part_number || (coilState.requestItems[0] || '');
     const idx = coilState.rows.length;
-    coilState.rows.push({part_number: firstPart, lot_no: coilState.defaultLot || '', coil_id: '', length: '', is_initial_half: false});
+    coilState.rows.push({part_number: firstPart, lot_no: coilState.defaultLot || '', coil_id: '', length: '', is_initial_half: false, _uid: ++coilRowSeq});
     renderCoilRows();
     updatePreview();
     // 自动生成卷标ID（全局唯一）
@@ -208,14 +211,22 @@ function addCoilRow(part_number) {
 }
 
 function removeCoilRow(idx) {
+    // 删除录入区的一行（未保存的临时行）
     coilState.rows.splice(idx, 1);
     renderCoilRows();
     updatePreview();
 }
 
 function genCoilIdForRow(idx) {
+    // 按行唯一标识（_uid）定位目标行：删除/重排后行序号会变，
+    // 用 idx 直接回写会写到别的行上，故先捕获 _uid，回调时再按 _uid 找行。
+    const row = coilState.rows[idx];
+    if (!row) return;
+    const uid = row._uid;
     apiGet('/api/coils/next-id', function (resp) {
-        coilState.rows[idx].coil_id = resp.data.coil_id;
+        const target = coilState.rows.find(function (r) { return r._uid === uid; });
+        if (!target || target.coil_id) return;   // 行已被删除或已取号
+        target.coil_id = resp.data.coil_id;
         renderCoilRows();
         updatePreview();
     }, function (err) {
@@ -260,7 +271,7 @@ function renderCoilRows() {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (coilState.rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无录入行，点击「添加一行」开始录入</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无录入行，点击「添加一行」开始录入</td></tr>';
         return;
     }
     coilState.rows.forEach(function (row, idx) {
@@ -302,6 +313,9 @@ function renderCoilRows() {
             </td>
             <td class="text-center" style="width:90px">
                 <button type="button" class="btn btn-sm btn-success" onclick="saveCoilRow(${idx})" title="保存该卷标"><i class="fas fa-save"></i></button>
+            </td>
+            <td class="text-center" style="width:66px">
+                <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeCoilRow(${idx})" title="${escapeHtml(__('coils.remove_row'))}"><i class="fas fa-trash"></i></button>
             </td>
         `;
         tbody.appendChild(tr);
@@ -450,7 +464,7 @@ function saveCoilRow(idx, retryCount) {
     apiPost('/api/requests/' + coilState.requestId + '/coils', {
         items: [item]
     }, function (resp) {
-        showToast('success', '卷标已保存');
+        showToast('success', resp.message || __('coils.saved'));
         // 保存成功后：清空录入行并重置一行（自动生成新卷号，便于连续录入下一卷），刷新已录入列表
         coilState.rows = [];
         renderCoilRows();
@@ -469,6 +483,52 @@ function saveCoilRow(idx, retryCount) {
         }
         showToast('error', msg || '保存失败');
     });
+}
+
+/* ---- 移出本单（不是删除）：卷标回到在库，可重新录入 ---- */
+
+function releaseCoil(id, coilId) {
+    // 移出本单：解绑归属关系，卷标仍在库（status 不变）
+    //   - 本次新登记（新剪）卷标：回填到「录入新卷标」区，可改长度后重新录入；
+    //   - 从在库选用的历史卷标：只还原到原归属单，不回填（回填会与原归属冲突）。
+    if (!id || !coilId || !coilState.requestId) return;
+    if (!confirm(__('coils.release_confirm'))) return;
+    apiPost('/api/requests/' + coilState.requestId + '/coils/release/' + encodeURIComponent(coilId), {},
+        function (resp) {
+            const restored = !!(resp.data && resp.data.restored);
+            if (restored) {
+                // 历史卷标：只还原到原单，不回填到录入区
+                showToast('info', __('coils.release_restored'));
+            } else {
+                // 新剪卷标：回填到「录入新卷标」区，卷号保留原值（卷标仍在库，不是新卷）
+                const src = coilState.existingCoils.find(function (c) { return c.id === id; }) || {};
+                const refilled = {
+                    part_number: src.part_number || coilState.defaultPart || '',
+                    lot_no: src.lot_no || '',
+                    coil_id: coilId,
+                    length: src.coil_length != null ? src.coil_length : '',
+                    is_initial_half: !!src.is_initial_half,
+                    _uid: ++coilRowSeq
+                };
+                // 录入区默认有一行「自动生成卷号但未填长度」的空行：回填时替换它，
+                // 避免出现两行导致用户误保存新卷号；用户已填过长度的行则追加。
+                const blankIdx = coilState.rows.findIndex(function (r) {
+                    return !(parseFloat(r.length) > 0);
+                });
+                if (blankIdx >= 0) {
+                    coilState.rows.splice(blankIdx, 1, refilled);
+                } else {
+                    coilState.rows.push(refilled);
+                }
+                renderCoilRows();
+                updatePreview();
+                showToast('info', __('coils.release_back').replace('{coil}', coilId));
+            }
+            refreshCoilLists();
+        },
+        function (err) {
+            showToast('error', err.message || __('coils.release_fail'));
+        });
 }
 
 function deleteCoil(id, coilId) {
@@ -530,7 +590,7 @@ function renderExistingCoils() {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (!coilState.existingCoils || coilState.existingCoils.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="15" class="text-center text-muted py-3">' + __('coils.empty') + '</td></tr>';
         return;
     }
     // 从后往前删除：仅最后一条（id 最大，列表末尾）允许删除
@@ -546,27 +606,47 @@ function renderExistingCoils() {
             : '<button class="btn btn-sm btn-outline-secondary" disabled title="请先从最后一条开始删除"><i class="fas fa-trash"></i></button>';
         // 从在库选用的卷标：独立列显示「取消选用」按钮（还原回可选清单）
         // 注意：prev_request_id 可能为 0（可选池），须用 null 判断，不能当 falsy
-        const unuseBtn = (c.prev_request_id !== null && c.prev_request_id !== undefined)
+        const isFromStock = (c.prev_request_id !== null && c.prev_request_id !== undefined);
+        const unuseBtn = isFromStock
             ? '<button class="btn btn-sm btn-outline-warning" onclick="unuseStockCoil(\'' + escapeHtml(c.coil_id) + '\')" title="取消选用，卷标回到在库可选清单"><i class="fas fa-undo-alt"></i></button>'
             : '';
         // 可编辑：申请单备料中 + 该卷在库（在库外的卷不允许事后改数据，保持只读文本展示）
         const editable = editableAllowed && c.status === 'in_stock';
+        // 历史卷标（从在库选用的，prev_request_id 非空）：长度只读，不允许事后改数据；
+        // 但 Lot / 库位仍可改（服务端 PUT 只拦长度，与前端保持一致）。
+        const lenEditable = editable && !isFromStock;
         let lotCell, lenCell, saveBtnCell;
         if (editable) {
             lotCell = '<td onclick="event.stopPropagation()"><input type="text" id="edit_lot_' + c.id +
                 '" class="form-control form-control-sm" value="' + escapeHtml(c.lot_no || '') +
                 '" placeholder="Lot" maxlength="64" style="min-width:110px"></td>';
-            lenCell = '<td onclick="event.stopPropagation()"><input type="number" id="edit_len_' + c.id +
-                '" class="form-control form-control-sm" value="' + c.coil_length +
-                '" min="0.01" step="0.0001" style="min-width:90px"></td>';
             saveBtnCell = '<td class="text-center" onclick="event.stopPropagation()">' +
                 '<button class="btn btn-sm btn-primary" onclick="saveCoilEdit(' + c.id + ', \'' + escapeHtml(c.coil_id) +
                 '\')" title="保存Lot/长度修改"><i class="fas fa-save"></i></button></td>';
         } else {
             lotCell = '<td>' + escapeHtml(c.lot_no || '-') + '</td>';
-            lenCell = '<td>' + c.coil_length + '</td>';
             saveBtnCell = '<td class="text-center" onclick="event.stopPropagation()"></td>';
         }
+        if (lenEditable) {
+            lenCell = '<td onclick="event.stopPropagation()"><input type="number" id="edit_len_' + c.id +
+                '" class="form-control form-control-sm" value="' + c.coil_length +
+                '" min="0.01" step="0.0001" style="min-width:90px"></td>';
+        } else {
+            // 历史卷标：长度列渲染为纯文本 + 「历史」徽章（无 edit_len_ 输入框）
+            const historyBadge = isFromStock
+                ? ' <span class="badge bg-secondary" title="' + escapeHtml(__('coils.history_title')) + '">' +
+                  escapeHtml(__('coils.history_badge')) + '</span>'
+                : '';
+            const lenTitle = isFromStock ? ' title="' + escapeHtml(__('coils.history_title')) + '"' : '';
+            lenCell = '<td' + lenTitle + '>' + c.coil_length + historyBadge + '</td>';
+        }
+        // 「移出」按钮：仅在库且该单未打印过标签的卷标可移出（服务端会再校验消耗/退料）
+        const canRelease = (c.can_release !== undefined) ? !!c.can_release : (c.status === 'in_stock');
+        const releaseBtn = canRelease
+            ? '<button class="btn btn-sm btn-outline-primary" onclick="releaseCoil(' + c.id + ', \'' +
+              escapeHtml(c.coil_id) + '\')" title="' + escapeHtml(__('coils.release_title')) + '"><i class="fas fa-sign-out-alt"></i></button>'
+            : '<button class="btn btn-sm btn-outline-secondary" disabled title="' +
+              escapeHtml(__('coils.release_disabled_title')) + '"><i class="fas fa-sign-out-alt"></i></button>';
         const tr = document.createElement('tr');
         // 鼠标所在行背景浅色高亮（table-hover 由父表格启用，这里补充行内样式保证生效）
         tr.style.cursor = 'pointer';
@@ -593,6 +673,7 @@ function renderExistingCoils() {
                 <button class="btn btn-sm btn-outline-info" onclick="previewExistingCoil('${escapeHtml(c.coil_id)}')"><i class="fas fa-eye"></i></button>
             </td>
             <td class="text-center" onclick="event.stopPropagation()">${unuseBtn}</td>
+            <td class="text-center" onclick="event.stopPropagation()">${releaseBtn}</td>
             <td class="text-center" onclick="event.stopPropagation()">${delBtn}</td>
         `;
         tbody.appendChild(tr);

@@ -534,6 +534,21 @@ def create_coils(request_id):
                 row_lot = next((r.get('lot_no') or '' for r in item_rows if r['id'] == target), '')
                 p['lot_no'] = row_lot or None
 
+        # 4.0 重新绑定判定：请求中的 coil_id 若已存在于库（is_deleted=0），
+        #     走 UPDATE 绑定（回填后重新录入），不 INSERT（否则撞 uk_coil_id）。
+        #     先一次性批量查出本批涉及的已存在卷标，避免逐行查询。
+        existing_coils = {}
+        if parsed:
+            _ph = ','.join(['%s'] * len(parsed))
+            cursor.execute(
+                f"SELECT id, coil_id, part_number, unit, status, request_id, item_id, "
+                f"prev_request_id, prev_item_id, siteref, coil_length, initial_length, lot_no "
+                f"FROM kr_wire_coil WHERE coil_id IN ({_ph}) AND is_deleted = 0",
+                tuple(p['coil_id'] for p in parsed)
+            )
+            for r in cursor.fetchall():
+                existing_coils[r['coil_id']] = r
+
         # 4. 逐行写入（单位由 CSI 重新获取覆盖，防止篡改；唯一冲突重取号重试）
         siteref = req['siteref']
         operator = user['username']
@@ -571,6 +586,34 @@ def create_coils(request_id):
                         loc_cache[loc_key] = _get_lot_loc_cached(siteref, *loc_key)
                     loc = loc_cache[loc_key]
                 it['loc'] = loc
+
+                # 重新绑定分支：卷号已存在于库且**已从本单移出到可选池**（request_id=0），
+                #   即前端「移出后回填到录入区」的卷标 → UPDATE 绑定，不 INSERT（否则撞 uk_coil_id）。
+                #   仍归属本单或其他单的卷标不走本分支：继续走 INSERT，由 _insert_coil_with_retry
+                #   撞唯一键后重取号重试（保持原有重复录入语义，不覆盖既有卷标数据）。
+                exist = existing_coils.get(it['coil_id'])
+                if exist is not None and exist['request_id'] == 0:
+                    ok, new_id, err_msg = _rebind_existing_coil(
+                        cursor, it, exist, request_id, siteref, operator, now
+                    )
+                    if not ok:
+                        db.rollback()
+                        cursor.close()
+                        return jsonify({'success': False, 'message': err_msg}), 400
+                    inserted.append({
+                        'id': new_id,
+                        'coil_id': it['coil_id'],
+                        'part_number': it['part_number'],
+                        'length': it['length'],
+                        'unit': it['unit'],
+                        'lot_no': it.get('lot_no'),
+                        'loc': it.get('loc'),
+                        'status': 'in_stock',
+                        'item_id': it.get('item_id'),
+                        'is_initial_half': 1 if it.get('is_initial_half') else 0,
+                        'rebound': True,
+                    })
+                    continue
 
                 ok, new_id, err_msg = _insert_coil_with_retry(
                     cursor, it, request_id, siteref, operator, now
@@ -644,6 +687,98 @@ def _insert_coil_with_retry(cursor, it, request_id, siteref, operator, now, max_
     return False, None, '未知错误'
 
 
+def _rebind_existing_coil(cursor, it, exist, request_id, siteref, operator, now):
+    """把已存在于库的卷标重新绑定到本申请单（不 INSERT，避免撞 uk_coil_id）。
+
+    触发场景：卷标被「移出本单」后回填到「录入新卷标」区再保存 —— 若走 INSERT
+    会撞 uk_coil_id 唯一键，故改为 UPDATE 归属关系。
+
+    允许条件（全部满足才放行）：
+      1. 卷标未软删（调用方查询已保证 is_deleted=0）；
+      2. status='in_stock'（在库；已出库/在车间/报废不允许改绑）；
+      3. 原归属 request_id=0（可选池）—— 即已从本单移出、等待重新录入的卷标；
+         仍归属本单/其他单的卷标不走本分支（仍走 INSERT 的重取号重试，避免覆盖既有数据）；
+      4. prev_request_id 为空 —— 从在库选用的历史卷标不走重新登记
+         （其长度只读，见 PUT /api/coils/<id> 的历史卷标拦截）；
+      5. 物料与本行一致（改绑不改物料，避免长度口径错乱）；
+      6. 站点与本单一致（siteref 不跨站）。
+
+    长度口径：
+      - 无消耗记录：视为一次新的登记，coil_length 与 initial_length 同步更新；
+      - 有消耗记录：initial_length 保持不变（登记后永不修改），
+        新长度须满足 新长度×换算系数 ≥ 已消耗(mm)，否则拒绝。
+
+    返回 (ok, row_id, err_msg)。
+    """
+    coil_id = it['coil_id']
+    # 2. 状态必须为在库
+    if exist['status'] != 'in_stock':
+        return False, None, (f"卷标 {coil_id} 当前状态为 "
+                             f"{COIL_STATUS_LABELS.get(exist['status'], exist['status'])}，不能重新登记")
+    # 3. 原归属：仅可选池（request_id=0，即已移出本单、等待重新录入）
+    if exist['request_id'] != 0:
+        return False, None, f"卷标 {coil_id} 仍归属其他申请单，不能重新登记"
+    # 4. 历史卷标（从在库选用的）不允许重新登记（否则会洗掉历史来源标记）
+    if exist.get('prev_request_id') is not None:
+        return False, None, f"卷标 {coil_id} 是从在库选用的历史卷标，不允许重新登记（请使用「取消选用」）"
+    # 5. 物料一致
+    if exist['part_number'] != it['part_number']:
+        return False, None, (f"卷标 {coil_id} 的物料为 {exist['part_number']}，"
+                             f"与本次录入物料 {it['part_number']} 不一致")
+    # 6. 站点一致
+    if exist['siteref'] != siteref:
+        return False, None, f"卷标 {coil_id} 与本申请单站点不一致，不能重新登记"
+
+    new_len = float(it['length'])
+    # 已消耗长度（mm）：有消耗时 initial_length 不可改，且新长度不得小于已消耗
+    cursor.execute(
+        "SELECT COALESCE(SUM(out_length), 0) AS used FROM kr_wire_coil_consumption WHERE coil_id = %s",
+        (coil_id,)
+    )
+    used = float(cursor.fetchone()['used'])
+    if used > 0:
+        unit = (it.get('unit') or exist.get('unit') or '').strip().upper()
+        factor = Config.UNIT_CONVERT_FACTOR.get(unit) if unit else None
+        if not factor:
+            return False, None, f"卷标 {coil_id} 单位 {unit or '未知'} 未收录换算系数，无法校验已消耗长度，请联系管理员"
+        if new_len * factor + 1e-6 < used:
+            return False, None, (f"卷标 {coil_id} 新长度 {new_len:g}{unit} 小于已消耗长度 "
+                                 f"{convert_from_mm(used, unit):g}{unit}，无法重新登记")
+        # 有消耗：初始长度是消耗校验基准，保持不变（legacy NULL 保持 NULL，走 coil_length 回退口径）
+        initial_len = exist.get('initial_length')
+    else:
+        initial_len = new_len                       # 无消耗：等同一次新登记，初始长度同步
+
+    # Lot / 库位：传入优先；未传且 Lot 未变 → 保留原值（避免 CSI 查询失败时把库位清空）
+    new_lot = it.get('lot_no') or exist.get('lot_no')
+    lot_changed = (new_lot or '') != (exist.get('lot_no') or '')
+    new_loc = it.get('loc')
+    if not new_loc:
+        new_loc = None if lot_changed else exist.get('loc')
+
+    cursor.execute(
+        "UPDATE kr_wire_coil SET request_id = %s, item_id = %s, "
+        "prev_request_id = NULL, prev_item_id = NULL, "
+        "part_number = %s, lot_no = %s, coil_length = %s, initial_length = %s, "
+        "unit = %s, loc = %s, is_initial_half = %s, status = 'in_stock', "
+        "operator = %s, updated_at = NOW() "
+        "WHERE id = %s AND is_deleted = 0 AND status = 'in_stock'",
+        (request_id, it.get('item_id') or 0, it['part_number'], new_lot,
+         new_len, initial_len, it.get('unit') or exist.get('unit'), new_loc,
+         1 if it.get('is_initial_half') else 0, operator, exist['id'])
+    )
+    # 注意：MySQL 的 rowcount 是「实际变更行数」，值完全相同时为 0，
+    # 故不用 rowcount 判定成败，改为回查归属确认绑定生效。
+    cursor.execute(
+        "SELECT request_id, status FROM kr_wire_coil WHERE id = %s AND is_deleted = 0",
+        (exist['id'],)
+    )
+    after = cursor.fetchone()
+    if not after or after['request_id'] != request_id or after['status'] != 'in_stock':
+        return False, None, f"卷标 {coil_id} 状态已变化，请刷新后重试"
+    return True, exist['id'], None
+
+
 # ================= 3. 申请单卷标列表 =================
 
 @coil_bp.route('/api/requests/<int:request_id>/coils', methods=['GET'])
@@ -682,9 +817,24 @@ def list_request_coils(request_id):
                 (request_id,)
             )
         rows = cursor.fetchall()
+        # 该单是否已打印标签：已打印的卷标不允许移出（标签可能已贴出）
+        cursor.execute(
+            "SELECT action FROM kr_operation_log WHERE request_id = %s",
+            (request_id,)
+        )
+        printed = any(
+            r.get('action') == 'COIL_PRINT' and r.get('request_id') == request_id
+            for r in cursor.fetchall()
+        )
+        data = []
+        for r in rows:
+            d = _coil_to_dict(r)
+            # can_release：是否允许「移出本单」（在库 + 该单未打印过标签）
+            d['can_release'] = (d.get('status') == 'in_stock') and not printed
+            data.append(d)
         cursor.close()
 
-    return jsonify({'success': True, 'data': [_coil_to_dict(r) for r in rows]})
+    return jsonify({'success': True, 'data': data})
 
 
 # ================= 3.1 删除卷标（按行维护） =================
@@ -817,7 +967,8 @@ def update_coil(coil_id):
       1. 卷标存在且未删除；
       2. 来源申请单为 minpack 且处于备料中（prepping）——已出库/已完成不允许事后改数据；
       3. 卷状态为「在库」(in_stock)——已出库/在车间/报废统一拒绝；
-      4. 改长度时：若该卷已有任何消耗记录（SUM(out_length)>0，单位 mm），
+      4. 从在库选用的历史卷标（prev_request_id 非空）不允许修改长度（Lot/库位仍可改）；
+      5. 改长度时：若该卷已有任何消耗记录（SUM(out_length)>0，单位 mm），
          须满足 新长度(原始单位) × 换算系数 ≥ 已消耗(mm)；换算系数缺失则拒绝并提示联系管理员；
          无消耗时任意 >0 长度放行。
     参数：lot_no（空串=清空）/ coil_length（>0）/ loc（空串=清空）可只传其一。
@@ -884,6 +1035,18 @@ def update_coil(coil_id):
                     'success': False,
                     'message': f"卷标 {coil['coil_id']} 已离开仓库（状态：{COIL_STATUS_LABELS.get(coil['status'], coil['status'])}），不可修改"
                 }), 400
+
+            # 历史卷标（从在库选用的老卷标，prev_request_id 非空）不允许修改长度：
+            # 这类卷标的真实长度已发过货/已过账，改长度会造成账实不符。
+            # 注意：prev_request_id 可能为 0（可选池），判断必须用 is not None，不能当 falsy。
+            if has_len and coil.get('prev_request_id') is not None:
+                old_len = float(coil.get('coil_length') or 0)
+                if abs(float(length_new) - old_len) > 1e-9:
+                    cursor.close()
+                    return jsonify({
+                        'success': False,
+                        'message': f"卷标 {coil['coil_id']} 是从在库选用的历史卷标，不允许修改长度"
+                    }), 400
 
             # 改长度：已有消耗时须满足 新长度×系数 ≥ 已消耗（out_length 单位 mm）
             if has_len:
@@ -1276,6 +1439,141 @@ def unuse_stock_coil(request_id):
         cursor.close()
 
     return jsonify({'success': True, 'message': f'已取消选用卷标 {coil_id}，回到可选清单'})
+
+
+@coil_bp.route('/api/requests/<int:request_id>/coils/release/<coil_id>', methods=['POST'])
+def release_coil(request_id, coil_id):
+    """把卷标移出本单（不是删除）：卷标仍在库，可重新录入本单或在其他单选用。
+
+    与 delete_coil（软删作废）的区别：
+      - delete_coil：录错作废，is_deleted=1，卷标彻底退出在库清单；
+      - release_coil：移出本单，卷标仍为在库（status=in_stock），
+        只是解除与本单的归属关系，随后可重新录入或被其他单选用。
+
+    分支处理（按 prev_request_id 判别来源）：
+      1. prev_request_id 非空（从在库选用的历史卷标）→ 还原到原归属申请单
+         （等价 unuse_stock_coil 的还原逻辑：request_id←prev_request_id、
+           item_id←prev_item_id（NULL 置 0）、prev_* 置 NULL）；
+      2. prev_request_id 为空（本次新登记/新剪）→ 解绑到可选池
+         （request_id=0、item_id=0、prev_*=NULL；status/长度/Lot/库位全部不动），
+         解绑后出现在「在库可选卷标」区，可在其他单选用。
+
+    禁止移出的情形（明确报错，不静默跳过）：
+      1. 该卷标已有物料消耗记录（kr_wire_coil_consumption）；
+      2. 该卷标参与过退料交易（kr_return_item）；
+      3. 该申请单已打印过标签（kr_operation_log.action='COIL_PRINT'）。
+    """
+    user, err_resp, err_code = _check_warehouse_or_admin()
+    if err_resp:
+        return err_resp, err_code
+
+    coil_id = str(coil_id or '').strip()
+    if not coil_id:
+        return jsonify({'success': False, 'message': '缺少卷标ID'}), 400
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        req = _get_request(cursor, request_id)
+        if not req:
+            cursor.close()
+            return jsonify({'success': False, 'message': '单据不存在'}), 404
+        err = _check_site(req, user)
+        if err:
+            cursor.close()
+            return err
+        if req['status'] not in ('pending_prep', 'prepping', 'short', 'ready_pickup'):
+            cursor.close()
+            return jsonify({'success': False, 'message': '当前状态不允许移出卷标'}), 400
+
+        cursor.execute(
+            "SELECT id, coil_id, part_number, status, request_id, item_id, "
+            "prev_request_id, prev_item_id, is_deleted FROM kr_wire_coil "
+            "WHERE coil_id = %s AND is_deleted = 0",
+            (coil_id,)
+        )
+        coil = cursor.fetchone()
+        if not coil:
+            cursor.close()
+            return jsonify({'success': False, 'message': '卷标不存在'}), 404
+        if coil['request_id'] != request_id:
+            cursor.close()
+            return jsonify({'success': False, 'message': '该卷标不属于本申请单'}), 400
+        if coil['status'] != 'in_stock':
+            cursor.close()
+            return jsonify({'success': False, 'message': '该卷标状态已变化（非在库），不能移出'}), 400
+
+        # 已有消耗记录（出库/报废/盘点调整）→ 禁止移出
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM kr_wire_coil_consumption WHERE coil_id = %s",
+            (coil_id,)
+        )
+        if cursor.fetchone()['cnt'] > 0:
+            cursor.close()
+            return jsonify({
+                'success': False,
+                'message': f'卷标 {coil_id} 已有消耗记录，不能移出'
+            }), 400
+
+        # 参与过退料交易 → 禁止移出
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM kr_return_item WHERE coil_id = %s",
+            (coil_id,)
+        )
+        if cursor.fetchone()['cnt'] > 0:
+            cursor.close()
+            return jsonify({
+                'success': False,
+                'message': f'卷标 {coil_id} 已参与退料交易，不能移出'
+            }), 400
+
+        # 该申请单打印过标签 → 禁止移出（标签可能已贴出）
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM kr_operation_log WHERE request_id = %s AND action = 'COIL_PRINT'",
+            (request_id,)
+        )
+        if cursor.fetchone()['cnt'] > 0:
+            cursor.close()
+            return jsonify({
+                'success': False,
+                'message': f'该单已打印标签，不能移出卷标 {coil_id}'
+            }), 400
+
+        # prev_request_id 可能为 0（可选池），必须用 is not None 判断，不能当 falsy
+        prev_request_id = coil.get('prev_request_id')
+        if prev_request_id is not None:
+            # 从在库选用的历史卷标 → 还原到原归属申请单
+            cursor.execute(
+                "UPDATE kr_wire_coil SET request_id = %s, item_id = %s, "
+                "prev_request_id = NULL, prev_item_id = NULL "
+                "WHERE id = %s AND status = 'in_stock' AND is_deleted = 0",
+                (prev_request_id,
+                 coil['prev_item_id'] if coil['prev_item_id'] is not None else 0,
+                 coil['id'])
+            )
+            origin_desc = f'原归属 request_id={prev_request_id}'
+        else:
+            # 本次新登记（新剪）→ 解绑到可选池（长度/Lot/库位/status 一律不动）
+            cursor.execute(
+                "UPDATE kr_wire_coil SET request_id = 0, item_id = 0, "
+                "prev_request_id = NULL, prev_item_id = NULL "
+                "WHERE id = %s AND status = 'in_stock' AND is_deleted = 0",
+                (coil['id'],)
+            )
+            origin_desc = '原归属 request_id=0（可选池）'
+        if cursor.rowcount == 0:
+            cursor.close()
+            return jsonify({'success': False, 'message': '移出失败，请刷新后重试'}), 400
+
+        _add_log(cursor, request_id, user['username'], 'COIL_RELEASE',
+                 f"移出本单：{coil_id}（{origin_desc}）", request.remote_addr)
+        db.commit()
+        cursor.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'卷标 {coil_id} 已移出本单（可重新录入或在其他单选用）',
+        'data': {'coil_id': coil_id, 'restored': prev_request_id is not None}
+    })
 
 
 @coil_bp.route('/api/requests/<int:request_id>/coil-units', methods=['GET'])
