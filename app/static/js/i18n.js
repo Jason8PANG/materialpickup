@@ -234,6 +234,7 @@ const I18N = {
         'history.completed': '已完成',
         'history.rejected': '已驳回',
         'history.search_job': '搜索工单号',
+        'history.col_request_no': '申请单号',
 
         // === 公共看板 ===
         'public.title': '物料领取看板（公共展示）',
@@ -856,6 +857,7 @@ const I18N = {
         'history.completed': 'Completed',
         'history.rejected': 'Rejected',
         'history.search_job': 'Search Job',
+        'history.col_request_no': 'Request No.',
 
         // === Public Kanban ===
         'public.title': 'Material Pickup Kanban (Public)',
