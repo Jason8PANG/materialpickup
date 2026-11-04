@@ -489,14 +489,20 @@ def export_coils():
             counting_ids = {r['coil_id'] for r in cur.fetchall()}
     buf = _io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(['卷标ID', '物料', 'Lot', '卷长', '单位', '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间', '最后更新时间'])
+    writer.writerow(['卷标ID', '物料', 'Lot', '期初长度', '单位', '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间', '最后更新时间'])
     for r in rows:
         status_label = COIL_STATUS_LABELS.get(r.get('status'), r.get('status') or '')
         if r.get('coil_id') in counting_ids:
             status_label = '盘点中'
+        # 期初长度优先取 initial_length（登记初始值，不随消耗变化），历史行回退 coil_length
+        init_len = r.get('initial_length')
+        if init_len is None:
+            init_len = r.get('coil_length')
+        if init_len is None:
+            init_len = ''
         writer.writerow([
             r.get('coil_id', ''), r.get('part_number', ''), r.get('lot_no', ''),
-            r.get('coil_length', ''), r.get('unit', ''),
+            init_len, r.get('unit', ''),
             status_label,
             r.get('siteref', ''), r.get('request_id', ''),
             r.get('used_mm', ''), str(r.get('created_at') or ''), str(r.get('updated_at') or ''),
