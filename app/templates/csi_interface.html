@@ -235,6 +235,30 @@ function csiVal(v) {
     return csiEsc(v);
 }
 
+// 申请单号单元格：
+//   - 无申请单号（NULL/0）→ '-'
+//   - 有权查看 → 链接，新窗口打开原申请单详情页（保留本页筛选上下文）
+//   - 无权查看（申请单不存在/无详情页权限/站点不匹配）→ 纯文本 + title 说明原因
+function csiRequestCell(r) {
+    var rid = r.request_id;
+    if (rid === null || rid === undefined || rid === '' || Number(rid) <= 0) return '-';
+    var num = csiEsc(rid);
+    if (!r.request_openable) {
+        var reason = r.request_open_reason;
+        var tip;
+        if (reason === 'missing') {
+            tip = __('csi.request_missing');
+        } else if (reason === 'no_permission') {
+            tip = __('csi.request_no_permission');
+        } else {
+            tip = __('csi.request_cross_site').replace('{site}', csiEsc(r.request_siteref || ''));
+        }
+        return '<span class="text-muted" title="' + csiEsc(tip) + '">' + num + '</span>';
+    }
+    var url = '/request/' + encodeURIComponent(rid);
+    return '<a href="' + url + '" target="_blank" rel="noopener" title="' + url + '">' + num + '</a>';
+}
+
 // 方向：F=正向 B=反向
 function csiDirection(dir) {
     if (dir === 'B') return csiEsc(__('csi.direction_b'));
@@ -448,7 +472,7 @@ function loadCsi() {    var tb = document.getElementById('csiBody');
                     ? '-' : csiSyncBadge(r.is_sync, r.is_sync_label);
                 return '<tr>' +
                     '<td class="text-muted">' + csiEsc(r.id) + '</td>' +
-                    '<td>' + csiVal(r.request_id) + '</td>' +
+                    '<td>' + csiRequestCell(r) + '</td>' +
                     '<td>' + csiVal(r.api_name) + '</td>' +
                     '<td>' + csiVal(r.item) + '</td>' +
                     '<td>' + csiVal(r.lot) + '</td>' +

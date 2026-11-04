@@ -19,6 +19,7 @@ from openpyxl.utils import get_column_letter
 from app import csi_sync_worker as sync_worker
 from app.models import get_db, get_db_connection, get_site_filter
 from app.services.operation_log import log_from_request, log_operation
+from app.services.permission_service import can_access_page
 from app.utils import WhereBuilder
 
 csi_interface_bp = Blueprint('csi_interface', __name__)
@@ -164,7 +165,55 @@ SELECT_COLUMNS = (
     'ci.last_poll_at'
 )
 
+# 列表专用附加列：LEFT JOIN 申请单主表，带出申请单真实站点与软删状态。
+# 详情页 /request/<id> 的可见性取决于这两项（站点隔离 403、软删 404），
+# 接口查询页需要据此判断「申请单号」能否点击跳转。
+# 仅列表接口使用；导出仍走 SELECT_COLUMNS，导出列结构与表头不变。
+LIST_EXTRA_COLUMNS = (
+    ', r.id AS req_found_id, r.siteref AS req_siteref, r.is_deleted AS req_deleted'
+)
+
 DIRECTION_LABELS = {'F': '正向', 'B': '反向'}
+
+
+def _annotate_request_links(rows, user):
+    """标注每行的申请单能否点击跳转原申请单详情。
+
+    判定口径与申请单详情接口保持一致（见 app/routes/request_bp.py）：
+      - 申请单存在且未软删（否则详情接口 404「单据不存在」）；
+      - 角色具备 request_detail 页面权限（否则页面级 403）；
+      - 申请单站点 == 当前会话站点（否则详情接口 403「无权查看此站点单据」）。
+    结果写入 request_exists / request_openable / request_open_reason / request_siteref。
+    """
+    site_filter, site_params = get_site_filter(user)
+    page_ok = can_access_page(user, 'request_detail')
+    for d in rows:
+        rid = d.get('request_id')
+        if rid is None or rid == '' or int(rid) <= 0:
+            d['request_exists'] = False
+            d['request_openable'] = False
+            d['request_open_reason'] = 'no_request'
+            d['request_siteref'] = ''
+            continue
+        exists = d.get('req_found_id') is not None and not d.get('req_deleted')
+        d['request_exists'] = bool(exists)
+        d['request_siteref'] = str(d.get('req_siteref') or '')
+        if not exists:
+            d['request_openable'] = False
+            d['request_open_reason'] = 'missing'
+        elif not page_ok:
+            d['request_openable'] = False
+            d['request_open_reason'] = 'no_permission'
+        elif site_filter and d['request_siteref'] != str(site_params[0]):
+            d['request_openable'] = False
+            d['request_open_reason'] = 'cross_site'
+        else:
+            d['request_openable'] = True
+            d['request_open_reason'] = ''
+        # 中间列不外泄
+        d.pop('req_found_id', None)
+        d.pop('req_siteref', None)
+        d.pop('req_deleted', None)
 
 
 def _to_dict(row):
@@ -202,7 +251,8 @@ def api_list():
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            f"SELECT {SELECT_COLUMNS} FROM kr_csi_interface ci "
+            f"SELECT {SELECT_COLUMNS}{LIST_EXTRA_COLUMNS} FROM kr_csi_interface ci "
+            f"LEFT JOIN kr_material_request r ON r.id = ci.request_id "
             f"WHERE {where} ORDER BY ci.createdate DESC, ci.id DESC "
             f"LIMIT %s OFFSET %s",
             params + [size, offset]
@@ -223,6 +273,8 @@ def api_list():
         'success': int(agg['success'] or 0),
         'failed': int(agg['failed'] or 0),
     }
+    # 申请单号能否点击跳转：按详情接口同一口径判定
+    _annotate_request_links(rows, user)
     return jsonify({'success': True, 'data': rows, 'total': summary['total'],
                     'page': page, 'size': size, 'summary': summary})
 
