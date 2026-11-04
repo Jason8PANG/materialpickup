@@ -1,4 +1,5 @@
 from flask import Flask
+import os
 import sys
 from app.config import Config
 
@@ -6,16 +7,77 @@ from app.config import Config
 _CSI_SYNC_THREAD_STARTED = False
 _CSI_ALERT_THREAD_STARTED = False
 
+# 跨进程锁的文件对象引用：必须常驻，否则被 GC 回收 → fd 关闭 → 锁立即释放
+_singleton_locks = {}
+
+
+def _acquire_singleton_lock(name: str):
+    """跨进程单实例锁：gunicorn 多 worker 时只允许一个进程启动后台常驻线程。
+
+    gunicorn -w 4 会让每个 worker 都执行 create_app()，而模块级布尔标志只在
+    进程内有效，无法跨进程去重 → 曾出现 4 个 CSI 同步器 / 4 个告警调度器并发
+    抢同一批接口记录、抢写同一张告警幂等表。
+
+    Windows（本地开发）没有 fcntl：直接放行（本地单进程，不存在该问题）。
+    返回持锁的文件对象（需保持引用，否则文件对象被 GC 会释放锁）；未抢到返回 None。
+    """
+    if os.name == 'nt':
+        return True          # 本地开发 / Windows：无 fcntl，单进程直接放行
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    fh = None
+    try:
+        path = f'/tmp/materialpickup_{name}.lock'
+        fh = open(path, 'w')
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        return fh            # 必须保存引用，释放即解锁
+    except (IOError, OSError):
+        if fh is not None:   # 抢锁失败：关掉本进程的 fd，避免句柄泄漏
+            try:
+                fh.close()
+            except OSError:
+                pass
+        return None
+
+
+def _hold_singleton_lock(name: str, lock):
+    """把子线程函数的抢锁结果存进模块级字典，让文件对象活到进程结束。"""
+    if lock is not None and lock is not True:
+        _singleton_locks[name] = lock
+
+
+def _ensure_basic_logging():
+    """未配置日志时兜底（否则 INFO 会被 lastResort 丢弃，看不到「是否启动/跳过」这条关键日志）。"""
+    import logging
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO,
+                            format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
+    return logging
+
 
 def _start_csi_sync_thread():
     """CSI 库位转移同步器：CSI_SYNC_ENABLED=true 时以守护线程常驻。
 
-    注意：gunicorn -w 4 时每个 worker 都会起一条线程，重复提交由
-    kr_csi_interface 的条件 UPDATE 抢占（status→SUBMITTING）保证不会发生。
+    进程内标志防 Flask debug reload 重复起线程；跨进程文件锁保证 gunicorn -w 4
+    时只有一个 worker 真正启动同步器（其余 worker 打日志跳过）。
+    重复提交仍由 kr_csi_interface 的条件 UPDATE 抢占（status→SUBMITTING）兜底。
     """
     global _CSI_SYNC_THREAD_STARTED
     if _CSI_SYNC_THREAD_STARTED or not Config.CSI_SYNC_ENABLED:
+        if not _CSI_SYNC_THREAD_STARTED:
+            _ensure_basic_logging().getLogger(__name__).info(
+                'CSI 同步器未启动（CSI_SYNC_ENABLED=false）')
         return
+    lock = _acquire_singleton_lock('csi_sync')
+    if lock is None:
+        _ensure_basic_logging().getLogger(__name__).info(
+            '已有其他进程持有同步器锁，本 worker 跳过（pid=%s）', os.getpid())
+        return
+    _hold_singleton_lock('csi_sync', lock)
     _CSI_SYNC_THREAD_STARTED = True
     try:
         import threading
@@ -28,18 +90,16 @@ def _start_csi_sync_thread():
 def _start_csi_alert_thread():
     """CSI 失败记录定时邮件调度器：CSI_ALERT_ENABLED=true 时以守护线程常驻。
 
-    注意：gunicorn -w 4 时 create_app() 会执行 4 次，本线程也就有 4 份；
-    重复发信由 kr_csi_alert_log 的唯一键 (send_date, slot, siteref, api_name)
-    在 INSERT IGNORE 时抢占（rowcount=1 的那份才发），不依赖内存标志。
+    注意：gunicorn -w 4 时 create_app() 会执行 4 次，跨进程文件锁只让一个
+    worker 启动本调度器（其余打日志跳过）；重复发信仍由 kr_csi_alert_log 的
+    唯一键 (send_date, slot, siteref, api_name) 在 INSERT IGNORE 时抢占
+    （rowcount=1 的那份才发），不依赖内存标志。
     这里的内存标志只防同一进程内 Flask reload 重复起线程。
     测试进程（pytest）不起线程：避免后台线程用被 mock 的 pymysql 干扰用例。
     """
     global _CSI_ALERT_THREAD_STARTED
-    import logging
     # 未配置日志时兜底（否则 INFO 会被 lastResort 丢弃，看不到「是否启动」这条关键日志）
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO,
-                            format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
+    logging = _ensure_basic_logging()
     if _CSI_ALERT_THREAD_STARTED or not Config.CSI_ALERT_ENABLED:
         if not _CSI_ALERT_THREAD_STARTED:
             logging.getLogger(__name__).info(
@@ -47,6 +107,12 @@ def _start_csi_alert_thread():
         return
     if 'pytest' in sys.modules:
         return
+    lock = _acquire_singleton_lock('csi_alert')
+    if lock is None:
+        logging.getLogger(__name__).info(
+            '已有其他进程持有告警调度器锁，本 worker 跳过（pid=%s）', os.getpid())
+        return
+    _hold_singleton_lock('csi_alert', lock)
     _CSI_ALERT_THREAD_STARTED = True
     try:
         import threading
