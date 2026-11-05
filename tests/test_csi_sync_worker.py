@@ -642,6 +642,7 @@ class TestRowLocationAuthoritative:
                               from_location=None, to_location='RM-B009-2-001')])
         with patch('app.csi_sync_worker._http_post') as post, \
              patch('app.csi_sync_worker._live_location') as live, \
+             patch('app.csi_sync_worker.send_email') as mail, \
              patch('app.csi_sync_worker.CSIClient') as client_cls:
             # 实时库位可查（RM-B009-9-999）也不得采用
             client_cls.return_value.get_lot_location.return_value = 'RM-B009-9-999'
@@ -650,6 +651,9 @@ class TestRowLocationAuthoritative:
         live.assert_not_called()
         client_cls.return_value.get_lot_location.assert_not_called()
         post.assert_not_called()
+        # 失败必须发告警（此处 mock 掉，绝不能触网）
+        assert mail.call_count == 1
+        assert '单号2967' in mail.call_args[0][1]
         row = repo.row(14)
         assert row['from_location'] is None
         assert row['errormessage'] == '缺少源库位（from_location 为空）'
