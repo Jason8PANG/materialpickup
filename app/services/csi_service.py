@@ -618,6 +618,51 @@ class CSIClient:
             logger.error(f"[CSI] get_lot_floor_core_qty error item={item} lot={lot}: {e}")
             return None
 
+    def get_lot_loc_qty(self, item: str, lot: str, loc: str | None = None) -> dict | None:
+        """查某物料某批号在指定库位（loc 为空则汇总全部库位）的非 MRB 存货。
+
+        数据源 ue_NAI_SLLotLocs（批次级余额表）。注意 SLLots.QtyOnHand 在该 IDO 里
+        根本不返回（实测 get_lot_info 的 qty_on_hand 恒为 0），DerQtyOnHand 又是含
+        MRB/非合格库位的合计，都不能用来判断「本笔提交会不会超货位/批次存货」。
+
+        过滤：
+          - MrbFlag <> 1（Non-Nettable / MRB 库位的货不能发料）
+          - 指定 loc 时只取该库位（大小写不敏感等值，CSI 侧字面值有 'FLoor-Core'）
+        返回 {'qty': float, 'um': str|None, 'whse': str|None, 'loc': str|None}；
+        没有匹配行返回 None；异常一律 catch 返回 None（不阻断同步）。
+        """
+        try:
+            item = (item or '').strip()
+            lot = (lot or '').strip()
+            if not item or not lot:
+                return None
+            want_loc = (loc or '').strip().lower()
+            filter_str = (f"Item = N'{item}' And Lot = N'{lot}' "
+                          f"And (MrbFlag IS NULL Or MrbFlag <> 1)")
+            props = ["Item", "Lot", "Loc", "QtyOnHand", "ItemUM", "Whse", "MrbFlag"]
+            records = self._get_ido("ue_NAI_SLLotLocs", properties=props, filter_str=filter_str)
+            total = 0.0
+            um, whse, hit_loc = None, None, None
+            matched = False
+            for r in records:
+                r_loc = str(r.get("Loc") or "").strip()
+                if want_loc and r_loc.lower() != want_loc:
+                    continue
+                try:
+                    total += float(r.get("QtyOnHand") or 0)
+                except (TypeError, ValueError):
+                    continue
+                matched = True
+                um = um or (str(r.get("ItemUM") or "").strip() or None)
+                whse = whse or (str(r.get("Whse") or "").strip() or None)
+                hit_loc = hit_loc or (r_loc or None)
+            if not matched:
+                return None
+            return {'qty': total, 'um': um, 'whse': whse, 'loc': hit_loc}
+        except Exception as e:
+            logger.error(f"[CSI] get_lot_loc_qty error item={item} lot={lot} loc={loc}: {e}")
+            return None
+
     def get_item_lots(self, item: str, exclude_floor: bool = True) -> list[dict]:
         """
         查询物料批号库存（ue_NAI_SLLotLocs），按 FIFO 排序

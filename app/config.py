@@ -118,6 +118,13 @@ class Config:
     CSI_FLOOR_STOCK_ALIGN = os.environ.get('CSI_FLOOR_STOCK_ALIGN', 'true').lower() == 'true'
     CSI_FLOOR_ALIGN_TOLERANCE = float(os.environ.get('CSI_FLOOR_ALIGN_TOLERANCE', '0.1'))  # 阈值（原始单位，通常 FT）
 
+    # CSI 同步前按批次/货位存货对齐（差异 < 0.01 视为换算取整误差）：
+    # 覆盖 sl-job-issue 与 sl-qty-move，本笔数量与存货差异小于阈值时（略大略小都算）
+    # 直接改成批次存货量，避免 CSI 报「发料/转移数量 X 大于批次/货位存货 Y」拒收。
+    # 差异更大照常提交（失败转人工）。
+    CSI_BATCH_STOCK_ALIGN = os.environ.get('CSI_BATCH_STOCK_ALIGN', 'true').lower() == 'true'
+    CSI_BATCH_ALIGN_TOLERANCE = float(os.environ.get('CSI_BATCH_ALIGN_TOLERANCE', '0.01') or 0.01)
+
     # 站点配置
     SITE_CONFIG = {
         '310': '苏州工厂 (Suzhou Plant 1)',

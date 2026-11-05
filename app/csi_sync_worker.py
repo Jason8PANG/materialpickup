@@ -47,7 +47,9 @@ import requests
 from app.config import Config
 from app.models import get_db
 from app.services.csi_floor_align import (
+    CSI_BATCH_ALIGN_TOLERANCE,
     CSI_FLOOR_ALIGN_TOLERANCE,
+    align_batch_stock_quantity,
     align_floor_stock_quantity,
 )
 from app.services.csi_service import BF_MSG_CLEARED, CSIClient
@@ -733,6 +735,131 @@ def _align_floor_stock(repo, row, api, stats, floor_cache=None):
 
 
 # ====================================================================== #
+#  提交前按批次/货位存货对齐（差异 < 0.01 视为换算取整误差，双向改成存货量）
+# ====================================================================== #
+# 各接口「CSI 会校验的那个库位」：数量不能超过该库位的存货
+#   sl-job-issue  车间发料 → 校验目标库位（Floor-Core）存货
+#   sl-qty-move   库位转移 → 校验源库位存货
+_BATCH_ALIGN_LOC_FIELD = {
+    API_JOB_ISSUE: 'to_location',
+    API_QTY_MOVE: 'from_location',
+}
+
+
+def _align_batch_stock(repo, row, api, stats, batch_cache=None):
+    """提交前按 CSI 批次/货位存货对齐本笔数量（差异 < 0.01 视为取整误差，双向对齐）。
+
+    背景：FT 消耗量换算是 ceil 向上进位到 3 位（unit_convert.CEIL_UNITS），
+    13.2419 FT 会被进位成 13.242，比批次实际存货多 0.0001 → CSI 报
+    「发料数量 13.242 大于批次 ... 存货 13.2419」拒收 → 失败转人工 + 告警邮件。
+
+    **双向对齐**：只要 |本笔数量 − 批次存货| < 阈值（默认 0.01），无论本笔略大还是略小，
+    都直接取批次存货量作为消耗数量（向下截断到 3 位小数，保证结果 ≤ 存货）。
+    略小（13.2417 vs 13.2419）同属换算取整误差，业务上应扣满批次余量；
+    差异 ≥ 阈值才视为真实差异，照常提交（被拒后转人工）。
+
+    与 _align_floor_stock 的分工：那个只管「消耗类 job-issue + Floor-Core」且用
+    ceil 收敛（对 13.2419 仍是 13.242，等于没修），本函数覆盖 job-issue 与 qty-move。
+
+    单位不一致 / 存货 ≤ 0 / 差异 ≥ 阈值 / 查不到 → 原样返回照常提交。
+    任何异常都只记日志并原样返回——对齐绝不能阻断同步。
+    """
+    try:
+        if not bool(getattr(Config, 'CSI_BATCH_STOCK_ALIGN', True)):
+            return row
+
+        loc_field = _BATCH_ALIGN_LOC_FIELD.get(api)
+        if not loc_field:
+            return row
+
+        item = (row.get('item') or '').strip()
+        lot = (row.get('lot') or '').strip()
+        if not item or not lot:
+            return row
+        um = (row.get('um') or row.get('unitcode1') or '').strip()
+        if not um:
+            return row
+        row_qty = row.get('quantity')
+        try:
+            if float(row_qty) <= 0:
+                return row
+        except (TypeError, ValueError):
+            return row
+
+        # CSI 校验的库位：job-issue 看目标库位、qty-move 看源库位
+        loc = (row.get(loc_field) or '').strip()
+        if not loc:
+            return row
+
+        siteref = str(row.get('siteRef') or '').strip()
+        if not siteref:
+            return row
+
+        if batch_cache is None:
+            batch_cache = {}
+        cache_key = (siteref, item, lot, loc.lower())
+        if cache_key in batch_cache:
+            info = batch_cache[cache_key]
+        else:
+            info = CSIClient(siteref).get_lot_loc_qty(item, lot, loc)
+            batch_cache[cache_key] = info
+        if not info:
+            # CSI 查不到该库位余额：不阻断，照常提交
+            return row
+
+        new_qty, reason = align_batch_stock_quantity(
+            row_qty=row_qty,
+            batch_qty=info.get('qty'),
+            um=um,
+            batch_um=info.get('um'),
+            tolerance=_cfg_float('CSI_BATCH_ALIGN_TOLERANCE', CSI_BATCH_ALIGN_TOLERANCE),
+        )
+        if new_qty is None:
+            return row
+
+        row_id = row.get('id')
+        cur = repo._cursor()
+        try:
+            cur.execute(
+                "UPDATE kr_csi_interface SET quantity = %s, updatedate = NOW() WHERE id = %s",
+                (new_qty, row_id),
+            )
+            repo.conn.commit()
+        except Exception:
+            repo.conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+        # 后续 _build_payload 取 row['quantity']，必须同步改内存值
+        row['quantity'] = new_qty
+        stats['batch_aligned'] = stats.get('batch_aligned', 0) + 1
+        logger.info('CSI 同步：按批次存货对齐数量 id=%s api=%s lot=%s item=%s loc=%s %s -> %s（%s）',
+                    row_id, api, lot, item, loc, reason.get('row_qty'), new_qty, reason.get('reason'))
+        log_operation(
+            'sync_worker', 'sync_worker/batch_align',
+            siteref=siteref,
+            target_type='csi_interface', target_id=row_id,
+            target_key=str(row.get('documentnumber') or ''),
+            operator='SYSTEM', result='ok',
+            detail={
+                'api_name': api, 'traceid': row.get('traceid') or '',
+                'lot': lot, 'item': item, 'loc': loc,
+                'old_qty': reason.get('row_qty'), 'new_qty': new_qty,
+                'batch_qty': reason.get('batch_qty'), 'diff': reason.get('diff'),
+                'tolerance': reason.get('tolerance'),
+                'um': reason.get('um'), 'batch_um': reason.get('batch_um'),
+                'reason': reason.get('reason'),
+            },
+        )
+        return row
+    except Exception as e:                      # 对齐失败不得中断同步
+        logger.warning('CSI 同步：批次存货对齐异常（已跳过）id=%s item=%s lot=%s: %s',
+                       row.get('id'), row.get('item'), row.get('lot'), e)
+        return row
+
+
+# ====================================================================== #
 #  失败处理 / 告警邮件
 # ====================================================================== #
 def _fail(repo, row, reason, stats):
@@ -962,6 +1089,8 @@ def _process_row(repo, row, stats, sleep_func, loc_cache=None, bf_cache=None, fl
 
     # 3.5 CSI Floor-Core 余量对齐（差异 ≤ 阈值时把本笔消耗量改成实际余量，避免被 CSI 拒收）
     row = _align_floor_stock(repo, row, api, stats, floor_cache)
+    # 3.6 批次/货位存货对齐（差异 < 0.01 时双向对齐到批次存货量，覆盖 job-issue / qty-move）
+    row = _align_batch_stock(repo, row, api, stats)
 
     # 4. 提交并轮询
     result = _submit_and_poll(_build_payload(row), api_name=api, sleep_func=sleep_func)
@@ -1023,7 +1152,7 @@ def run_once(repo=None, sleep_func=None):
     sleep_func = sleep_func or time.sleep
     stats = {'scanned': 0, 'claimed': 0, 'success': 0, 'queued': 0,
              'retried': 0, 'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0,
-             'floor_aligned': 0}
+             'floor_aligned': 0, 'batch_aligned': 0}
     # 同一轮内同 (item, lot) 只查一次 CSI 库位
     loc_cache = {}
     # 同一轮内同 (job, suffix, item) 只处理一次 Backflush 检查/清除

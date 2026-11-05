@@ -291,7 +291,8 @@ RESEND_FAILED_STATUS = ('FAILED_MANUAL', 'NOOP', 'CANCELLED', 'FAILED')
 def _empty_stats():
     """与 csi_sync_worker.run_once 同构的统计字典（_process_row/_fail 会累加）"""
     return {'scanned': 0, 'claimed': 0, 'success': 0, 'queued': 0, 'retried': 0,
-            'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0}
+            'manual': 0, 'transient': 0, 'skipped': 0, 'noop': 0, 'errors': 0,
+            'floor_aligned': 0, 'batch_aligned': 0}
 
 
 def _fetch_row(conn, row_id):
