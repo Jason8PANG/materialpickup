@@ -186,6 +186,9 @@ def ext_coil_lookup(coil_id):
             'part_number': coil.get('part_number') or '',
             'lot_no': coil.get('lot_no') or '',
             'unit': coil.get('unit') or '',
+            # coil_length 是**登记长度**（入库登记值，可能被退料流程回写），不随消耗变化，
+            # 直接当剩余量/移库量用会取到脏值（261102001 事故：登记 1000，实际剩余 217.7822）。
+            # 取剩余数量请用 suggest_qty（或等价的 remain_orig）。
             'coil_length': float(coil['coil_length']) if coil.get('coil_length') is not None else None,
             'initial_length': float(coil['initial_length']) if coil.get('initial_length') is not None else None,
             'status': coil.get('status'),
@@ -196,6 +199,8 @@ def ext_coil_lookup(coil_id):
             'used_mm': used,
             'remain_mm': remain_mm,
             'remain_orig': convert_from_mm(remain_mm, coil.get('unit')) if remain_mm is not None else None,
+            # 语义明确的「建议移库/发料数量」：与 remain_orig 同值，供外部系统直接取用，避免误用 coil_length
+            'suggest_qty': convert_from_mm(remain_mm, coil.get('unit')) if remain_mm is not None else None,
         }
     })
 
@@ -736,14 +741,18 @@ def ext_coils_list():
         d['status_label'] = COIL_STATUS_LABELS.get(d.get('status'), d.get('status') or '')
         # 剩余长度基准 = 初始长度(initial_length) × 系数：
         # coil_length 会被退料流程回写成剩余长度，直接用它会把剩余量重复扣减。
+        # 注意 coil_length 对外是**登记长度**，不随消耗变化；剩余量看 suggest_qty / remain_orig。
         base_mm = get_base_length_mm(d)
         if base_mm is not None:
             remain_mm = round(base_mm - d.get('total_used_mm', 0), 4)
             d['remain_mm'] = remain_mm
             d['remain_orig'] = convert_from_mm(remain_mm, d.get('unit'))
+            # 语义明确的「建议移库/发料数量」（与 remain_orig 同值）
+            d['suggest_qty'] = convert_from_mm(remain_mm, d.get('unit'))
         else:
             d['remain_mm'] = None
             d['remain_orig'] = None
+            d['suggest_qty'] = None
         data.append(d)
     return jsonify({'success': True, 'data': data, 'total': total, 'page': page, 'pageSize': page_size})
 

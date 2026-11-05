@@ -291,14 +291,34 @@ def confirm_return(return_id):
         now = datetime.now()
 
         confirmed = 0
+        skipped = 0
         for it in items:
             # 卷标 在车间 → 在库，回写剩余长度
+            # 条件 AND status='in_shop' 是有意保留的护栏：卷标已被其他流程改状态时不覆盖。
+            # 但命中 0 行时绝不能静默跳过 —— coil_length 会停在登记值，外部系统按它取移库量
+            # 就会取到脏值（261102001 事故：应为 217.7822，实取 1000）。故留 warning + skipped 计数。
             cur.execute(
                 "UPDATE kr_wire_coil SET status = 'in_stock', coil_length = %s "
                 "WHERE coil_id = %s AND status = 'in_shop'",
                 (it['remain_length'], it['coil_id'])
             )
-            confirmed += cur.rowcount
+            if cur.rowcount:
+                confirmed += cur.rowcount
+            else:
+                # FOR UPDATE = 当前读，能拿到并发事务最新提交的状态（普通 SELECT 在
+                # REPEATABLE READ 下可能仍读到本事务快照里的旧值，日志就没意义了）
+                cur.execute(
+                    "SELECT status FROM kr_wire_coil WHERE coil_id = %s FOR UPDATE",
+                    (it['coil_id'],)
+                )
+                row = cur.fetchone()
+                actual_status = row['status'] if row else '不存在/已删除'
+                logger.warning(
+                    '退料整单确认回写跳过(未命中 in_shop): request_id=%s coil_id=%s '
+                    'remain_length=%s 期望状态=in_shop 实际状态=%s',
+                    return_id, it['coil_id'], it['remain_length'], actual_status
+                )
+                skipped += 1
             # 同步明细复核状态：整单确认的卷标标记为 confirmed（removed 行不在此处）
             if it['review_status'] is None:
                 cur.execute(
@@ -311,15 +331,21 @@ def confirm_return(return_id):
             "UPDATE kr_material_request SET status = 'confirmed', confirmed_by = %s, confirm_time = %s WHERE id = %s",
             (user['username'], now, return_id)
         )
+        detail = f"确认退料: {confirmed} 卷转回在库"
+        if skipped:
+            detail += f"，{skipped} 卷回写失败(卷标状态非 in_shop，coil_length 未更新)"
         cur.execute(
             "INSERT INTO kr_operation_log (request_id, operator, action, detail, ip_address, created_at) "
             "VALUES (%s, %s, 'RETURN_CONFIRM', %s, %s, %s)",
-            (return_id, user['username'], f"确认退料: {confirmed} 卷转回在库", request.remote_addr, now)
+            (return_id, user['username'], detail, request.remote_addr, now)
         )
         db.commit()
         cur.close()
 
-    return jsonify({'success': True, 'message': f'退料确认成功，{confirmed} 卷已转回在库'})
+    message = f'退料确认成功，{confirmed} 卷已转回在库'
+    if skipped:
+        message += f'；{skipped} 卷因状态异常未回写剩余长度，请检查卷标状态'
+    return jsonify({'success': True, 'message': message, 'confirmed': confirmed, 'skipped': skipped})
 
 
 # ================= 2.1 移出退料清单（车间继续使用） =================
@@ -713,6 +739,20 @@ def review_coil_confirm(coil_id):
                 "WHERE coil_id = %s AND status = 'in_shop'",
                 (remain, location, coil_id)
             )
+            # 同整单确认：条件未命中说明卷标状态在「校验→回写」之间被并发改走，
+            # 此时 coil_length / loc 都不会更新（上面校验过的 in_shop 已过期），必须留痕。
+            if cur.rowcount == 0:
+                cur.execute(
+                    "SELECT status FROM kr_wire_coil WHERE coil_id = %s FOR UPDATE",
+                    (coil_id,)
+                )
+                row = cur.fetchone()
+                actual_status = row['status'] if row else '不存在/已删除'
+                logger.warning(
+                    '退料复核回写跳过(未命中 in_shop): return_id=%s coil_id=%s remain_length=%s '
+                    '期望状态=in_shop 实际状态=%s',
+                    return_id, coil_id, remain, actual_status
+                )
             cur.execute(
                 "UPDATE kr_return_item SET review_status = 'confirmed', location = %s, "
                 "reviewed_by = %s, reviewed_at = %s WHERE request_id = %s AND coil_id = %s",
