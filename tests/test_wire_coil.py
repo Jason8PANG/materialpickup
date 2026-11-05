@@ -989,13 +989,13 @@ class TestConsumptionAPI:
             if item.get(f) in (None, ''):
                 assert rec[f] is None
 
-    def test_p3_2_tiny_out_length_warns(self, client, login_as_warehouse):
-        """P3-2 实证：极小出库长度 round 成 0.0 → 被误判为未收录系数，产生多余警告"""
+    def test_p3_2_tiny_out_length_no_warn(self, client, login_as_warehouse):
+        """P3-2 修复后：极小出库长度换算成 0.0 不应被误判为未收录系数（改用 is None 判定）"""
         self._seed_coil()
         resp = client.post('/api/requests/100/consumption',
                            json={'items': [self._item(out_length=0.0001)]})
         assert resp.status_code == 200
-        assert resp.get_json()['warnings']  # 本不应警告（M 已收录）
+        assert not resp.get_json()['warnings']  # M 已收录，换算结果 0.0 不是失败
 
 
 class TestListConsumptionAPI:
