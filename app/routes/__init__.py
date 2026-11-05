@@ -186,6 +186,14 @@ def cutting_specs_page():
     return render_template('cutting_specs.html')
 
 
+@pages.route('/cutting/checks')
+def cutting_checks_page():
+    """裁线首末检记录查询（数据由外部接口写入，页面只查询/编辑/软删）"""
+    if not session.get('user'):
+        return redirect(url_for('pages.login_page'))
+    return render_template('cutting_checks.html')
+
+
 @pages.route('/csi-interface')
 def csi_interface_page():
     if not session.get('user'):

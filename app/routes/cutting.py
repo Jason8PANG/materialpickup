@@ -6,14 +6,18 @@
   - 读操作（列表/搜索）：登录即可
   - 写操作（新增/编辑/删除/批量导入）：仅 me_engineer（ME工程师）与 admin
 """
+import csv
 import io
 import json
+from datetime import datetime
+from urllib.parse import quote
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, Response, jsonify, request, session
 
 from app.models import get_db_connection, get_site_filter
 from app.utils import WhereBuilder
 from app.services.cutting_import import import_cutting_ref
+from app.services.operation_log import log_from_request
 
 cutting_bp = Blueprint('cutting', __name__)
 
@@ -499,3 +503,422 @@ def delete_cutting_exempt(exempt_id):
         cur.close()
 
     return jsonify({'success': True, 'message': '删除成功'})
+
+
+# ================================================================== #
+#  裁线首末检记录查询（kr_cutting_check）
+#    数据由外部接口 POST /api/external/cutting-check 写入，本页不提供「新增」
+#    读：登录即可（按站点隔离）
+#    编辑 / 软删除：仅 me_engineer（ME工程师）与 admin
+#    删除为软删除（is_deleted=1），外部查询接口同步过滤
+# ================================================================== #
+CHECK_EXPORT_MAX_ROWS = 50000
+
+# 业务字段（按表字段顺序，排除 id / created_at / siteref / is_deleted）
+CHECK_FIELDS = (
+    'job_order', 'job_part_number', 'part_number', 'cut_length_mm',
+    'check_type', 'is_manual',
+    'shear_std_length', 'shear_std_tol', 'shear_std_device', 'shear_actual_device',
+    'shear_actual_length', 'shear_operator', 'shear_checker',
+    'strip_a_std_length', 'strip_a_std_tol', 'strip_a_std_device', 'strip_a_actual_device',
+    'strip_a_actual_length', 'strip_a_operator', 'strip_a_checker',
+    'strip_b_std_length', 'strip_b_std_tol', 'strip_b_std_device', 'strip_b_actual_device',
+    'strip_b_actual_length', 'strip_b_operator', 'strip_b_checker',
+    'scrap_length',
+)
+
+CHECK_DECIMAL_FIELDS = {
+    'cut_length_mm', 'shear_std_length', 'shear_actual_length',
+    'strip_a_std_length', 'strip_a_actual_length',
+    'strip_b_std_length', 'strip_b_actual_length', 'scrap_length',
+}
+
+# NOT NULL 且无默认值的业务字段（编辑后不得为空）
+CHECK_REQUIRED_FIELDS = {'job_order', 'job_part_number', 'part_number'}
+
+# 字符串字段最大长度（与表定义一致，超长直接 400 拒绝，不做静默截断）
+CHECK_MAXLEN = {
+    'job_order': 50, 'job_part_number': 50, 'part_number': 50,
+    'shear_std_tol': 20, 'strip_a_std_tol': 20, 'strip_b_std_tol': 20,
+    'shear_std_device': 50, 'shear_actual_device': 50,
+    'strip_a_std_device': 50, 'strip_a_actual_device': 50,
+    'strip_b_std_device': 50, 'strip_b_actual_device': 50,
+    'shear_operator': 50, 'shear_checker': 50,
+    'strip_a_operator': 50, 'strip_a_checker': 50,
+    'strip_b_operator': 50, 'strip_b_checker': 50,
+}
+
+# 中文列名：CSV 表头 + 校验报错文案
+CHECK_FIELD_LABELS = {
+    'job_order': '工单号',
+    'job_part_number': '成品物料号',
+    'part_number': '线材物料号',
+    'cut_length_mm': '下料长度(mm)',
+    'check_type': '检查类型',
+    'is_manual': '是否手工检查',
+    'shear_std_length': '剪切标准长度(mm)',
+    'shear_std_tol': '剪切标准公差',
+    'shear_std_device': '剪切标准设备',
+    'shear_actual_device': '剪切实际设备',
+    'shear_actual_length': '剪切实际长度(mm)',
+    'shear_operator': '剪切操作员',
+    'shear_checker': '剪切检查员',
+    'strip_a_std_length': '剥皮A标准长度(mm)',
+    'strip_a_std_tol': '剥皮A标准公差',
+    'strip_a_std_device': '剥皮A标准设备',
+    'strip_a_actual_device': '剥皮A实际设备',
+    'strip_a_actual_length': '剥皮A实际长度(mm)',
+    'strip_a_operator': '剥皮A操作员',
+    'strip_a_checker': '剥皮A检查员',
+    'strip_b_std_length': '剥皮B标准长度(mm)',
+    'strip_b_std_tol': '剥皮B标准公差',
+    'strip_b_std_device': '剥皮B标准设备',
+    'strip_b_actual_device': '剥皮B实际设备',
+    'strip_b_actual_length': '剥皮B实际长度(mm)',
+    'strip_b_operator': '剥皮B操作员',
+    'strip_b_checker': '剥皮B检查员',
+    'scrap_length': '废料长度(mm)',
+}
+
+CHECK_TYPE_LABELS = {'first': '首检', 'last': '末检'}
+
+
+def _check_site_guard(user):
+    """站点守卫片段：(and_sql, params)，非 admin 仅能操作本站记录。"""
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        return " AND siteref = %s", (site_params[0],)
+    return "", ()
+
+
+def _check_query_filters(user):
+    """解析首末检查询条件（列表与导出共用）。
+
+    Returns:
+        (where_clause, params, error_message)
+    """
+    job_order = (request.args.get('job_order') or '').strip()
+    job_part_number = (request.args.get('job_part_number') or '').strip()
+    part_number = (request.args.get('part_number') or '').strip()
+    check_type = (request.args.get('check_type') or '').strip().lower()
+    date_from = (request.args.get('date_from') or '').strip()
+    date_to = (request.args.get('date_to') or '').strip()
+
+    for label, value in (('date_from', date_from), ('date_to', date_to)):
+        if value:
+            try:
+                datetime.strptime(value, '%Y-%m-%d')
+            except ValueError:
+                return None, None, f'{label} 格式应为 YYYY-MM-DD'
+
+    wb = WhereBuilder(['is_deleted = 0'])
+    if job_order:
+        wb.add("job_order LIKE %s", f"%{job_order}%")
+    if job_part_number:
+        wb.add("job_part_number LIKE %s", f"%{job_part_number}%")
+    if part_number:
+        wb.add("part_number LIKE %s", f"%{part_number}%")
+    if check_type in CHECK_TYPE_LABELS:
+        wb.add("check_type = %s", check_type)
+    if date_from:
+        wb.add("created_at >= %s", date_from)
+    if date_to:
+        # 含当天：用 < date_to + 1 天，避免 <= date_to 丢掉当天 00:00 之后的记录
+        wb.add("created_at < DATE_ADD(%s, INTERVAL 1 DAY)", date_to)
+
+    # 站点隔离：仅展示当前用户站点数据
+    site_filter, site_params = get_site_filter(user)
+    if site_filter:
+        wb.add(site_filter, *site_params)
+
+    where_clause, params = wb.build()
+    return where_clause, params, None
+
+
+def _validate_check_payload(data):
+    """校验并归一化编辑入参。
+
+    Returns:
+        (values, error_message)：values 只含请求中出现的字段
+    """
+    values = {}
+    for f in CHECK_FIELDS:
+        if f not in data:
+            continue
+        raw = data.get(f)
+        label = CHECK_FIELD_LABELS.get(f, f)
+
+        if f == 'check_type':
+            v = str(raw or '').strip().lower()
+            if v not in CHECK_TYPE_LABELS:
+                return None, '检查类型只能是 first（首检）或 last（末检）'
+            values[f] = v
+            continue
+
+        if f == 'is_manual':
+            if raw is None or str(raw).strip() == '':
+                values[f] = None
+                continue
+            s = str(raw).strip().lower()
+            if s in ('1', 'true', 'yes', '是'):
+                values[f] = 1
+            elif s in ('0', 'false', 'no', '否'):
+                values[f] = 0
+            else:
+                return None, '是否手工检查只能是 0 / 1'
+            continue
+
+        if f in CHECK_DECIMAL_FIELDS:
+            if raw is None or str(raw).strip() == '':
+                values[f] = None
+                continue
+            try:
+                num = float(str(raw).strip().replace(',', ''))
+            except (TypeError, ValueError):
+                return None, f'{label}必须为数字'
+            if num < 0:
+                return None, f'{label}不能为负数'
+            values[f] = round(num, 2)
+            continue
+
+        s = '' if raw is None else str(raw).strip()
+        if not s:
+            if f in CHECK_REQUIRED_FIELDS:
+                return None, f'{label}不能为空'
+            values[f] = None
+            continue
+        limit = CHECK_MAXLEN.get(f)
+        if limit and len(s) > limit:
+            return None, f'{label}长度不能超过 {limit} 个字符'
+        values[f] = s
+
+    return values, None
+
+
+def _same_value(field, old, new):
+    """比较新旧值是否等价（DECIMAL 与 float 按数值比较）。"""
+    if old is None or new is None:
+        return old is None and new is None
+    if field in CHECK_DECIMAL_FIELDS:
+        try:
+            return abs(float(old) - float(new)) < 1e-9
+        except (TypeError, ValueError):
+            return False
+    return str(old).strip() == str(new).strip()
+
+
+def _json_safe(v):
+    if isinstance(v, (int, float, str)) or v is None:
+        return v
+    return str(v)
+
+
+def _write_check_log(action, check_id, job_order, detail):
+    """首末检记录操作审计（kr_operation_log，独立短连接，失败不影响主业务）。"""
+    log_from_request(
+        'cutting_check', action,
+        siteref=(session.get('user') or {}).get('siteref') or '',
+        target_type='cutting_check', target_id=check_id,
+        target_key=job_order or '', result='ok', detail=detail,
+    )
+
+
+@cutting_bp.route('/api/cutting-check', methods=['GET'])
+def list_cutting_check():
+    """首末检记录列表（登录即可，站点隔离，分页）。"""
+    user, err = _check_login()
+    if err:
+        return err
+
+    page = max(1, request.args.get('page', type=int) or 1)
+    size = min(max(request.args.get('size', type=int) or 50, 1), 200)
+
+    where_clause, params, ferr = _check_query_filters(user)
+    if ferr:
+        return jsonify({'success': False, 'message': ferr}), 400
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(f"SELECT COUNT(*) AS total FROM kr_cutting_check WHERE {where_clause}", params)
+        total = int(cur.fetchone()['total'] or 0)
+        offset = (page - 1) * size
+        cur.execute(
+            f"SELECT id, {', '.join(CHECK_FIELDS)}, siteref, "
+            "DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created_at "
+            f"FROM kr_cutting_check WHERE {where_clause} ORDER BY id DESC LIMIT %s OFFSET %s",
+            params + [size, offset]
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+    for r in rows:
+        for f in CHECK_DECIMAL_FIELDS:
+            if r.get(f) is not None:
+                r[f] = float(r[f])
+
+    return jsonify({
+        'success': True,
+        'data': rows,
+        'total': total,
+        'page': page,
+        'size': size,
+        'total_pages': (total + size - 1) // size,
+        'can_edit': user['role'] in WRITE_ROLES,
+    })
+
+
+@cutting_bp.route('/api/cutting-check/export', methods=['GET'])
+def export_cutting_check():
+    """首末检记录导出 CSV（不受分页限制，最多 CHECK_EXPORT_MAX_ROWS 行）。"""
+    user, err = _check_login()
+    if err:
+        return err
+
+    where_clause, params, ferr = _check_query_filters(user)
+    if ferr:
+        return jsonify({'success': False, 'message': ferr}), 400
+
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            f"SELECT id, {', '.join(CHECK_FIELDS)}, siteref, "
+            "DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created_at "
+            f"FROM kr_cutting_check WHERE {where_clause} ORDER BY id DESC LIMIT %s",
+            params + [CHECK_EXPORT_MAX_ROWS]
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(['ID'] + [CHECK_FIELD_LABELS[f] for f in CHECK_FIELDS] + ['检查时间', '站点'])
+    for r in rows:
+        line = [r.get('id')]
+        for f in CHECK_FIELDS:
+            v = r.get(f)
+            if v is None:
+                line.append('')
+            elif f in CHECK_DECIMAL_FIELDS:
+                line.append(f'{float(v):.2f}')
+            else:
+                line.append(str(v))
+        if r.get('check_type') in CHECK_TYPE_LABELS:
+            line[CHECK_FIELDS.index('check_type') + 1] = CHECK_TYPE_LABELS[r['check_type']]
+        line.append(r.get('created_at') or '')
+        line.append(r.get('siteref') or '')
+        writer.writerow(line)
+
+    payload = buf.getvalue().encode('utf-8-sig')  # BOM：Excel 直接打开不乱码
+    ts = datetime.now().strftime('%Y%m%d_%H%M')
+    filename = f'裁线首末检记录_{ts}.csv'
+    resp = Response(payload, mimetype='text/csv; charset=utf-8')
+    resp.headers['Content-Disposition'] = (
+        f"attachment; filename=cutting_checks_{ts}.csv; "
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return resp
+
+
+@cutting_bp.route('/api/cutting-check/<int:check_id>', methods=['PUT'])
+def update_cutting_check(check_id):
+    """编辑首末检记录（仅 me_engineer / admin，单条、按站点约束）。"""
+    user, err = _check_login()
+    if err:
+        return err
+    perm_err = _check_write(user)
+    if perm_err:
+        return perm_err
+
+    data = request.get_json() or {}
+    values, verr = _validate_check_payload(data)
+    if verr:
+        return jsonify({'success': False, 'message': verr}), 400
+    if not values:
+        return jsonify({'success': False, 'message': '没有需要更新的字段'}), 400
+
+    guard_sql, guard_params = _check_site_guard(user)
+
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                f"SELECT id, {', '.join(CHECK_FIELDS)} FROM kr_cutting_check "
+                f"WHERE id = %s{guard_sql} AND is_deleted = 0",
+                (check_id,) + guard_params
+            )
+            old = cur.fetchone()
+            if not old:
+                cur.close()
+                return jsonify({'success': False, 'message': '记录不存在或已删除'}), 404
+
+            changes = {}
+            for f, new in values.items():
+                if not _same_value(f, old.get(f), new):
+                    changes[f] = {'old': _json_safe(old.get(f)), 'new': _json_safe(new)}
+
+            if not changes:
+                cur.close()
+                return jsonify({'success': True, 'message': '无变更', 'changed': 0})
+
+            set_sql = ', '.join(f"{f} = %s" for f in values)
+            cur.execute(
+                f"UPDATE kr_cutting_check SET {set_sql} "
+                f"WHERE id = %s{guard_sql} AND is_deleted = 0",
+                list(values.values()) + [check_id] + list(guard_params)
+            )
+            db.commit()
+            cur.close()
+
+        _write_check_log('CUTTING_CHECK_UPDATE', check_id, old.get('job_order'), {
+            'id': check_id,
+            'job_order': old.get('job_order'),
+            'changes': changes,
+        })
+        return jsonify({'success': True, 'message': '更新成功', 'changed': len(changes)})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'更新失败: {str(e)}'}), 400
+
+
+@cutting_bp.route('/api/cutting-check/<int:check_id>', methods=['DELETE'])
+def delete_cutting_check(check_id):
+    """软删除首末检记录（仅 me_engineer / admin）：is_deleted=1。"""
+    user, err = _check_login()
+    if err:
+        return err
+    perm_err = _check_write(user)
+    if perm_err:
+        return perm_err
+
+    guard_sql, guard_params = _check_site_guard(user)
+
+    try:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                "SELECT id, job_order, job_part_number, part_number, check_type "
+                f"FROM kr_cutting_check WHERE id = %s{guard_sql} AND is_deleted = 0",
+                (check_id,) + guard_params
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                return jsonify({'success': False, 'message': '记录不存在或已删除'}), 404
+
+            cur.execute(
+                f"UPDATE kr_cutting_check SET is_deleted = 1 "
+                f"WHERE id = %s{guard_sql} AND is_deleted = 0",
+                (check_id,) + guard_params
+            )
+            db.commit()
+            cur.close()
+
+        _write_check_log('CUTTING_CHECK_DELETE', check_id, row.get('job_order'), {
+            'id': check_id,
+            'job_order': row.get('job_order'),
+            'job_part_number': row.get('job_part_number'),
+            'part_number': row.get('part_number'),
+            'check_type': row.get('check_type'),
+        })
+        return jsonify({'success': True, 'message': '删除成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'删除失败: {str(e)}'}), 400

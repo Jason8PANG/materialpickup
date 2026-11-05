@@ -65,6 +65,8 @@ PAGES = [
      'default_roles': _WIRE_VIEW},
     {'key': 'cutting_specs', 'path': '/cutting/specs', 'name': '裁线规格管理', 'group': '线材管理',
      'default_roles': _WIRE_VIEW},
+    {'key': 'cutting_checks', 'path': '/cutting/checks', 'name': '裁线首末检记录查询', 'group': '线材管理',
+     'default_roles': _WIRE_VIEW},
 
     {'key': 'pending', 'path': '/pending', 'name': '待处理', 'group': '待处理',
      'default_roles': _WH_ADMIN},

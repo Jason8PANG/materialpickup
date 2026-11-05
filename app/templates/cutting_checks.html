@@ -1,0 +1,460 @@
+{% extends "base.html" %}
+{% block title %}裁线首末检记录查询 - 物料领取看板{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h5 class="mb-0"><i class="fas fa-clipboard-check me-2 text-primary"></i><span data-i18n="cutting_check.title">裁线首末检记录查询</span></h5>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-success btn-sm" onclick="exportCsv()">
+                <i class="fas fa-file-csv me-1"></i><span data-i18n="cutting_check.export">导出 CSV</span>
+            </button>
+        </div>
+    </div>
+    <div class="card-body">
+        <!-- 筛选区 -->
+        <div class="row g-2 mb-3">
+            <div class="col-md-2">
+                <label class="form-label small mb-1" data-i18n="cutting_check.job_order">工单号</label>
+                <input type="text" class="form-control form-control-sm" id="fJobOrder">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small mb-1" data-i18n="cutting_check.job_part_number">成品物料号</label>
+                <input type="text" class="form-control form-control-sm" id="fJobPartNumber">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small mb-1" data-i18n="cutting_check.part_number">线材物料号</label>
+                <input type="text" class="form-control form-control-sm" id="fPartNumber">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small mb-1" data-i18n="cutting_check.check_type">检查类型</label>
+                <select class="form-select form-select-sm" id="fCheckType">
+                    <option value="" data-i18n="cutting_check.type_all">全部</option>
+                    <option value="first" data-i18n="cutting_check.type_first">首检</option>
+                    <option value="last" data-i18n="cutting_check.type_last">末检</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small mb-1" data-i18n="cutting_check.date_from">开始日期</label>
+                <input type="date" class="form-control form-control-sm" id="fDateFrom">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small mb-1" data-i18n="cutting_check.date_to">结束日期</label>
+                <input type="date" class="form-control form-control-sm" id="fDateTo">
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-auto">
+                <button class="btn btn-primary btn-sm" onclick="loadChecks(1)">
+                    <i class="fas fa-search me-1"></i><span data-i18n="common.search">搜索</span>
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="resetFilters()">
+                    <i class="fas fa-rotate-left me-1"></i><span data-i18n="common.reset">重置</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover table-bordered table-sm align-middle" style="font-size:0.85rem;">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:60px">ID</th>
+                        <th data-i18n="cutting_check.job_order">工单号</th>
+                        <th data-i18n="cutting_check.job_part_number">成品物料号</th>
+                        <th data-i18n="cutting_check.part_number">线材物料号</th>
+                        <th data-i18n="cutting_check.cut_length_mm">下料长度(mm)</th>
+                        <th data-i18n="cutting_check.check_type">检查类型</th>
+                        <th data-i18n="cutting_check.col_shear_actual">剪切实际(mm)</th>
+                        <th data-i18n="cutting_check.col_strip_a_actual">剥皮A实际(mm)</th>
+                        <th data-i18n="cutting_check.col_strip_b_actual">剥皮B实际(mm)</th>
+                        <th data-i18n="cutting_check.scrap_length">废料长度(mm)</th>
+                        <th data-i18n="cutting_check.col_operator">操作员</th>
+                        <th data-i18n="cutting_check.col_checker">检查员</th>
+                        <th data-i18n="cutting_check.created_at">检查时间</th>
+                        {% if session.user.role in ['me_engineer', 'admin'] %}
+                        <th data-i18n="admin.col_actions">操作</th>
+                        {% endif %}
+                    </tr>
+                </thead>
+                <tbody id="checkTableBody">
+                    <tr><td colspan="14" class="text-center text-muted" data-i18n="common.loading">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 分页 -->
+        <div class="d-flex justify-content-between align-items-center mt-2">
+            <span class="text-muted small" id="pageInfo"></span>
+            <div>
+                <button class="btn btn-outline-secondary btn-sm" id="prevBtn" onclick="prevPage()" data-i18n="common.prev_page">上一页</button>
+                <button class="btn btn-outline-secondary btn-sm" id="nextBtn" onclick="nextPage()" data-i18n="common.next_page">下一页</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if session.user.role in ['me_engineer', 'admin'] %}
+<!-- 编辑弹窗（不支持新增：仅编辑已有记录） -->
+<div class="modal fade" id="checkModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="checkModalTitle" data-i18n="cutting_check.edit_title">编辑首末检记录</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId" value="">
+
+                <fieldset class="border rounded p-2 mb-3">
+                    <legend class="float-none w-auto px-2 fs-6" data-i18n="cutting_check.group_basic">基本信息</legend>
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.job_order">工单号</label>
+                            <input type="text" class="form-control form-control-sm" id="f_job_order" maxlength="50">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.job_part_number">成品物料号</label>
+                            <input type="text" class="form-control form-control-sm" id="f_job_part_number" maxlength="50">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.part_number">线材物料号</label>
+                            <input type="text" class="form-control form-control-sm" id="f_part_number" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.cut_length_mm">下料长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_cut_length_mm">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.check_type">检查类型</label>
+                            <select class="form-select form-select-sm" id="f_check_type">
+                                <option value="first" data-i18n="cutting_check.type_first">首检</option>
+                                <option value="last" data-i18n="cutting_check.type_last">末检</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.is_manual">是否手工检查</label>
+                            <select class="form-select form-select-sm" id="f_is_manual">
+                                <option value="0" data-i18n="cutting_check.no">否</option>
+                                <option value="1" data-i18n="cutting_check.yes">是</option>
+                            </select>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="border rounded p-2 mb-3">
+                    <legend class="float-none w-auto px-2 fs-6" data-i18n="cutting_check.group_shear">剪切</legend>
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_std_length">剪切标准长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_shear_std_length">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_std_tol">剪切标准公差</label>
+                            <input type="text" class="form-control form-control-sm" id="f_shear_std_tol" maxlength="20">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_std_device">剪切标准设备</label>
+                            <input type="text" class="form-control form-control-sm" id="f_shear_std_device" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_actual_device">剪切实际设备</label>
+                            <input type="text" class="form-control form-control-sm" id="f_shear_actual_device" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_actual_length">剪切实际长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_shear_actual_length">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_operator">剪切操作员</label>
+                            <input type="text" class="form-control form-control-sm" id="f_shear_operator" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.shear_checker">剪切检查员</label>
+                            <input type="text" class="form-control form-control-sm" id="f_shear_checker" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.scrap_length">废料长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_scrap_length">
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="border rounded p-2 mb-3">
+                    <legend class="float-none w-auto px-2 fs-6" data-i18n="cutting_check.group_strip_a">剥皮A</legend>
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_std_length">剥皮A标准长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_strip_a_std_length">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_std_tol">剥皮A标准公差</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_a_std_tol" maxlength="20">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_std_device">剥皮A标准设备</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_a_std_device" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_actual_device">剥皮A实际设备</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_a_actual_device" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_actual_length">剥皮A实际长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_strip_a_actual_length">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_operator">剥皮A操作员</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_a_operator" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_a_checker">剥皮A检查员</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_a_checker" maxlength="50">
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="border rounded p-2 mb-2">
+                    <legend class="float-none w-auto px-2 fs-6" data-i18n="cutting_check.group_strip_b">剥皮B</legend>
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_std_length">剥皮B标准长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_strip_b_std_length">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_std_tol">剥皮B标准公差</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_b_std_tol" maxlength="20">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_std_device">剥皮B标准设备</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_b_std_device" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_actual_device">剥皮B实际设备</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_b_actual_device" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_actual_length">剥皮B实际长度(mm)</label>
+                            <input type="number" step="0.01" min="0" class="form-control form-control-sm" id="f_strip_b_actual_length">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_operator">剥皮B操作员</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_b_operator" maxlength="50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1" data-i18n="cutting_check.strip_b_checker">剥皮B检查员</label>
+                            <input type="text" class="form-control form-control-sm" id="f_strip_b_checker" maxlength="50">
+                        </div>
+                    </div>
+                </fieldset>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" data-i18n="common.cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="saveCheckBtn" data-i18n="common.save">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAN_EDIT = {{ 'true' if session.user.role in ['me_engineer', 'admin'] else 'false' }};
+
+const NUMERIC_FIELDS = [
+    'cut_length_mm', 'shear_std_length', 'shear_actual_length',
+    'strip_a_std_length', 'strip_a_actual_length',
+    'strip_b_std_length', 'strip_b_actual_length', 'scrap_length'
+];
+const TEXT_FIELDS = [
+    'job_order', 'job_part_number', 'part_number', 'check_type', 'is_manual',
+    'shear_std_tol', 'shear_std_device', 'shear_actual_device', 'shear_operator', 'shear_checker',
+    'strip_a_std_tol', 'strip_a_std_device', 'strip_a_actual_device', 'strip_a_operator', 'strip_a_checker',
+    'strip_b_std_tol', 'strip_b_std_device', 'strip_b_actual_device', 'strip_b_operator', 'strip_b_checker'
+];
+const EDIT_FIELDS = [
+    'job_order', 'job_part_number', 'part_number', 'cut_length_mm', 'check_type', 'is_manual',
+    'shear_std_length', 'shear_std_tol', 'shear_std_device', 'shear_actual_device',
+    'shear_actual_length', 'shear_operator', 'shear_checker', 'scrap_length',
+    'strip_a_std_length', 'strip_a_std_tol', 'strip_a_std_device', 'strip_a_actual_device',
+    'strip_a_actual_length', 'strip_a_operator', 'strip_a_checker',
+    'strip_b_std_length', 'strip_b_std_tol', 'strip_b_std_device', 'strip_b_actual_device',
+    'strip_b_actual_length', 'strip_b_operator', 'strip_b_checker'
+];
+
+let currentPage = 1;
+let totalPages = 1;
+let currentRows = [];
+
+function cell(v) {
+    if (v === null || v === undefined || v === '') return '-';
+    return escapeHtml(String(v));
+}
+
+function typeBadge(t) {
+    if (t === 'first') {
+        return '<span class="badge bg-info text-dark">' + __('cutting_check.type_first') + '</span>';
+    }
+    if (t === 'last') {
+        return '<span class="badge bg-warning text-dark">' + __('cutting_check.type_last') + '</span>';
+    }
+    return cell(t);
+}
+
+function buildQuery() {
+    const params = new URLSearchParams();
+    const jobOrder = document.getElementById('fJobOrder').value.trim();
+    const jobPart = document.getElementById('fJobPartNumber').value.trim();
+    const partNumber = document.getElementById('fPartNumber').value.trim();
+    const checkType = document.getElementById('fCheckType').value;
+    const dateFrom = document.getElementById('fDateFrom').value;
+    const dateTo = document.getElementById('fDateTo').value;
+    if (jobOrder) params.set('job_order', jobOrder);
+    if (jobPart) params.set('job_part_number', jobPart);
+    if (partNumber) params.set('part_number', partNumber);
+    if (checkType) params.set('check_type', checkType);
+    if (dateFrom) params.set('date_from', dateFrom);
+    if (dateTo) params.set('date_to', dateTo);
+    return params;
+}
+
+function loadChecks(page) {
+    const params = buildQuery();
+    params.set('page', page);
+    params.set('size', '50');
+    apiGet('/api/cutting-check?' + params.toString(), function (resp) {
+        currentPage = resp.page || 1;
+        totalPages = resp.total_pages || 1;
+        currentRows = resp.data || [];
+        document.getElementById('pageInfo').textContent =
+            __('kanban.total') + ' ' + resp.total + ' ' + __('kanban.items') +
+            ' · ' + __('cutting_check.title') + ' ' + currentPage + '/' + totalPages;
+        document.getElementById('prevBtn').disabled = currentPage <= 1;
+        document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+        renderTable(currentRows);
+    }, function (err) {
+        document.getElementById('checkTableBody').innerHTML =
+            '<tr><td colspan="14" class="text-center text-danger">' +
+            escapeHtml(err.message || __('common.error')) + '</td></tr>';
+    });
+}
+
+function renderTable(rows) {
+    const tbody = document.getElementById('checkTableBody');
+    const colSpan = CAN_EDIT ? 14 : 13;
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="' + colSpan + '" class="text-center text-muted">' +
+            __('common.no_data') + '</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(function (r) {
+        let html = '<tr>' +
+            '<td>' + r.id + '</td>' +
+            '<td>' + cell(r.job_order) + '</td>' +
+            '<td>' + cell(r.job_part_number) + '</td>' +
+            '<td>' + cell(r.part_number) + '</td>' +
+            '<td>' + cell(r.cut_length_mm) + '</td>' +
+            '<td>' + typeBadge(r.check_type) + '</td>' +
+            '<td>' + cell(r.shear_actual_length) + '</td>' +
+            '<td>' + cell(r.strip_a_actual_length) + '</td>' +
+            '<td>' + cell(r.strip_b_actual_length) + '</td>' +
+            '<td>' + cell(r.scrap_length) + '</td>' +
+            '<td>' + cell(r.shear_operator) + '</td>' +
+            '<td>' + cell(r.shear_checker) + '</td>' +
+            '<td>' + cell(r.created_at) + '</td>';
+        if (CAN_EDIT) {
+            html += '<td class="text-nowrap text-center">' +
+                '<button class="btn btn-sm btn-outline-primary me-1" onclick="showEditModal(' + r.id + ')">' +
+                '<i class="fas fa-edit"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="deleteCheck(' + r.id + ')">' +
+                '<i class="fas fa-trash"></i></button>' +
+                '</td>';
+        }
+        html += '</tr>';
+        return html;
+    }).join('');
+}
+
+function prevPage() { if (currentPage > 1) loadChecks(currentPage - 1); }
+function nextPage() { if (currentPage < totalPages) loadChecks(currentPage + 1); }
+
+function resetFilters() {
+    ['fJobOrder', 'fJobPartNumber', 'fPartNumber', 'fDateFrom', 'fDateTo'].forEach(function (id) {
+        document.getElementById(id).value = '';
+    });
+    document.getElementById('fCheckType').value = '';
+    loadChecks(1);
+}
+
+function showEditModal(id) {
+    if (!CAN_EDIT) return;
+    const row = currentRows.find(function (x) { return String(x.id) === String(id); });
+    if (!row) { showToast('error', __('common.error')); return; }
+    document.getElementById('editId').value = id;
+    EDIT_FIELDS.forEach(function (f) {
+        const el = document.getElementById('f_' + f);
+        if (!el) return;
+        let v = row[f];
+        if (v === null || v === undefined) v = '';
+        el.value = v;
+    });
+    new bootstrap.Modal(document.getElementById('checkModal')).show();
+}
+
+function saveCheck() {
+    if (!CAN_EDIT) return;
+    const id = document.getElementById('editId').value;
+    if (!id) return;
+    const data = {};
+    EDIT_FIELDS.forEach(function (f) {
+        const el = document.getElementById('f_' + f);
+        if (!el) return;
+        const v = String(el.value).trim();
+        if (v === '') {
+            data[f] = null;
+        } else if (NUMERIC_FIELDS.indexOf(f) >= 0) {
+            data[f] = parseFloat(v);
+        } else if (f === 'is_manual') {
+            data[f] = parseInt(v, 10);
+        } else {
+            data[f] = v;
+        }
+    });
+    apiPut('/api/cutting-check/' + id, data, function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        bootstrap.Modal.getInstance(document.getElementById('checkModal')).hide();
+        loadChecks(currentPage);
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+function deleteCheck(id) {
+    if (!CAN_EDIT) return;
+    if (!confirm(__('cutting_check.delete_confirm'))) return;
+    apiDelete('/api/cutting-check/' + id, function (resp) {
+        showToast('success', resp.message || __('common.success'));
+        loadChecks(currentPage);
+    }, function (err) {
+        showToast('error', err.message || __('common.error'));
+    });
+}
+
+function exportCsv() {
+    const params = buildQuery();
+    const url = '/api/cutting-check/export' + (params.toString() ? '?' + params.toString() : '');
+    window.location.href = url;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    if (CAN_EDIT) {
+        document.getElementById('saveCheckBtn').addEventListener('click', saveCheck);
+    }
+    ['fJobOrder', 'fJobPartNumber', 'fPartNumber'].forEach(function (id) {
+        document.getElementById(id).addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') loadChecks(1);
+        });
+    });
+    loadChecks(1);
+});
+</script>
+{% endblock %}

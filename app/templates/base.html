@@ -51,7 +51,7 @@
                         </ul>
                     </li>
                     {% endif %}
-                    {% if can_access_page('wire_coils') or can_access_page('wire_consumption') or can_access_page('wire_scrap') or can_access_page('return_review') or can_access_page('wire_adjust') or can_access_page('csi_interface') or can_access_page('cutting_specs') %}
+                    {% if can_access_page('wire_coils') or can_access_page('wire_consumption') or can_access_page('wire_scrap') or can_access_page('return_review') or can_access_page('wire_adjust') or can_access_page('csi_interface') or can_access_page('cutting_specs') or can_access_page('cutting_checks') %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="fas fa-tasks me-1"></i><span data-i18n="nav.wire">线材管理</span>
@@ -78,9 +78,14 @@
                             {% if can_access_page('csi_interface') %}
                             <li><a class="dropdown-item" href="/csi-interface"><i class="fas fa-sync-alt me-2"></i><span data-i18n="nav.csi_interface">同步接口查询</span></a></li>
                             {% endif %}
-                            {% if can_access_page('cutting_specs') %}
+                            {% if can_access_page('cutting_specs') or can_access_page('cutting_checks') %}
                             <li><hr class="dropdown-divider"></li>
+                            {% endif %}
+                            {% if can_access_page('cutting_specs') %}
                             <li><a class="dropdown-item" href="/cutting/specs"><i class="fas fa-cut me-2"></i><span data-i18n="nav.cutting_specs">裁线规格管理</span></a></li>
+                            {% endif %}
+                            {% if can_access_page('cutting_checks') %}
+                            <li><a class="dropdown-item" href="/cutting/checks"><i class="fas fa-clipboard-check me-2"></i><span data-i18n="nav.cutting_checks">裁线首末检记录查询</span></a></li>
                             {% endif %}
                         </ul>
                     </li>
@@ -191,8 +196,8 @@
     </div>
 
     <script src="https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='js/i18n.js') }}?v=20261104a"></script>
-    <script src="{{ url_for('static', filename='js/main.js') }}?v=20261028a"></script>
+    <script src="{{ url_for('static', filename='js/i18n.js') }}?v=20261105a"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}?v=20261105a"></script>
     <script>
     // 语言切换（覆盖 i18n.js 中的 setLang，额外更新 navbar 标签）
     function switchUILang(lang) {

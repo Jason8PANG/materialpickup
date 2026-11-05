@@ -811,6 +811,8 @@ def ext_check_query():
     wb_where, wb_params = [], []
     wb_where.append('siteref = %s')
     wb_params.append(site)
+    # 软删除过滤：页面删除的记录（is_deleted=1）不再对生产端可见
+    wb_where.append('is_deleted = 0')
     job_order = (request.args.get('job_order') or '').strip()
     part_number = (request.args.get('part_number') or '').strip()
     check_type = (request.args.get('check_type') or '').strip()
