@@ -2021,7 +2021,8 @@ def create_consumption(request_id):
                 # R11：单位换算（服务端计算并覆盖，不信任前端传值）
                 unit = (coil.get('unit') or '').strip() or None
                 converted_length, converted_unit = _convert_length(out_length, unit)
-                if not converted_length:
+                # 用 is None 判断：0mm 消耗换算结果是 0.0，不能被当成「换算失败」误报
+                if converted_length is None:
                     warnings.append(f'卷标 {coil_id} 单位 {unit or "未知"} 未收录换算系数，转换结果已置空')
 
                 # R8：单次 + 累计 ≤ 卷长（统一换算 mm 比较，文档 7.1 R8）
