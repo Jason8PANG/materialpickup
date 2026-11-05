@@ -1,6 +1,11 @@
 """
 邮件服务 - SMTP 方式发送邮件
+
+每封外发邮件都带上「发信节点」标识（hostname/pid/环境/代码版本），
+便于收到告警邮件时一眼定位是哪台机器、哪个版本、哪个进程发的。
 """
+import os
+import socket
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -8,6 +13,27 @@ from email.header import Header
 
 from app.config import Config
 from app.services.email_log import log_email
+
+# 代码版本缓存（None = 还没取过；取不到时为 'unknown'）
+_CODE_VERSION = None
+
+
+def _code_version():
+    """当前代码版本（git short sha），取不到返回 'unknown'。结果缓存在模块级。"""
+    global _CODE_VERSION
+    if _CODE_VERSION is not None:
+        return _CODE_VERSION
+    try:
+        import subprocess
+        out = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=3
+        )
+        _CODE_VERSION = out.stdout.strip() or 'unknown'
+    except Exception:
+        _CODE_VERSION = 'unknown'
+    return _CODE_VERSION
 
 
 def send_email(to_email, subject, html_content, *,
@@ -20,9 +46,13 @@ def send_email(to_email, subject, html_content, *,
         related_type/related_id/related_key: 关联对象（csi_interface/material_request）
     日志写入失败不影响发信：log_email 内部吞掉所有异常。
     """
+    sender_node = f'{socket.gethostname()}/{os.getpid()}'
+    app_env = str(getattr(Config, 'APP_ENV', 'production'))
+
     log_kw = dict(module=module, subject=subject, to_emails=to_email, siteref=siteref,
                   related_type=related_type, related_id=related_id,
-                  related_key=related_key, html_content=html_content)
+                  related_key=related_key, html_content=html_content,
+                  sender_node=sender_node)
 
     if not Config.SMTP_USER or not Config.SMTP_PASSWORD:
         print(f"[邮件] SMTP 未配置，跳过发送: {subject} -> {to_email}")
@@ -35,6 +65,15 @@ def send_email(to_email, subject, html_content, *,
         msg['From'] = f"{Header(Config.MAIL_FROM_NAME, 'utf-8').encode()} <{Config.MAIL_FROM}>"
         msg['To'] = to_email
         msg['Subject'] = Header(subject, 'utf-8').encode()
+        msg['X-Sender-Node'] = sender_node
+        msg['X-App-Env'] = app_env
+
+        footer = (f'<div style="margin-top:16px;padding-top:8px;border-top:1px solid #eee;'
+                  f'color:#999;font-size:11px;font-family:monospace">'
+                  f'发送节点 {socket.gethostname()} · 进程 {os.getpid()} · 环境 {app_env}'
+                  f' · 代码 {_code_version()}'
+                  f'</div>')
+        html_content = (html_content or '') + footer
 
         part = MIMEText(html_content, 'html', 'utf-8')
         msg.attach(part)

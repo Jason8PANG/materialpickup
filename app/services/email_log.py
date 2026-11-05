@@ -32,6 +32,7 @@ MAX_RELATED_KEY = 128
 MAX_RESULT = 16
 MAX_ERROR = 500
 MAX_PREVIEW = 2000
+MAX_SENDER_NODE = 128
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS kr_email_log (
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS kr_email_log (
   related_key VARCHAR(128) NOT NULL DEFAULT '' COMMENT '关联单号 documentnumber/request_id',
   result VARCHAR(16) NOT NULL DEFAULT 'ok'     COMMENT 'ok/fail/skip',
   errormessage VARCHAR(500) NOT NULL DEFAULT '',
+  sender_node VARCHAR(128) NULL                COMMENT '发信节点: hostname/pid',
   body_preview TEXT                            COMMENT '正文摘要（去标签纯文本，前 2000 字）',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_time (created_at),
@@ -57,8 +59,8 @@ CREATE TABLE IF NOT EXISTS kr_email_log (
 _INSERT_SQL = (
     "INSERT INTO kr_email_log "
     "(module, subject, to_emails, siteref, related_type, related_id, related_key, "
-    " result, errormessage, body_preview) "
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    " result, errormessage, sender_node, body_preview) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 _TAG_RE = re.compile(r'<[^>]+>')
@@ -126,7 +128,7 @@ def html_to_text(html_content, limit=MAX_PREVIEW):
 
 def log_email(module='', subject='', to_emails='', siteref='', related_type='',
               related_id=None, related_key='', result='ok', errormessage='',
-              html_content=''):
+              html_content='', sender_node=None):
     """写一条邮件发送日志。任何异常都吞掉，绝不打断发信流程。
 
     Args:
@@ -138,6 +140,7 @@ def log_email(module='', subject='', to_emails='', siteref='', related_type='',
         result: ok / fail / skip
         errormessage: 失败原因（异常原文 / SMTP 未配置）
         html_content: 邮件 HTML 正文，内部转纯文本摘要存 body_preview
+        sender_node: 发信节点标识 hostname/pid（便于定位告警邮件来源）
 
     Returns:
         True 写入成功 / False 失败（失败原因只记 warning）
@@ -159,6 +162,7 @@ def log_email(module='', subject='', to_emails='', siteref='', related_type='',
             _clip(related_key, MAX_RELATED_KEY),
             _clip(result, MAX_RESULT) or 'ok',
             _clip(errormessage, MAX_ERROR),
+            _clip(sender_node, MAX_SENDER_NODE) or None,
             html_to_text(html_content),
         )
         conn = _connect()
