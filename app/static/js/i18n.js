@@ -446,6 +446,8 @@ const I18N = {
         // === 裁线首末检记录查询 ===
         'cutting_check.title': '裁线首末检记录查询',
         'cutting_check.export': '导出 CSV',
+        'cutting_check.page_size': '每页条数',
+        'cutting_check.page_info': '共 {total} 条 · 第 {page}/{pages} 页',
         'cutting_check.job_order': '工单号',
         'cutting_check.job_part_number': '成品物料号',
         'cutting_check.part_number': '线材物料号',
@@ -1122,6 +1124,8 @@ const I18N = {
         // === Cutting check records ===
         'cutting_check.title': 'Cutting Check Records',
         'cutting_check.export': 'Export CSV',
+        'cutting_check.page_size': 'Rows per page',
+        'cutting_check.page_info': 'Total {total} · Page {page}/{pages}',
         'cutting_check.job_order': 'Job Order',
         'cutting_check.job_part_number': 'Finished Part No.',
         'cutting_check.part_number': 'Wire Part No.',

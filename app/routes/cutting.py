@@ -36,6 +36,10 @@ NUMERIC_FIELDS = {
 
 WRITE_ROLES = ('me_engineer', 'admin')
 
+# 裁线首末检记录的写权限：仅管理员（与裁线规格管理的 WRITE_ROLES 区分开，
+# 需求明确「只有管理员可以编辑和删除，其他角色只读」）
+CHECK_WRITE_ROLES = ('admin',)
+
 
 def _check_login():
     user = session.get('user')
@@ -47,6 +51,13 @@ def _check_login():
 def _check_write(user):
     if user['role'] not in WRITE_ROLES:
         return jsonify({'success': False, 'message': '仅 ME 工程师/管理员可修改'}), 403
+    return None
+
+
+def _check_check_write(user):
+    """首末检记录写权限：仅 admin。"""
+    if user['role'] not in CHECK_WRITE_ROLES:
+        return jsonify({'success': False, 'message': '仅管理员可修改首末检记录'}), 403
     return None
 
 
@@ -509,7 +520,7 @@ def delete_cutting_exempt(exempt_id):
 #  裁线首末检记录查询（kr_cutting_check）
 #    数据由外部接口 POST /api/external/cutting-check 写入，本页不提供「新增」
 #    读：登录即可（按站点隔离）
-#    编辑 / 软删除：仅 me_engineer（ME工程师）与 admin
+#    编辑 / 软删除：仅 admin（CHECK_WRITE_ROLES），其他角色只读
 #    删除为软删除（is_deleted=1），外部查询接口同步过滤
 # ================================================================== #
 CHECK_EXPORT_MAX_ROWS = 50000
@@ -731,7 +742,7 @@ def list_cutting_check():
         return err
 
     page = max(1, request.args.get('page', type=int) or 1)
-    size = min(max(request.args.get('size', type=int) or 50, 1), 200)
+    size = min(max(request.args.get('size', type=int) or 50, 1), 500)
 
     where_clause, params, ferr = _check_query_filters(user)
     if ferr:
@@ -763,7 +774,7 @@ def list_cutting_check():
         'page': page,
         'size': size,
         'total_pages': (total + size - 1) // size,
-        'can_edit': user['role'] in WRITE_ROLES,
+        'can_edit': user['role'] in CHECK_WRITE_ROLES,
     })
 
 
@@ -821,11 +832,11 @@ def export_cutting_check():
 
 @cutting_bp.route('/api/cutting-check/<int:check_id>', methods=['PUT'])
 def update_cutting_check(check_id):
-    """编辑首末检记录（仅 me_engineer / admin，单条、按站点约束）。"""
+    """编辑首末检记录（仅 admin，单条、按站点约束）。"""
     user, err = _check_login()
     if err:
         return err
-    perm_err = _check_write(user)
+    perm_err = _check_check_write(user)
     if perm_err:
         return perm_err
 
@@ -881,11 +892,11 @@ def update_cutting_check(check_id):
 
 @cutting_bp.route('/api/cutting-check/<int:check_id>', methods=['DELETE'])
 def delete_cutting_check(check_id):
-    """软删除首末检记录（仅 me_engineer / admin）：is_deleted=1。"""
+    """软删除首末检记录（仅 admin）：is_deleted=1。"""
     user, err = _check_login()
     if err:
         return err
-    perm_err = _check_write(user)
+    perm_err = _check_check_write(user)
     if perm_err:
         return perm_err
 
