@@ -29,7 +29,7 @@ from pymysql.err import IntegrityError
 
 from app.config import Config
 from app.models import get_db_connection, get_site_filter
-from app.services.csi_service import CSIClient
+from app.services.csi_service import CSIClient, is_usable_source_loc
 from app.services import label_print_service
 from app.services.coil_length import get_base_length
 from app.services.unit_convert import convert_from_mm
@@ -235,6 +235,11 @@ def _get_lot_loc_cached(siteref: str, part_number: str, lot_no: str):
         print(f"[COIL] get_lot_location error for {part_number}/{lot_no}: {e}")
         loc = None
     loc = (loc or '').strip() or None
+    # 车间在制库位（Floor-Core / FLOOR-X000）与非净值库位不能作为仓库源库位，
+    # 查到的也不落库（保持原值/空），否则会被当成 from_location 发去 CSI。
+    if loc and not is_usable_source_loc(loc):
+        print(f"[COIL] 忽略不可用源库位 loc={loc} item={part_number} lot={lot_no}")
+        loc = None
     _loc_cache[key] = (loc, now)
     return loc
 

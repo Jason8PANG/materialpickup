@@ -50,6 +50,37 @@ def _to_bool(value) -> bool:
     return False
 
 
+def is_usable_source_loc(loc, non_netable=None) -> bool:
+    """判断库位能否作为卷标库位 / 移库源库位（from_location）。
+
+    排除两类：
+      1) floor* 车间在制库位（Floor-Core / FLoor-Core / FLOOR-X000 等，大小写不敏感）：
+         车间的料已经从仓库领出，不能再作为仓库发料/移库的源库位；
+      2) Non-Nettable 库位（CSI NonNetable = 1）：不参与净值化的虚拟/过渡库位，
+         库存不能发料。
+
+    实测（NAIGROUP_PRD_410，2026-11）：ue_NAI_SLLotLocs 与 SLItemLocs 都**没有**
+    NonNetable 字段（IDO 返回 "Property NonNetable not found"），该 IDO 用 MrbFlag
+    表达同一含义 —— FLOOR-X000 的 MrbFlag=1，且 DerTotalNonNettableStock 恰好等于
+    该行 QtyOnHand，故调用方把 MrbFlag 传进来即可。
+
+    Args:
+        loc: 库位编码，允许 None / 空串 / 带空格
+        non_netable: NonNetable 或等价的 MrbFlag 原始值（1/'1'/True/'true' 视为非净值）
+
+    Returns:
+        True 才允许作为源库位；False 表示必须排除
+    """
+    code = str(loc or '').strip()
+    if not code:
+        return False
+    if 'floor' in code.lower():
+        return False
+    if _to_bool(non_netable):
+        return False
+    return True
+
+
 class CSIClient:
     """
     轻量版 Infor CSI / IDO Request Service 客户端（OAuth2 认证）。
@@ -159,6 +190,11 @@ class CSIClient:
                     resp = httpx.get(url, headers=headers, params=params, timeout=60, **_HTTPX_KW)
                 resp.raise_for_status()
                 body = resp.json()
+                # IDO 查询失败（IDO 名不存在 / 属性名写错等）也返回 HTTP 200 + Success=false，
+                # 若只看 Items 会被当成「查无数据」静默吞掉，故显式留痕。
+                if body.get('Success') is False:
+                    logger.warning('[IDO] %s 查询失败：%s（filter=%s）',
+                                   ido_name, body.get('Message'), filter_str)
                 records = body.get("Items") or body.get("value") or body.get("records") or []
                 return records if isinstance(records, list) else [records]
             except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -464,6 +500,10 @@ class CSIClient:
         从仓库领到车间，不能作为「发料来源库位」带出（卷标录入库位不得为 floor）。
         CSI 侧字面值是 'FLoor-Core'（大小写混排），故用 'floor' 子串判断，
         不能做精确比较。全部有货库位都是 floor 时返回 None。
+
+        过滤统一走 is_usable_source_loc：floor* 与非净值（MrbFlag=1）都排除。
+        ue_NAI_SLLotLocs 没有 NonNetable 字段，用 MrbFlag 作为等价标记
+        （实测 FLOOR-X000 MrbFlag=1，DerTotalNonNettableStock 等于该行数量）。
         """
         try:
             filter_str = (f"Item = N'{item}' And Lot = N'{lot}' And QtyOnHand > 0 "
@@ -475,7 +515,7 @@ class CSIClient:
                 loc = str(r.get("Loc", "") or "").strip()
                 if qty <= 0 or not loc:
                     continue
-                if 'floor' in loc.lower():
+                if not is_usable_source_loc(loc, r.get("MrbFlag")):
                     continue
                 if best_qty is None or qty > best_qty:
                     best_qty, best_loc = qty, loc
@@ -539,8 +579,8 @@ class CSIClient:
             loc_excluded_mrb = False
             if not loc:
                 sl_loc = str(r.get('Loc', '') or '').strip()
-                # SLLots.Loc 也可能是车间线边（floor），同样不能作为发料库位带出
-                if sl_loc and 'floor' in sl_loc.lower():
+                # SLLots.Loc 也可能是车间线边（floor）/ 非净值库位，同样不能作为发料库位带出
+                if sl_loc and not is_usable_source_loc(sl_loc):
                     sl_loc = ''
                 if sl_loc:
                     mrb = self._loc_mrb_flag(item, lot, sl_loc)
@@ -570,12 +610,24 @@ class CSIClient:
         """
         查询 Lot 当前所在库位（Loc），供 CSI 库位转移同步器补 from_location。
         优先取 ue_NAI_SLLotLocs 有余额且非 MRB 的库位；无则回退 SLLots.Loc（同样校验非 MRB）。
-        库位全部为 Non-Nettable/MRB 时返回 None（不能返回 MRB 库位）。
+        库位全部为 floor*（车间在制）或 Non-Nettable 时返回 None —— 绝不把这类库位
+        当作仓库源库位返回，上层据此显示「未找到可用库位」，而不是拿车间库位去移库。
         """
         info = self.get_lot_info(item, lot)
-        if info and info.get('loc'):
-            return info['loc']
-        return self._lot_loc_from_balances(item, lot)
+        fallback = info.get('loc') if info else None
+        raw_loc = fallback or self._lot_loc_from_balances(item, lot)
+        loc = str(raw_loc or '').strip()
+        if is_usable_source_loc(loc):
+            return loc
+        if loc:
+            # 原始库位存在但不可用：留痕，便于排查「为什么查不到库位」
+            logger.warning(
+                '[CSI] Lot 无可用源库位（floor*/Non-Nettable 已排除）item=%s lot=%s '
+                'raw_loc=%s loc_source=%s mrb_excluded=%s',
+                item, lot, loc, (info or {}).get('loc_source') or '',
+                (info or {}).get('loc_excluded_mrb')
+            )
+        return None
 
     def get_lot_floor_core_qty(self, item: str, lot: str) -> dict | None:
         """查某物料某批号在 Floor-Core（车间线边库位）的剩余库存。

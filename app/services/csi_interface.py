@@ -37,6 +37,7 @@ import uuid
 from datetime import datetime
 
 from app.config import Config
+from app.services.csi_service import is_usable_source_loc
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,25 @@ def _not_reverse_clause(request_id):
     return "(documentnumber IS NULL OR documentnumber NOT LIKE %s)", f'MP{request_id}B%'
 
 
+def _usable_loc_or_none(loc, coil_id, part_number, lot_no, source):
+    """本地快照库位 → 可作为源库位的值（不合格一律 None + warning）
+
+    车间在制库位（Floor-Core / FLoor-Core / FLOOR-X000）与非净值库位不能作为
+    仓库发料/移库的源库位。历史卷标/批次里已存有这类脏值，写入接口表前必须挡住，
+    否则会出现「从车间库位往车间库位移库」的空转记录（kr_csi_interface 已有多条）。
+    """
+    code = str(loc or '').strip()
+    if not code:
+        return None
+    if is_usable_source_loc(code):
+        return code
+    logger.warning(
+        '完成备料：%s 库位不可用作源库位（floor*/Non-Nettable），已置空待人工处理 '
+        'coil_id=%s item=%s lot=%s loc=%s', source, coil_id, part_number, lot_no, code
+    )
+    return None
+
+
 def _coil_rows(cursor, request_id, item):
     """A/B 料：每个卷标一行"""
     cursor.execute(
@@ -126,6 +146,12 @@ def _coil_rows(cursor, request_id, item):
         coil_id = coil.get('coil_id')
         if not coil_id:
             continue
+        # 库位只写本地快照（不在此查 CSI，避免完成备料被远程查询拖慢）。
+        # 但快照可能是历史脏值（车间 Floor-Core / FLOOR-X000）：这类库位不能作为
+        # 仓库发料/移库的源库位，写入前统一过 is_usable_source_loc，不合格则留空，
+        # 由同步器判「缺少源库位」转人工，绝不把车间库位当仓库源库位发去 CSI。
+        from_loc = _usable_loc_or_none(coil.get('loc'), coil_id, item.get('part_number'),
+                                       coil.get('lot_no'), 'kr_wire_coil')
         rows.append({
             'item': item.get('part_number'),
             'lot': coil.get('lot_no'),
@@ -136,9 +162,7 @@ def _coil_rows(cursor, request_id, item):
             'lot_id': None,
             'item_id': item['id'],
             'job_order': _job_order(item),
-            # 库位只写本地快照（不在此查 CSI，避免完成备料被远程查询拖慢）；
-            # 同步器提交前会用 CSI 实时库位覆盖本列，因此这里允许写旧值/为空
-            'from_location': coil.get('loc'),
+            'from_location': from_loc,
         })
     return rows
 
@@ -166,8 +190,9 @@ def _lot_rows(cursor, request_id, item):
             'lot_id': lot['id'],
             'item_id': item['id'],
             'job_order': _job_order(item),
-            # 同上：本地批次库位仅作快照，提交前由同步器用 CSI 实时库位校正
-            'from_location': lot.get('loc'),
+            # 同上：本地批次库位仅作快照，且必须过 is_usable_source_loc（拒绝 floor*/非净值）
+            'from_location': _usable_loc_or_none(lot.get('loc'), None, item.get('part_number'),
+                                                 lot_no, 'kr_request_item_lot'),
         })
     if not lot_records:
         logger.warning(

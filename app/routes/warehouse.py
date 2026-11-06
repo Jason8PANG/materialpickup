@@ -639,14 +639,27 @@ def _parse_lot_payload(data):
 
 
 def _resolve_lot_loc(siteref, part_number, lot_no):
-    """查询 Lot 所在库位（CSI）；查询失败返回 None，不阻断批次维护"""
+    """查询 Lot 所在库位（CSI）；查询失败或无可用库位返回 None，不阻断批次维护
+
+    「可用」= 非 floor* 车间在制库位、非 Non-Nettable —— 判定见
+    csi_service.is_usable_source_loc。返回 None 时不写库位（保留空），
+    由人工确认，绝不回落到车间库位。
+    """
     if not part_number or not lot_no:
         return None
     try:
         loc = CSIClient(siteref or '410').get_lot_location(part_number, lot_no)
-        return (loc or '').strip() or None
+        loc = (loc or '').strip()
+        if not loc:
+            logger.warning(
+                '批次维护：Lot 无可用源库位（floor*/Non-Nettable 已排除，不写入库位）'
+                ' item=%s lot=%s siteref=%s', part_number, lot_no, siteref
+            )
+            return None
+        return loc
     except Exception as e:
-        logger.warning('批次维护：查询 Lot 库位失败 item=%s lot=%s: %s', part_number, lot_no, e)
+        logger.warning('批次维护：查询 Lot 库位失败 item=%s lot=%s siteref=%s: %s',
+                       part_number, lot_no, siteref, e)
         return None
 
 
