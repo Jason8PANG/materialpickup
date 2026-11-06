@@ -1,8 +1,8 @@
 """同步接口查询（kr_csi_interface）：条件筛选列表 + Excel 导出 + 失败重发 + 人工取消。
 
 数据来源：备料完成写入 CSI 接口表，由 app/csi_sync_worker.py 轮询同步。
-权限：登录即可查看；站点范围受会话 available_sites 限制（admin 可跨站）。
-重发（POST /api/csi-interface/<id>/resend）：仅 warehouse/admin，且只对失败/终止态开放。
+权限：登录即可查看；站点范围固定为登录站点（不提供切换，admin 登录站点为空时不过滤）。
+重发（POST /api/csi-interface/<id>/resend）：warehouse/me_engineer/admin，且只对失败/终止态开放。
 取消（POST /api/csi-interface/<id>/cancel）：仅 warehouse/admin，且只对未成功过账的记录开放。
 """
 import io
@@ -37,10 +37,6 @@ ALLOWED_STATUS = ('PENDING', 'QUEUED', 'SUBMITTING', 'SUCCESS', 'FAILED_MANUAL',
                   'REVERSED', 'CANCELLED')
 
 
-class _SiteForbidden(Exception):
-    """请求的站点不在当前用户可访问范围内"""
-
-
 def _check_login():
     user = session.get('user')
     if not user:
@@ -49,26 +45,11 @@ def _check_login():
 
 
 def _resolve_site(user):
-    """解析站点范围：返回具体站点（None 表示 admin 跨站不过滤）。
+    """站点范围：固定为登录会话的 siteref，忽略任何 URL 参数。
 
-    规则：
-      - 非 admin：只能用当前站（请求他站 -> 403），默认当前站；
-      - admin：可传 siteref 指定站点；不传则查全部站点。
+    管理员同样固定按登录站点（登录站点为空时不过滤），不再提供跨站切换入口。
     """
-    role = (user or {}).get('role')
-    current = str((user or {}).get('siteref') or '')
-    available = [str(s) for s in ((user or {}).get('available_sites') or [])]
-    if not available and current:
-        available = [current]
-    requested = (request.args.get('siteref') or '').strip()
-
-    if requested and available and requested not in available:
-        raise _SiteForbidden(requested)
-    if requested:
-        return requested
-    if role == 'admin':
-        return None
-    return current or None
+    return str((user or {}).get('siteref') or '') or None
 
 
 def _parse_date(value):
@@ -83,7 +64,7 @@ def _parse_date(value):
 def _build_query(user):
     """按筛选条件构建 WHERE；返回 (where, params)。
 
-    站点越权抛 _SiteForbidden，参数非法抛 ValueError。
+    站点固定取登录站点；参数非法抛 ValueError。
     """
     wb = WhereBuilder(['1=1'])
     args = request.args
@@ -272,8 +253,6 @@ def api_list():
         return err
     try:
         where, params = _build_query(user)
-    except _SiteForbidden:
-        return jsonify({'success': False, 'message': '无权访问该站点数据'}), 403
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
 
@@ -366,8 +345,8 @@ def api_resend(row_id):
     user, err = _check_login()
     if err:
         return err
-    if (user or {}).get('role') != 'admin':
-        return jsonify({'success': False, 'message': '仅管理员可重新发送'}), 403
+    if (user or {}).get('role') not in ('warehouse', 'me_engineer', 'admin'):
+        return jsonify({'success': False, 'message': '权限不足，仅仓库/工程师/管理员可重新发送'}), 403
 
     operator = user.get('username') or user.get('display_name') or 'system'
     conn = get_db()
@@ -610,8 +589,6 @@ def api_export():
         return err
     try:
         where, params = _build_query(user)
-    except _SiteForbidden:
-        return jsonify({'success': False, 'message': '无权访问该站点数据'}), 403
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
 

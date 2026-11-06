@@ -79,21 +79,36 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
         <h5 class="mb-0"><i class="fas fa-sync-alt me-2 text-info"></i><span data-i18n="csi.title">同步接口查询</span></h5>
     </div>
     <div class="card-body">
-        <div class="row g-2 mb-3">
+        <!-- 筛选区：站点固定为登录站点（不提供切换）；每行控件等宽紧凑，按钮统一收尾 -->
+        <div class="row g-2 mb-2">
             <div class="col-6 col-md-2">
-                <select class="form-select form-select-sm" id="fSite">
-                    {% if session.user.role == 'admin' %}
-                    <option value="" data-i18n="csi.all_sites">全部站点</option>
-                    {% for site in session.user.available_sites %}
-                    <option value="{{ site }}" {% if site|string == session.user.siteref|string %}selected{% endif %}>{{ site_config.get(site, site) }}</option>
-                    {% endfor %}
-                    {% else %}
-                    <option value="{{ session.user.siteref }}">{{ site_config.get(session.user.siteref, session.user.siteref) }}</option>
-                    {% endif %}
-                </select>
+                <input type="text" class="form-control form-control-sm" id="fItem" data-i18n="csi.item" placeholder="物料号" title="物料号（模糊）">
             </div>
             <div class="col-6 col-md-2">
-                <select class="form-select form-select-sm" id="fSync">
+                <input type="text" class="form-control form-control-sm" id="fLot" data-i18n="csi.lot" placeholder="批次" title="批次（模糊）">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="number" min="1" step="1" class="form-control form-control-sm" id="fId" data-i18n="csi.filter_id" placeholder="记录ID" title="记录ID（精确）">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="text" class="form-control form-control-sm" id="fCoil" data-i18n="csi.filter_coil" placeholder="卷标号，如 261102001" title="卷标号（模糊）">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="number" min="1" step="1" class="form-control form-control-sm" id="fRequest" data-i18n="csi.filter_request" placeholder="申请单号" title="申请单号（精确）">
+            </div>
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fApi" title="接口">
+                    <option value="" data-i18n="csi.all_api">全部接口</option>
+                    <option value="sl-qty-move" data-i18n="csi.api_qty_move">库位转移 sl-qty-move</option>
+                    <option value="sl-misc-receipt" data-i18n="csi.api_misc_receipt">盘盈杂项收入 sl-misc-receipt</option>
+                    <option value="sl-misc-issue" data-i18n="csi.api_misc_issue">盘亏杂项发出 sl-misc-issue</option>
+                    <option value="sl-job-issue" data-i18n="csi.api_job_issue">工单发料 sl-job-issue</option>
+                </select>
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <select class="form-select form-select-sm" id="fSync" title="同步状态">
                     <option value="" data-i18n="csi.all_sync">全部同步状态</option>
                     <option value="0" data-i18n="csi.sync_pending">待同步</option>
                     <option value="1" data-i18n="csi.sync_success">成功</option>
@@ -101,7 +116,7 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                 </select>
             </div>
             <div class="col-6 col-md-2">
-                <select class="form-select form-select-sm" id="fStatus">
+                <select class="form-select form-select-sm" id="fStatus" title="单据状态">
                     <option value="" data-i18n="csi.all_status">全部状态</option>
                     <option value="PENDING">PENDING</option>
                     <option value="QUEUED">QUEUED</option>
@@ -112,48 +127,20 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                     <option value="FAILED_MANUAL">FAILED_MANUAL</option>
                 </select>
             </div>
-            <div class="col-6 col-md-3">
-                <input type="text" class="form-control form-control-sm" id="fItem" data-i18n="csi.item" placeholder="物料号">
+            <div class="col-6 col-md-2">
+                <input type="date" class="form-control form-control-sm" id="fDateFrom" data-i18n="csi.date_from" placeholder="开始日期" title="开始日期">
             </div>
-            <div class="col-6 col-md-3">
-                <input type="text" class="form-control form-control-sm" id="fLot" data-i18n="csi.lot" placeholder="批次">
+            <div class="col-6 col-md-2">
+                <input type="date" class="form-control form-control-sm" id="fDateTo" data-i18n="csi.date_to" placeholder="结束日期" title="结束日期">
+            </div>
+            <div class="col-12 col-md-4">
+                <input type="text" class="form-control form-control-sm" id="fKeyword" data-i18n="csi.keyword" placeholder="traceId / 错误信息 / 创建人" title="traceId / 错误信息 / 创建人（模糊）">
             </div>
         </div>
         <div class="row g-2 mb-3">
-            <div class="col-6 col-md-2">
-                <input type="date" class="form-control form-control-sm" id="fDateFrom" title="开始日期">
-            </div>
-            <div class="col-6 col-md-2">
-                <input type="date" class="form-control form-control-sm" id="fDateTo" title="结束日期">
-            </div>
-            <div class="col-6 col-md-4">
-                <input type="text" class="form-control form-control-sm" id="fKeyword" data-i18n="csi.keyword" placeholder="traceId / 错误信息 / 创建人">
-            </div>
-            <div class="col-6 col-md-2">
-                <button class="btn btn-primary btn-sm w-100" onclick="search()"><i class="fas fa-search me-1"></i><span data-i18n="csi.query">查询</span></button>
-            </div>
-            <div class="col-6 col-md-2">
-                <button class="btn btn-outline-secondary btn-sm w-100" onclick="resetFilters()"><i class="fas fa-redo me-1"></i><span data-i18n="csi.reset">重置</span></button>
-            </div>
-        </div>
-        <div class="row g-2 mb-3">
-            <div class="col-6 col-md-2">
-                <input type="number" min="1" step="1" class="form-control form-control-sm" id="fId" data-i18n="csi.filter_id" placeholder="记录ID">
-            </div>
-            <div class="col-6 col-md-3">
-                <select class="form-select form-select-sm" id="fApi">
-                    <option value="" data-i18n="csi.all_api">全部接口</option>
-                    <option value="sl-qty-move" data-i18n="csi.api_qty_move">库位转移 sl-qty-move</option>
-                    <option value="sl-misc-receipt" data-i18n="csi.api_misc_receipt">盘盈杂项收入 sl-misc-receipt</option>
-                    <option value="sl-misc-issue" data-i18n="csi.api_misc_issue">盘亏杂项发出 sl-misc-issue</option>
-                    <option value="sl-job-issue" data-i18n="csi.api_job_issue">工单发料 sl-job-issue</option>
-                </select>
-            </div>
-            <div class="col-6 col-md-3">
-                <input type="text" class="form-control form-control-sm" id="fCoil" data-i18n="csi.filter_coil" placeholder="卷标号，如 261102001">
-            </div>
-            <div class="col-6 col-md-2">
-                <input type="number" min="1" step="1" class="form-control form-control-sm" id="fRequest" data-i18n="csi.filter_request" placeholder="申请单号">
+            <div class="col-12 d-flex justify-content-end gap-2">
+                <button class="btn btn-primary btn-sm px-4" onclick="search()"><i class="fas fa-search me-1"></i><span data-i18n="csi.query">查询</span></button>
+                <button class="btn btn-outline-secondary btn-sm px-4" onclick="resetFilters()"><i class="fas fa-redo me-1"></i><span data-i18n="csi.reset">重置</span></button>
             </div>
         </div>
         <div class="row g-2 mb-3">
@@ -239,9 +226,9 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
 {% block scripts %}
 <script>
 var CSI_STATE = { page: 1, size: 50, total: 0 };
-// 当前登录角色：控制操作按钮（重发仅 admin，取消 admin/warehouse）
+// 当前登录角色：控制操作按钮（重发 admin/me_engineer/warehouse，取消 admin/warehouse）
 var CSI_USER_ROLE = '{{ session.user.role }}';
-var CSI_CAN_RESEND = CSI_USER_ROLE === 'admin';
+var CSI_CAN_RESEND = ['admin', 'me_engineer', 'warehouse'].indexOf(CSI_USER_ROLE) >= 0;
 var CSI_CAN_CANCEL = CSI_USER_ROLE === 'admin' || CSI_USER_ROLE === 'warehouse';
 
 function csiEsc(v) {
@@ -289,9 +276,7 @@ function csiDirection(dir) {
 
 function buildCsiQuery(withPaging) {
     var p = new URLSearchParams();
-    var site = document.getElementById('fSite').value;
-    // admin 选“全部站点”时不传 siteref；普通用户 select 只有当前站
-    if (site) p.set('siteref', site);
+    // 站点不再由前端传递：后端固定取会话登录站点
     if (fSync.value) p.set('is_sync', fSync.value);
     if (fStatus.value) p.set('status', fStatus.value);
     if (fItem.value.trim()) p.set('item', fItem.value.trim());
@@ -558,8 +543,6 @@ function changePageSize(value) {
 }
 
 function resetFilters() {
-    var siteSel = document.getElementById('fSite');
-    if (siteSel.options.length && siteSel.querySelector('option[value=""]')) siteSel.value = '';
     fSync.value = '';
     fStatus.value = '';
     fItem.value = '';
@@ -588,8 +571,8 @@ document.getElementById('csiBody').addEventListener('click', function (e) {
     btn = target.closest('.csi-cancel-btn');
     if (btn) csiCancel(btn);
 });
-// 所有筛选控件回车即查询（含新增的 ID / 接口 / 卷标ID）
-['fSite', 'fSync', 'fStatus', 'fItem', 'fLot', 'fDateFrom', 'fDateTo',
+// 所有筛选控件回车即查询（含 ID / 接口 / 卷标ID）
+['fSync', 'fStatus', 'fItem', 'fLot', 'fDateFrom', 'fDateTo',
  'fKeyword', 'fId', 'fApi', 'fCoil', 'fRequest'].forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) return;
