@@ -2,7 +2,7 @@
 {% block title %}同步接口查询 - 物料领取看板{% endblock %}
 {% block content %}
 <style>
-/* 操作列固定右侧：20 列横向滚动时图标按钮始终可见 */
+/* 操作列固定右侧：21 列横向滚动时图标按钮始终可见 */
 .csi-action-col {
     position: sticky;
     right: 0;
@@ -137,6 +137,26 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
             </div>
         </div>
         <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2">
+                <input type="number" min="1" step="1" class="form-control form-control-sm" id="fId" data-i18n="csi.filter_id" placeholder="记录ID">
+            </div>
+            <div class="col-6 col-md-3">
+                <select class="form-select form-select-sm" id="fApi">
+                    <option value="" data-i18n="csi.all_api">全部接口</option>
+                    <option value="sl-qty-move" data-i18n="csi.api_qty_move">库位转移 sl-qty-move</option>
+                    <option value="sl-misc-receipt" data-i18n="csi.api_misc_receipt">盘盈杂项收入 sl-misc-receipt</option>
+                    <option value="sl-misc-issue" data-i18n="csi.api_misc_issue">盘亏杂项发出 sl-misc-issue</option>
+                    <option value="sl-job-issue" data-i18n="csi.api_job_issue">工单发料 sl-job-issue</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-3">
+                <input type="text" class="form-control form-control-sm" id="fCoil" data-i18n="csi.filter_coil" placeholder="卷标号，如 261102001">
+            </div>
+            <div class="col-6 col-md-2">
+                <input type="number" min="1" step="1" class="form-control form-control-sm" id="fRequest" data-i18n="csi.filter_request" placeholder="申请单号">
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
             <div class="col-12 d-flex justify-content-between align-items-center">
                 <button class="btn btn-success btn-sm" id="exportBtn"><i class="fas fa-file-excel me-1"></i><span data-i18n="csi.export">导出 Excel</span></button>
                 <small class="text-muted" id="summaryBox"></small>
@@ -148,6 +168,7 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                     <tr>
                         <th style="width:58px;">ID</th>
                         <th style="width:88px;" data-i18n="csi.col_request">申请单号</th>
+                        <th style="width:110px;" data-i18n="csi.col_coil_id">卷标ID</th>
                         <th style="width:108px;" data-i18n="csi.col_api">接口</th>
                         <th style="width:118px;" data-i18n="csi.col_item">物料号</th>
                         <th style="width:140px;" data-i18n="csi.col_lot">批次</th>
@@ -169,7 +190,7 @@ thead .csi-action-col { z-index: 3; background: #f8f9fa; }
                     </tr>
                 </thead>
                 <tbody id="csiBody">
-                    <tr><td colspan="20" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
+                    <tr><td colspan="21" class="text-center text-muted py-4" data-i18n="csi.loading">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -278,6 +299,10 @@ function buildCsiQuery(withPaging) {
     if (fDateFrom.value) p.set('date_from', fDateFrom.value);
     if (fDateTo.value) p.set('date_to', fDateTo.value);
     if (fKeyword.value.trim()) p.set('keyword', fKeyword.value.trim());
+    if (fId.value.trim()) p.set('id', fId.value.trim());
+    if (fApi.value) p.set('api_name', fApi.value);
+    if (fCoil.value.trim()) p.set('coil_id', fCoil.value.trim());
+    if (fRequest.value.trim()) p.set('request_id', fRequest.value.trim());
     if (withPaging) {
         p.set('page', CSI_STATE.page);
         p.set('size', CSI_STATE.size);
@@ -453,7 +478,7 @@ function csiShowLog(btn) {
 }
 
 function loadCsi() {    var tb = document.getElementById('csiBody');
-    tb.innerHTML = '<tr><td colspan="20" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="21" class="text-center text-muted py-4">' + csiEsc(__('csi.loading')) + '</td></tr>';
     apiGet('/api/csi-interface?' + buildCsiQuery(true), function (resp) {
         CSI_STATE.total = resp.total || 0;
         var summary = resp.summary || {};
@@ -463,7 +488,7 @@ function loadCsi() {    var tb = document.getElementById('csiBody');
             ' / ' + csiEsc(__('csi.sync_success')) + ' ' + (summary.success || 0) +
             ' / ' + csiEsc(__('csi.sync_failed')) + ' ' + (summary.failed || 0);
         if (!resp.data || resp.data.length === 0) {
-            tb.innerHTML = '<tr><td colspan="20" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
+            tb.innerHTML = '<tr><td colspan="21" class="text-center text-muted py-4">' + csiEsc(__('csi.no_data')) + '</td></tr>';
         } else {
             tb.innerHTML = resp.data.map(function (r) {
                 var trace = csiEsc(r.traceid);
@@ -473,6 +498,7 @@ function loadCsi() {    var tb = document.getElementById('csiBody');
                 return '<tr>' +
                     '<td class="text-muted">' + csiEsc(r.id) + '</td>' +
                     '<td>' + csiRequestCell(r) + '</td>' +
+                    '<td>' + csiVal(r.coil_id) + '</td>' +
                     '<td>' + csiVal(r.api_name) + '</td>' +
                     '<td>' + csiVal(r.item) + '</td>' +
                     '<td>' + csiVal(r.lot) + '</td>' +
@@ -541,6 +567,10 @@ function resetFilters() {
     fDateFrom.value = '';
     fDateTo.value = '';
     fKeyword.value = '';
+    fId.value = '';
+    fApi.value = '';
+    fCoil.value = '';
+    fRequest.value = '';
     search();
 }
 
@@ -557,6 +587,15 @@ document.getElementById('csiBody').addEventListener('click', function (e) {
     if (btn) { csiShowLog(btn); return; }
     btn = target.closest('.csi-cancel-btn');
     if (btn) csiCancel(btn);
+});
+// 所有筛选控件回车即查询（含新增的 ID / 接口 / 卷标ID）
+['fSite', 'fSync', 'fStatus', 'fItem', 'fLot', 'fDateFrom', 'fDateTo',
+ 'fKeyword', 'fId', 'fApi', 'fCoil', 'fRequest'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); search(); }
+    });
 });
 document.addEventListener('DOMContentLoaded', function () {
     loadCsi();

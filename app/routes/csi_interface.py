@@ -114,6 +114,37 @@ def _build_query(user):
     if traceid:
         wb.add('ci.traceid LIKE %s', f'%{traceid}%')
 
+    # 错误信息 / 创建人：模糊匹配（与 keyword 的 OR 条件等价，便于单独定位）
+    errormessage = (args.get('errormessage') or '').strip()
+    if errormessage:
+        wb.add('ci.errormessage LIKE %s', f'%{errormessage}%')
+
+    createby = (args.get('createby') or '').strip()
+    if createby:
+        wb.add('ci.createby LIKE %s', f'%{createby}%')
+
+    # 记录主键：精确匹配；非数字或 <= 0 视为未填，忽略该条件（不报错）
+    row_id = (args.get('id') or '').strip()
+    if row_id:
+        try:
+            row_id_int = int(row_id)
+        except (TypeError, ValueError):
+            row_id_int = 0
+        if row_id_int > 0:
+            wb.add('ci.id = %s', row_id_int)
+
+    # 接口名：精确匹配，仅接受系统实际提交的四个接口，避免拼错参数静默返回空
+    api_name = (args.get('api_name') or '').strip()
+    if api_name:
+        if api_name not in sync_worker.SUPPORTED_APIS:
+            raise ValueError('api_name 参数非法')
+        wb.add('ci.api_name = %s', api_name)
+
+    # 卷标号：模糊匹配（卷标可能带前后缀，用户通常只记得片段）
+    coil_id = (args.get('coil_id') or '').strip()
+    if coil_id:
+        wb.add('ci.coil_id LIKE %s', f'%{coil_id}%')
+
     request_id = (args.get('request_id') or '').strip()
     if request_id:
         if not request_id.isdigit():
