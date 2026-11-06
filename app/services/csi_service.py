@@ -56,17 +56,16 @@ def is_usable_source_loc(loc, non_netable=None) -> bool:
     排除两类：
       1) floor* 车间在制库位（Floor-Core / FLoor-Core / FLOOR-X000 等，大小写不敏感）：
          车间的料已经从仓库领出，不能再作为仓库发料/移库的源库位；
-      2) Non-Nettable 库位（CSI NonNetable = 1）：不参与净值化的虚拟/过渡库位，
-         库存不能发料。
+      2) Non-Nettable 库位（不参与净值化的虚拟/过渡库位，库存不能发料）。
 
-    实测（NAIGROUP_PRD_410，2026-11）：ue_NAI_SLLotLocs 与 SLItemLocs 都**没有**
-    NonNetable 字段（IDO 返回 "Property NonNetable not found"），该 IDO 用 MrbFlag
-    表达同一含义 —— FLOOR-X000 的 MrbFlag=1，且 DerTotalNonNettableStock 恰好等于
-    该行 QtyOnHand，故调用方把 MrbFlag 传进来即可。
+    CSI 侧 Non-Nettable 就是用 **MrbFlag** 表达的（业务确认：MrbFlag=1 即非净值库位）。
+    ue_NAI_SLLotLocs / SLItemLocs 没有独立的 NonNetable 字段，故本函数用 non_netable
+    形参接收 MrbFlag 的值；FLOOR-X000 的 MrbFlag=1，且 DerTotalNonNettableStock
+    恰好等于该行 QtyOnHand。
 
     Args:
         loc: 库位编码，允许 None / 空串 / 带空格
-        non_netable: NonNetable 或等价的 MrbFlag 原始值（1/'1'/True/'true' 视为非净值）
+        non_netable: Non-Nettable 标记，即 CSI 的 MrbFlag（1/'1'/True/'true' 视为非净值）
 
     Returns:
         True 才允许作为源库位；False 表示必须排除
