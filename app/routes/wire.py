@@ -489,7 +489,8 @@ def export_coils():
             counting_ids = {r['coil_id'] for r in cur.fetchall()}
     buf = _io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(['卷标ID', '物料', 'Lot', '期初长度', '单位', '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间', '最后更新时间'])
+    writer.writerow(['卷标ID', '物料', 'Lot', '期初长度', '消耗长度', '剩余长度', '单位',
+                     '状态', '站点', '申请单ID', '使用数量(mm)', '创建时间', '最后更新时间'])
     for r in rows:
         status_label = COIL_STATUS_LABELS.get(r.get('status'), r.get('status') or '')
         if r.get('coil_id') in counting_ids:
@@ -500,9 +501,20 @@ def export_coils():
             init_len = r.get('coil_length')
         if init_len is None:
             init_len = ''
+        # 消耗长度 / 剩余长度：按该卷标单位换算（FT 走 ceil 3 位），期初长度与单位列同单位
+        unit = (r.get('unit') or '').strip()
+        used_orig = convert_from_mm(r.get('used_mm') or 0, unit) if unit else None
+        if used_orig is None:
+            used_cell = remain_cell = ''
+        else:
+            used_cell = f'{used_orig:.3f}'
+            if init_len == '':
+                remain_cell = ''
+            else:
+                remain_cell = f'{max(0.0, float(init_len) - float(used_orig)):.3f}'
         writer.writerow([
             r.get('coil_id', ''), r.get('part_number', ''), r.get('lot_no', ''),
-            init_len, r.get('unit', ''),
+            init_len, used_cell, remain_cell, r.get('unit', ''),
             status_label,
             r.get('siteref', ''), r.get('request_id', ''),
             r.get('used_mm', ''), str(r.get('created_at') or ''), str(r.get('updated_at') or ''),
@@ -576,16 +588,31 @@ def export_consumption():
             params
         )
         rows = cur.fetchall()
+        # Lot 号回填：消耗表本身没有 lot_no，按 coil_id 从卷标表取。
+        # 两张表 coil_id 排序规则不同（utf8mb4_unicode_ci vs utf8mb4_0900_ai_ci），
+        # 直接 JOIN 会报 Illegal mix of collations，故分两步查：先取消耗行，再批量取 lot_no。
+        lot_map = {}
+        coil_ids = sorted({r.get('coil_id') for r in rows if r.get('coil_id')})
+        for i in range(0, len(coil_ids), 500):
+            chunk = coil_ids[i:i + 500]
+            cur.execute(
+                f"SELECT coil_id, lot_no FROM kr_wire_coil WHERE coil_id IN "
+                f"({','.join(['%s'] * len(chunk))})",
+                chunk
+            )
+            lot_map.update({r['coil_id']: r.get('lot_no') for r in cur.fetchall()})
     buf = _io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(['卷标ID', '物料', '工单', '消耗类型', '出库长度(mm)', '单位',
-                     '转换长度', '转换单位', 'Lot批次', '登记人', '登记时间'])
+    writer.writerow(['卷标ID', '物料', '工单', 'Lot号', '消耗类型', '出库长度(mm)', '单位',
+                     '转换长度', '转换单位', '剪线数量', '剪线长度', '报废长度', '登记人', '登记时间'])
     for r in rows:
         writer.writerow([
             r.get('coil_id', ''), r.get('part_number', ''), r.get('job_order', ''),
+            lot_map.get(r.get('coil_id')) or '',
             r.get('consume_type', ''), r.get('out_length', ''), r.get('unit', ''),
             r.get('converted_length', ''), r.get('converted_unit', ''),
-            r.get('lot_no', '') or '', r.get('operator', ''), str(r.get('created_at') or ''),
+            r.get('shear_qty', ''), r.get('shear_length', ''), r.get('scrap_length_actual', ''),
+            r.get('operator', ''), str(r.get('created_at') or ''),
         ])
     return Response(
         '\ufeff' + buf.getvalue(),
