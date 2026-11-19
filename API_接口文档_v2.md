@@ -2,6 +2,8 @@
 
 > **生成日期：2026-09-08　│　最近更新：2026-09-10**
 > **版本说明：** 本文档基于本地最新代码（`app/routes/` 下 12 个蓝图共 **114** 条路由）逐路由提取生成，与旧版 `API 文档.md`（805 行，已过时）相互独立。凡与旧文档不一致处，**以本文档及代码为准**。涵盖近几日的多站点隔离、Bartender 触发文件打印、卷标编辑、回到备料、卷号生成含软删取号等变更。
+>
+> **2026-11 增量：** ①`POST /api/external/job-issue` 新增并**放开 lot 必填**（非 lot 跟踪物料可不传，落 NULL，幂等键兼容 NULL）→ 见 12.14；②外部卷标查询新增 `suggest_qty`，明确「取剩余量不要用 `coil_length`」→ 见 12.1 / 1.7；③卷标 CSV 导出新增「消耗长度/剩余长度」、消耗 CSV 导出新增「Lot号/剪线数量/剪线长度/报废长度」→ 见 11.7 / 11.9。
 > **2026-09-10 增补**：补录**成品豁免名单**（§10.6~10.9，表 `cutting_no_cut_exempt`）与**外部创建最小包装申请单**（§12.13，`POST /api/external/minpack-request`）；接口总数 **109 → 114**（cutting 5→9、external 12→13）。
 > **覆盖范围**：admin 12 / approval 4 / auth 4 / coil 19 / cutting 9 / external 13 / kanban 3 / request_bp 8 / return_bp 10 / validate 4 / warehouse 10 / wire 18。
 > **用途**：作为后续需求修改的接口契约依据（供开发/测试 agent 引用）。
@@ -84,6 +86,8 @@
 ### 1.7 卷标与单位换算
 - 卷号规则：9 位数字 = `YYMMDD`(6 位) + 3 位流水，每日上限 999；**生成取数含软删**：`SELECT MAX(coil_id) WHERE coil_id LIKE '<yyyymmdd>%'`（含 `is_deleted=1` 行，`FOR UPDATE` 当前读防并发）→ MAX 序号 +1。卷号一经分配即占用唯一索引，软删行也**不可复用**。
 - 长度口径（重要）：`kr_wire_coil.coil_length` 存**原始单位**（M/FT/CM/IN，由 CSI 取物料单位）；消耗表 `out_length` 固定存 **mm**。换算系数 `Config.UNIT_CONVERT_FACTOR`：M=1000、FT=304.8、CM=10、IN=25.4。公式：`converted_length(mm) = 录入长度 ÷ 系数`；剩余长度回写时 `mm ÷ 系数 → 原始单位`。单位未收录时按接口降级（警告或阻断见具体规则）。
+- **换算取整（重要）**：mm → 目标单位时，**FT 使用 ceil 向上进位保留 3 位小数**（不是四舍五入），因为 CSI 数量只接受 3 位小数、且换算结果不能小于真实值；M/CM/IN 仍为四舍五入 4 位。实现见 `app/services/unit_convert.py`（`CEIL_UNITS=('FT',)`）。**注意**：必须走 `Decimal` 量化，直接 `math.ceil(raw*1000)/1000` 会被浮点误差坑（如 `304.8/304.8` 得 `1.0000000000000002` → 误进成 `1.001`）。
+- **取"剩余可用量"用 `suggest_qty` / `remain_orig`，不要用 `coil_length`**：`coil_length` 是登记长度，退料复核时会回写成剩余值、历史上也可能被人为修改，语义不稳定；`initial_length` 才是稳定的期初值。真实剩余 = `initial_length − 累计消耗(mm)÷系数`，接口已直接给出（见 12.1）。
 - **剩余扣减口径**：`consume_type IN ('consumption','count_adjust')`（剪线消耗+盘点调整）参与剩余计算；`issue`（出库登记）、`scrap`（报废）**不扣减剩余**，但 `issue` 有自己独立的「累计出库 ≤ 卷长」防超发校验口径。
 - 盘点锁定：卷标在状态 `counting` 的盘点单中时，禁止消耗登记/报废/退料/出库登记（各接口 400 拒绝）。
 
@@ -710,7 +714,9 @@
 ### 11.7 卷标 CSV 导出
 `GET /api/wire/coils/export`
 - 权限：登录即可。过滤同 11.6（全量无 500 限制）。
-- 返回 CSV（UTF-8 BOM，`Content-Disposition: coils.csv`），列：卷标ID/物料/Lot/卷长/单位/状态/站点/申请单ID/使用数量(mm)/创建时间/最后更新时间。
+- 返回 CSV（UTF-8 BOM，`Content-Disposition: coils.csv`），列：
+  卷标ID/物料/Lot/**期初长度**/**消耗长度**/**剩余长度**/单位/状态/站点/申请单ID/使用数量(mm)/创建时间/最后更新时间。
+- **新增两列**：`消耗长度` = 该卷 `SUM(out_length) ÷ 系数`（FT 向上进位 3 位小数）；`剩余长度` = 期初长度 − 消耗长度，**负值截为 0**。系数按该行 `unit` 查 `Config.UNIT_CONVERT_FACTOR`（FT=304.8 / M=1000 / CM=10 / IN=25.4），单位未知时两列留空。
 
 ### 11.8 消耗列表
 `GET /api/wire/consumption`
@@ -721,7 +727,10 @@
 
 ### 11.9 消耗 CSV 导出
 `GET /api/wire/consumption/export`
-- 权限：登录即可。过滤同 11.8（全量）。CSV 列：卷标ID/物料/工单/消耗类型/出库长度(mm)/单位/转换长度/转换单位/Lot批次/登记人/登记时间。
+- 权限：登录即可。过滤同 11.8（全量）。CSV 列（14 列）：
+  卷标ID/物料/工单/**Lot号**/消耗类型/出库长度(mm)/单位/转换长度/转换单位/**剪线数量**/**剪线长度**/**报废长度**/登记人/登记时间。
+- **Lot号**：按 `coil_id` 关联 `kr_wire_coil.lot_no` 回填（消耗表本身无 lot 字段；两表 `coil_id` 排序规则不同，走两次查询内存匹配，不做 JOIN）。
+- **剪线数量/剪线长度/报废长度** 分别取 `shear_qty` / `shear_length` / `scrap_length_actual`（后者为空时导出空）。
 
 ### 11.10 盘点差异调整
 `POST /api/wire/adjust`
@@ -779,7 +788,7 @@
 
 ---
 
-## 12. 外部集成接口（external.py · 13 接口）
+## 12. 外部集成接口（external.py · 14 接口）
 
 > **服务对象**：naiwiptrack / production-tracking 等外部系统（替代其直连物料领取库）。
 > **认证**：请求头 `X-API-Key`（默认 `NAI-WIPTRACK-2026`，env `EXTERNAL_API_KEY`）。见 1.5。
@@ -790,7 +799,8 @@
 ### 12.1 卷标查询（含剩余）
 `GET /api/external/coils/<coil_id>`
 - X-Site-Ref 必需。卷不存在/跨站 404「卷标不存在」。
-- 响应 `data`：`coil_id/part_number/lot_no/unit/coil_length/status/status_label/siteref/request_id` + `counting`（活跃盘点中）+ `used_mm`（consumption+count_adjust 口径）+ `remain_mm`、`remain_orig`（换算；单位未知为 null）。`status_label` 盘点中时显示「盘点中」。
+- 响应 `data`：`coil_id/part_number/lot_no/unit/coil_length/status/status_label/siteref/request_id` + `counting`（活跃盘点中）+ `used_mm`（consumption+count_adjust 口径）+ `remain_mm`、`remain_orig`（换算；单位未知为 null）+ **`suggest_qty`**（建议作为移库/发料数量的剩余量，与 `remain_orig` 同值，语义更明确）。`status_label` 盘点中时显示「盘点中」。
+- **长度字段口径（重要）**：`coil_length` / `initial_length` 是**登记长度，不随消耗变化**（`coil_length` 在退料复核后会回写成剩余值，历史上也可能被人工改过，不可靠）；要取"还能发多少"请一律用 **`suggest_qty`**（或等价的 `remain_orig`），不要用 `coil_length`。见 1.7。
 
 ### 12.2 消耗登记（剪线消耗，stage=complete）
 `POST /api/external/consumption`
@@ -876,6 +886,28 @@
 - 响应 200：`{"success":true,"id":request_id,"message":"最小包装申请已创建，仓库将开始备料"}`；创建异常 → 500 `{"success":false,"error":"创建最小包装申请失败: …"}`。
 
 ---
+
+### 12.14 工单发料入队（sl-job-issue，新增）
+`POST /api/external/job-issue`
+- 鉴权：`X-API-Key` + `X-Site-Ref`（见 1.5）。
+- 请求体：
+  | 字段 | 必填 | 说明 |
+  |---|---|---|
+  | `job` | 是 | 工单号（可带 `-0001` 后缀，同步器负责拆分） |
+  | `item` | 是 | 物料号 |
+  | `unit` | 是 | 计量单位（FT/M/CM/IN） |
+  | `submitter` | 是 | 提交人（落 `createby`） |
+  | `quantity` | 是 | 发料数量，数字且 > 0 |
+  | **`lot`** | **否** | **非 lot 跟踪物料可不传**；空值落库为 `NULL` |
+  | `documentNumber` | 否 | 不传则自动取号 |
+- **lot 可空（重要）**：Infor 里存在非 lot 跟踪物料，没有批次号。此类物料允许不传 `lot`；服务端落库写 `NULL`（不写空串）；提交 CSI 时**报文不带 `lot` 字段**。
+  同步器不会因 lot 为空而转人工——`_align_floor_stock` / `_align_batch_stock` 仅跳过"按 lot 查库存自动改量"这一步，不影响提交。
+- **幂等键**：`(站点, documentNumber, job, item, lot)`，其中 lot 用 `COALESCE(lot,'')` 比较，因此**空 lot 重复提交同样返回 `duplicated`**。
+- 副作用：写 `kr_csi_interface`（`api_name='sl-job-issue'`、`status='PENDING'`、`is_sync=0`），由同步器提交。
+- 响应：
+  - `201` `{success:true, id, documentnumber, message:"已入队"}`
+  - `200` `{success:true, duplicated:true, id, message:"已存在相同发料记录，未重复入队"}`
+  - `400` `缺少必填项：job|item|unit|submitter`（**不再包含 lot**）/ `quantity 必须为数字且大于0`
 
 ## 13. 系统管理（admin.py · 12 接口）
 
