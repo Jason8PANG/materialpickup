@@ -334,10 +334,13 @@ def _build_payload(row):
             'job': job,
             'item': (row.get('item') or '').strip(),
             'quantity': _quantity(row.get('quantity')),
-            'lot': (row.get('lot') or '').strip(),
             'warehouse': (row.get('warehouse') or '').strip(),
             'location': (row.get('to_location') or '').strip(),
         }
+        # lot 可选：非 lot 跟踪物料无批号，不传该字段（CSI 接口允许为空）
+        lot = (row.get('lot') or '').strip()
+        if lot:
+            payload['lot'] = lot
         if suffix:
             payload['suffix'] = suffix
         return payload

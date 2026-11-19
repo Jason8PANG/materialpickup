@@ -1146,11 +1146,13 @@ def ext_create_job_issue():
     """外部系统提交工单发料：写入 kr_csi_interface，由同步器提交 sl-job-issue。
 
     鉴权：X-API-Key + X-Site-Ref（310/410，复用 _resolve_site）。
-    入参 JSON：job/item/lot/unit/submitter 必填，quantity 必须为数字且 > 0，
+    入参 JSON：job/item/unit/submitter 必填，quantity 必须为数字且 > 0，
+              lot 可选（非 lot 跟踪物料可不传，落库为 NULL），
               documentNumber 可选（≤12 位；为空取工单号前 12 位）。
     落库：warehouse 按站点映射（Config.CSI_WAREHOUSE_MAP），
           to_location 固定 Config.CSI_TO_LOCATION（同步器作为 location 提交）。
-    幂等：同 (站点, documentNumber, job, item, lot) 已有生效记录 → 200 duplicated，不重复入队。
+    幂等：同 (站点, documentNumber, job, item, lot) 已有生效记录 → 200 duplicated，不重复入队；
+          lot 为空时按 NULL 与空串等价比较（COALESCE），空 lot 的重复提交同样识别为 duplicated。
     """
     err = _check_api_key()
     if err:
@@ -1170,7 +1172,8 @@ def ext_create_job_issue():
     unit = str(b.get('unit') or '').strip()
     submitter = str(b.get('submitter') or '').strip()
 
-    missing = [k for k, v in (('job', job), ('item', item), ('lot', lot),
+    # lot 可选：非 lot 跟踪物料无批号，允许不传（落库 NULL）
+    missing = [k for k, v in (('job', job), ('item', item),
                               ('unit', unit), ('submitter', submitter)) if not v]
     if missing:
         return jsonify({'success': False, 'message': '缺少必填项：' + '、'.join(missing)}), 400
@@ -1203,10 +1206,11 @@ def ext_create_job_issue():
             cur.execute(
                 "SELECT id FROM kr_csi_interface "
                 "WHERE api_name = %s AND siteRef = %s AND documentnumber = %s "
-                "  AND job = %s AND item = %s AND lot = %s "
+                "  AND job = %s AND item = %s AND COALESCE(lot, '') = COALESCE(%s, '') "
                 f"  AND (is_sync IN (0, 1) OR status IN ({active_ph})) "
                 "ORDER BY id DESC LIMIT 1",
-                (JOB_ISSUE_API, int(site), doc_no, job, item, lot) + JOB_ISSUE_ACTIVE_STATUS
+                (JOB_ISSUE_API, int(site), doc_no, job, item, lot or None)
+                + JOB_ISSUE_ACTIVE_STATUS
             )
             existing = cur.fetchone()
             if existing:
@@ -1227,7 +1231,7 @@ def ext_create_job_issue():
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, "
                 " NULL, NULL, NULL, NULL, %s, NULL, 'F', 0, 'PENDING', 0, %s, "
                 " NULL, NULL, NULL, NULL, %s, %s)",
-                (JOB_ISSUE_API, int(site), item, lot, quantity, unit, job, warehouse,
+                (JOB_ISSUE_API, int(site), item, lot or None, quantity, unit, job, warehouse,
                  Config.CSI_TO_LOCATION, doc_no, traceid, now, submitter)
             )
             new_id = cur.lastrowid

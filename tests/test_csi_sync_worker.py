@@ -973,6 +973,20 @@ class TestJobIssue:
         assert w.API_JOB_ISSUE in w.SUPPORTED_APIS
         assert w._row_api(_job_issue_row()) == 'sl-job-issue'
 
+    def test_null_lot_submits_without_lot_key(self, _no_real_csi):
+        """非 lot 跟踪物料：lot 为 NULL → 不转人工、照常提交，payload 不带 lot 字段"""
+        repo = FakeRepo([_job_issue_row(lot=None)])
+        with patch('app.csi_sync_worker._http_post',
+                   return_value=_resp(200, _ok('SUCCESS', {'Success': True}))) as post:
+            stats = _run(repo)
+
+        body = post.call_args.kwargs['json']
+        assert 'lot' not in body
+        assert body['item'] == 'B052552' and body['job'] == 'J000029867'
+        row = repo.row(3)
+        assert row['is_sync'] == 1 and row['status'] == 'SUCCESS'
+        assert stats['success'] == 1 and stats['manual'] == 0
+
 
 # ====================================================================== #
 #  5d. 工单发料前置：先取消工单物料 Backflush（倒冲）
