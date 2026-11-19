@@ -19,6 +19,7 @@ Base：/api/external/
   POST /api/external/job-issue                  工单发料（写 kr_csi_interface，由同步器提交 sl-job-issue）
   POST /api/external/count-gain                 卷标盘盈（自动建盘盈盘点单 IS+年份+5位流水 → 自动录入 → 自动调整）
 """
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -34,6 +35,8 @@ from app.services.operation_log import log_operation
 from app.services.unit_convert import convert_from_mm
 
 external_bp = Blueprint('external', __name__)
+
+logger = logging.getLogger(__name__)
 
 EXTERNAL_KEY = getattr(Config, 'EXTERNAL_API_KEY', '') or ''
 
@@ -1153,6 +1156,8 @@ def ext_create_job_issue():
           to_location 固定 Config.CSI_TO_LOCATION（同步器作为 location 提交）。
     幂等：同 (站点, documentNumber, job, item, lot) 已有生效记录 → 200 duplicated，不重复入队；
           lot 为空时按 NULL 与空串等价比较（COALESCE），空 lot 的重复提交同样识别为 duplicated。
+    批号跟踪：入队前查 CSI SLItems.LotTracked，非批号跟踪物料（0/null）即使传了 lot 也强制清空为 NULL；
+          CSI 查询失败时保留原 lot 照常入队（宁可信物料有批次，不可误清真实批次）。
     """
     err = _check_api_key()
     if err:
@@ -1199,6 +1204,19 @@ def ext_create_job_issue():
     now = datetime.now()
     traceid = _job_issue_traceid(job, item)
     active_ph = ','.join(['%s'] * len(JOB_ISSUE_ACTIVE_STATUS))
+
+    # 非批号跟踪物料不允许带 lot：CSI sl-job-issue 对这类物料传批次会被拒。
+    # 只在明确 False（LotTracked=0/null）时清空；None（查询失败/查无物料）保持原 lot，
+    # 绝不能因查不到就把真实批次清掉。
+    if lot:
+        from app.services.csi_service import CSIClient
+        tracked = CSIClient(site).is_lot_tracked(item)
+        if tracked is False:
+            logger.info('job-issue 清空 lot：item=%s 非批号跟踪（LotTracked=0/null），原 lot=%s', item, lot)
+            lot = None
+        elif tracked is None:
+            logger.warning('job-issue 无法确认 item=%s 是否批号跟踪（CSI 查询失败），保留原 lot=%s 照常入队',
+                           item, lot)
 
     try:
         with get_db_connection() as db:

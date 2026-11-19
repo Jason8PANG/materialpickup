@@ -32,6 +32,20 @@ _TOKEN_CACHE: dict = {}
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_REFRESH_MARGIN = 60  # 提前 60 秒视为过期，避免用到临界 token
 
+# ---------------------------------------------------------------------- #
+#  SLItems.LotTracked 进程级缓存（job-issue 判非批号跟踪物料用）
+#  key = (siteref, item)，value = (is_tracked, fetched_at)。
+#  只缓存成功结果（True/False）；None（查询失败/物料不存在）不入缓存，
+#  避免 CSI 抖动一次就被固化成「不跟踪」，进而误清真实批次。
+# ---------------------------------------------------------------------- #
+_LOT_TRACKED_CACHE: dict = {}
+_LOT_TRACKED_CACHE_MAX = 5000  # 超过上限直接清空（量小，不引入 LRU）
+
+
+def _clear_lot_tracked_cache() -> None:
+    """清空 LotTracked 缓存（供测试使用）"""
+    _LOT_TRACKED_CACHE.clear()
+
 
 def _clear_token_cache() -> None:
     """清空进程级 token 缓存（供测试使用）"""
@@ -343,6 +357,40 @@ class CSIClient:
         except Exception as e:
             logger.error(f"[CSI] get_item_backflush error: {e}")
             return None
+
+    def is_lot_tracked(self, item):
+        """该物料是否批号跟踪（CSI SLItems.LotTracked = 1）。
+
+        返回 True / False / None（None = 查询失败或查不到物料，调用方应按"未知"处理，
+        绝不能当成 False 去清 lot）。
+        """
+        item = str(item or '').strip()
+        if not item:
+            return None
+
+        key = (self._siteref, item)
+        now = time.time()
+        ttl = getattr(Config, 'CSI_LOT_TRACKED_TTL_SECONDS', 300)
+        hit = _LOT_TRACKED_CACHE.get(key)
+        if hit and now - hit[1] < ttl:
+            return hit[0]
+
+        try:
+            filter_str = "Item = N'%s'" % item.replace("'", "''")
+            records = self._get_ido('SLItems', properties=['Item', 'LotTracked'],
+                                    filter_str=filter_str)
+            if not records:
+                return None
+            # LotTracked：1 → 跟踪；0 / NULL / 空串 → 不跟踪
+            tracked = str(records[0].get('LotTracked')).strip() == '1'
+        except Exception as e:
+            logger.warning('[CSI] is_lot_tracked(%s) 查询失败，按未知处理: %s', item, e)
+            return None
+
+        if len(_LOT_TRACKED_CACHE) >= _LOT_TRACKED_CACHE_MAX:
+            _LOT_TRACKED_CACHE.clear()
+        _LOT_TRACKED_CACHE[key] = (tracked, now)
+        return tracked
 
     def get_job_matl_backflush(self, job: str, suffix, item: str) -> dict | None:
         """

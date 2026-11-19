@@ -25,6 +25,7 @@ import pymysql  # noqa: E402
 
 from app.config import Config  # noqa: E402
 from app.routes import external as ext  # noqa: E402
+from app.services import csi_service  # noqa: E402
 
 _REAL_CONNECT = pymysql.connect
 API_KEY = ext.EXTERNAL_KEY
@@ -93,6 +94,15 @@ def fake_db(monkeypatch):
         return c
 
     return _use
+
+
+@pytest.fixture(autouse=True)
+def _stub_lot_tracked(monkeypatch):
+    """默认按「批号跟踪」处理，单测不发真实 CSI 请求；需要非跟踪/未知的用例自行覆盖。"""
+    csi_service._clear_lot_tracked_cache()
+    monkeypatch.setattr(csi_service.CSIClient, 'is_lot_tracked', lambda self, item: True)
+    yield
+    csi_service._clear_lot_tracked_cache()
 
 
 def _headers(site='310', key=API_KEY):
@@ -301,6 +311,52 @@ class TestIdempotency:
         assert "COALESCE(lot, '') = COALESCE(%s, '')" in select_sql
         assert select_params[5] is None
         assert not [s for s, _ in cur.executed if s.upper().startswith('INSERT')]
+
+
+# ====================================================================== #
+#  批号跟踪过滤：非跟踪物料强制清空 lot，未知(None)保留原值
+# ====================================================================== #
+class TestLotTrackedFilter:
+    def test_untracked_item_lot_cleared(self, client, fake_db, monkeypatch):
+        """LotTracked=0/null → 传了 lot 也清空为 NULL（INSERT 与幂等键都用清空后的值）"""
+        monkeypatch.setattr(csi_service.CSIClient, 'is_lot_tracked', lambda self, item: False)
+        cur = fake_db()
+        resp = _post(client)
+
+        assert resp.status_code == 201, resp.get_json()
+        assert _insert(cur)[3] is None
+        assert cur.executed[0][1][5] is None
+
+    def test_tracked_item_lot_kept(self, client, fake_db, monkeypatch):
+        monkeypatch.setattr(csi_service.CSIClient, 'is_lot_tracked', lambda self, item: True)
+        cur = fake_db()
+        resp = _post(client)
+
+        assert resp.status_code == 201, resp.get_json()
+        assert _insert(cur)[3] == BODY['lot']
+
+    def test_unknown_keeps_lot(self, client, fake_db, monkeypatch):
+        """CSI 查询失败/查无物料（None）→ 绝不能清真实批次，照常入队"""
+        monkeypatch.setattr(csi_service.CSIClient, 'is_lot_tracked', lambda self, item: None)
+        cur = fake_db()
+        resp = _post(client)
+
+        assert resp.status_code == 201, resp.get_json()
+        assert _insert(cur)[3] == BODY['lot']
+
+    def test_empty_lot_skips_csi_lookup(self, client, fake_db, monkeypatch):
+        """lot 为空时无需判断，直接入队"""
+        def _boom(self, item):
+            raise AssertionError('lot 为空不应查 CSI')
+
+        monkeypatch.setattr(csi_service.CSIClient, 'is_lot_tracked', _boom)
+        body = dict(BODY)
+        body.pop('lot')
+        cur = fake_db()
+        resp = _post(client, body)
+
+        assert resp.status_code == 201, resp.get_json()
+        assert _insert(cur)[3] is None
 
 
 # ====================================================================== #

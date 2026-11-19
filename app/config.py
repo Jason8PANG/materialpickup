@@ -84,6 +84,8 @@ class Config:
                          '410': os.environ.get('CSI_WAREHOUSE_410', 'M1M1')}
     CSI_ALERT_EMAIL = os.environ.get('CSI_ALERT_EMAIL', 'jason.pang@nai-group.com')
     CSI_SYNC_INTERVAL = int(os.environ.get('CSI_SYNC_INTERVAL', '60'))
+    # SLItems.LotTracked 查询结果进程内缓存秒数（job-issue 判断物料是否批号跟踪）
+    CSI_LOT_TRACKED_TTL_SECONDS = int(os.environ.get('CSI_LOT_TRACKED_TTL_SECONDS', '300') or 300)
 
     # CSI 失败记录定时邮件（每天 09:00/12:00/15:00/17:00，收件人按「站点+接口」配置在
     # kr_csi_alert_rule 表，由 /admin/csi-alert 维护）
